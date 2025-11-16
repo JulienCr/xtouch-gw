@@ -55,6 +55,41 @@ impl MidiSpec {
             anyhow::bail!("Unknown MIDI spec format: {}", spec);
         }
     }
+    
+    /// Parse a MIDI spec from raw MIDI bytes
+    pub fn from_raw(raw: &[u8]) -> Result<Self> {
+        if raw.is_empty() {
+            anyhow::bail!("Empty MIDI message");
+        }
+        
+        let status = raw[0];
+        let type_nibble = (status & 0xF0) >> 4;
+        let channel = status & 0x0F;
+        
+        match type_nibble {
+            0x8 | 0x9 => {
+                // Note Off (0x8) or Note On (0x9)
+                if raw.len() < 2 {
+                    anyhow::bail!("Invalid Note message: too short");
+                }
+                Ok(MidiSpec::Note { note: raw[1] })
+            }
+            0xB => {
+                // Control Change
+                if raw.len() < 2 {
+                    anyhow::bail!("Invalid CC message: too short");
+                }
+                Ok(MidiSpec::ControlChange { cc: raw[1] })
+            }
+            0xE => {
+                // Pitch Bend
+                Ok(MidiSpec::PitchBend { channel })
+            }
+            _ => {
+                anyhow::bail!("Unsupported MIDI message type: 0x{:02X}", type_nibble);
+            }
+        }
+    }
 }
 
 /// Control mapping database

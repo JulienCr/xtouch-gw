@@ -19,6 +19,9 @@ mod control_mapping;
 
 use crate::config::AppConfig;
 use crate::router::Router;
+use crate::xtouch::{XTouchDriver, XTouchEvent};
+use crate::drivers::midibridge::MidiBridgeDriver;
+use std::sync::Arc;
 
 /// XTouch Gateway - Control Voicemeeter, QLC+, and OBS from Behringer X-Touch
 #[derive(Parser, Debug)]
@@ -109,17 +112,72 @@ async fn main() -> Result<()> {
 }
 
 async fn run_app(
-    _router: Router,
-    _config: AppConfig,
+    router: Router,
+    config: AppConfig,
     shutdown: impl std::future::Future<Output = ()>,
 ) -> Result<()> {
-    // This will be implemented as we build out the modules
+    use tracing::{debug};
+    
     info!("Starting main application loop...");
     
-    // For now, just wait for shutdown
-    shutdown.await;
+    // Create and connect X-Touch driver
+    let mut xtouch = XTouchDriver::new(&config)?;
+    info!("X-Touch driver created");
     
+    xtouch.connect().await?;
+    info!("X-Touch connected successfully");
+    
+    // Take the event receiver from XTouch
+    let mut xtouch_rx = xtouch
+        .take_event_receiver()
+        .ok_or_else(|| anyhow::anyhow!("Failed to get X-Touch event receiver"))?;
+    
+    // Register MIDI bridge drivers for each configured app
+    if let Some(apps) = &config.midi.apps {
+        for app_config in apps {
+            let driver = Arc::new(MidiBridgeDriver::new(
+                app_config.output_port.clone().unwrap_or_default(), // to_port: where we send
+                app_config.input_port.clone().unwrap_or_default(), // from_port: where we receive
+                None, // No filter for now
+                None, // No transforms for now
+                false, // Not optional
+            ));
+            
+            router.register_driver(app_config.name.clone(), driver).await?;
+            info!("Registered MIDI bridge driver for: {}", app_config.name);
+        }
+    }
+    
+    info!("All drivers registered and initialized");
+    info!("Ready to process MIDI events!");
+    
+    // Main event loop
+    tokio::pin!(shutdown);
+    
+    loop {
+        tokio::select! {
+            // Handle X-Touch events
+            Some(event) = xtouch_rx.recv() => {
+                debug!("Received X-Touch event: raw={:02X?}", event.raw_data);
+                
+                // Route the event through the router
+                router.on_midi_from_xtouch(&event.raw_data).await;
+            }
+            
+            // Handle shutdown signal
+            _ = &mut shutdown => {
+                info!("Shutdown signal received, stopping event loop");
+                break;
+            }
+        }
+    }
+    
+    // Cleanup
     info!("Shutting down...");
+    xtouch.disconnect();
+    router.shutdown_all_drivers().await?;
+    info!("All drivers shut down");
+    
     Ok(())
 }
 
