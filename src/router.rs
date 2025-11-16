@@ -8,7 +8,7 @@
 //! - Page refresh with state replay
 
 use crate::config::{AppConfig, PageConfig};
-use crate::drivers::Driver;
+use crate::drivers::{Driver, ExecutionContext};
 use crate::state::{build_entry_from_raw, AppKey, MidiStateEntry, MidiStatus, StateStore};
 use anyhow::{anyhow, Result};
 use serde_json::Value;
@@ -75,17 +75,81 @@ impl Router {
         }
     }
 
+    /// Create an execution context for driver calls
+    async fn create_execution_context(&self) -> ExecutionContext {
+        ExecutionContext {
+            config: self.config.clone(),
+            active_page: Some(self.get_active_page_name().await),
+        }
+    }
+
     /// Register a driver by name (e.g., "voicemeeter", "qlc", "obs")
-    pub async fn register_driver(&self, name: String, driver: Arc<dyn Driver>) {
+    /// 
+    /// The driver will be initialized immediately upon registration
+    pub async fn register_driver(&self, name: String, driver: Arc<dyn Driver>) -> Result<()> {
+        info!("Registering driver '{}'...", name);
+
+        // Create execution context
+        let ctx = self.create_execution_context().await;
+
+        // Initialize the driver
+        if let Err(e) = driver.init(ctx).await {
+            warn!("Failed to initialize driver '{}': {}", name, e);
+            return Err(e);
+        }
+
+        // Store the driver
         let mut drivers = self.drivers.write().await;
         drivers.insert(name.clone(), driver);
-        info!("Driver '{}' registered", name);
+        
+        info!("✅ Driver '{}' registered and initialized", name);
+        Ok(())
     }
 
     /// Get a driver by name
     pub async fn get_driver(&self, name: &str) -> Option<Arc<dyn Driver>> {
         let drivers = self.drivers.read().await;
         drivers.get(name).cloned()
+    }
+
+    /// List all registered driver names
+    pub async fn list_drivers(&self) -> Vec<String> {
+        let drivers = self.drivers.read().await;
+        drivers.keys().cloned().collect()
+    }
+
+    /// Shutdown all registered drivers
+    pub async fn shutdown_all_drivers(&self) -> Result<()> {
+        info!("Shutting down all drivers...");
+        
+        let drivers = self.drivers.read().await;
+        let driver_list: Vec<_> = drivers.iter().map(|(name, driver)| (name.clone(), driver.clone())).collect();
+        drop(drivers);
+
+        let mut errors = Vec::new();
+        for (name, driver) in driver_list {
+            info!("Shutting down driver '{}'...", name);
+            if let Err(e) = driver.shutdown().await {
+                warn!("Failed to shutdown driver '{}': {}", name, e);
+                errors.push((name, e));
+            } else {
+                info!("✅ Driver '{}' shut down", name);
+            }
+        }
+
+        if !errors.is_empty() {
+            let error_msg = errors
+                .iter()
+                .map(|(n, e)| format!("{}: {}", n, e))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(anyhow!("Failed to shutdown {} driver(s): {}", errors.len(), error_msg));
+        }
+
+        // Clear the driver registry
+        self.drivers.write().await.clear();
+        info!("All drivers shut down successfully");
+        Ok(())
     }
 
     /// Get the active page configuration
@@ -216,8 +280,11 @@ impl Router {
             app_name, action, control_id, value
         );
 
+        // Create execution context
+        let ctx = self.create_execution_context().await;
+
         // Execute the driver action
-        driver.execute(action, params).await?;
+        driver.execute(action, params, ctx).await?;
 
         Ok(())
     }
@@ -377,7 +444,7 @@ impl Router {
     /// Priority for each type:
     /// - PB: Known PB = 3 > Mapped CC = 2 > Zero = 1
     /// - Notes/CC: Known value = 2 > Reset (0/OFF) = 1
-    fn plan_page_refresh(&self, page: &PageConfig) -> Vec<MidiStateEntry> {
+    fn plan_page_refresh(&self, _page: &PageConfig) -> Vec<MidiStateEntry> {
         use crate::state::{MidiAddr, MidiValue, Origin};
 
         #[derive(Clone)]
@@ -529,28 +596,55 @@ impl Router {
         entries
     }
 
-    /// Update configuration and notify drivers
+    /// Update configuration and notify drivers (hot-reload support)
     pub async fn update_config(&self, new_config: AppConfig) -> Result<()> {
+        info!("🔄 Updating configuration (hot-reload)...");
+
+        // Update config
         *self.config.write().await = new_config;
 
         // Ensure active page index is still valid
         let config = self.config.read().await;
         let mut index = self.active_page_index.write().await;
+        let old_index = *index;
         if *index >= config.pages.len() {
             *index = 0;
+            warn!(
+                "Active page index {} out of range (config has {} pages), reset to 0",
+                old_index,
+                config.pages.len()
+            );
         }
         drop(index);
         drop(config);
 
-        // Notify all drivers
+        // Notify all drivers to sync with new config
         let drivers = self.drivers.read().await;
-        for (name, driver) in drivers.iter() {
+        let driver_list: Vec<_> = drivers.iter().map(|(name, driver)| (name.clone(), driver.clone())).collect();
+        drop(drivers);
+
+        let mut sync_errors = Vec::new();
+        for (name, driver) in driver_list {
+            debug!("Syncing driver '{}' with new config...", name);
             if let Err(e) = driver.sync().await {
                 warn!("Driver '{}' sync failed after config update: {}", name, e);
+                sync_errors.push((name, e));
+            } else {
+                debug!("✅ Driver '{}' synced", name);
             }
         }
 
-        info!("Router: configuration updated");
+        if !sync_errors.is_empty() {
+            warn!(
+                "⚠️  {} driver(s) failed to sync after config update",
+                sync_errors.len()
+            );
+        }
+
+        // Refresh the active page to apply new mappings
+        self.refresh_page().await;
+
+        info!("✅ Configuration updated successfully");
         Ok(())
     }
 
@@ -827,5 +921,253 @@ mod tests {
         router.on_midi_from_xtouch(&note_off).await;
         assert_eq!(router.get_active_page_name().await, "Page 1"); // Should stay on Page 1
     }
+
+    // ===== PHASE 4: Driver Framework Integration Tests =====
+
+    #[tokio::test]
+    async fn test_driver_registration_and_initialization() {
+        use crate::drivers::ConsoleDriver;
+        use std::sync::Arc;
+
+        let config = make_test_config(vec![make_test_page("Test Page")]);
+        let router = Router::new(config);
+
+        // Create and register a console driver
+        let driver = Arc::new(ConsoleDriver::new("test_console"));
+        let result = router.register_driver("test_console".to_string(), driver).await;
+
+        assert!(result.is_ok());
+
+        // Verify driver is registered
+        let driver_names = router.list_drivers().await;
+        assert!(driver_names.contains(&"test_console".to_string()));
+
+        // Verify we can retrieve the driver
+        let retrieved = router.get_driver("test_console").await;
+        assert!(retrieved.is_some());
+        assert_eq!(retrieved.unwrap().name(), "test_console");
+    }
+
+    #[tokio::test]
+    async fn test_driver_shutdown_all() {
+        use crate::drivers::ConsoleDriver;
+        use std::sync::Arc;
+
+        let config = make_test_config(vec![make_test_page("Test Page")]);
+        let router = Router::new(config);
+
+        // Register multiple drivers
+        router
+            .register_driver("driver1".to_string(), Arc::new(ConsoleDriver::new("driver1")))
+            .await
+            .unwrap();
+        
+        router
+            .register_driver("driver2".to_string(), Arc::new(ConsoleDriver::new("driver2")))
+            .await
+            .unwrap();
+
+        // Verify they're registered
+        assert_eq!(router.list_drivers().await.len(), 2);
+
+        // Shutdown all
+        let result = router.shutdown_all_drivers().await;
+        assert!(result.is_ok());
+
+        // Verify all drivers are removed
+        assert_eq!(router.list_drivers().await.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_driver_hot_reload_config() {
+        use crate::drivers::ConsoleDriver;
+        use std::sync::Arc;
+
+        let initial_config = make_test_config(vec![
+            make_test_page("Page 1"),
+            make_test_page("Page 2"),
+        ]);
+        
+        let router = Router::new(initial_config);
+
+        // Register a driver
+        router
+            .register_driver("test_driver".to_string(), Arc::new(ConsoleDriver::new("test_driver")))
+            .await
+            .unwrap();
+
+        // Update config with different pages
+        let new_config = make_test_config(vec![
+            make_test_page("New Page 1"),
+            make_test_page("New Page 2"),
+            make_test_page("New Page 3"),
+        ]);
+
+        let result = router.update_config(new_config).await;
+        assert!(result.is_ok());
+
+        // Verify new config is active
+        let pages = router.list_pages().await;
+        assert_eq!(pages.len(), 3);
+        assert!(pages.contains(&"New Page 1".to_string()));
+        assert!(pages.contains(&"New Page 3".to_string()));
+
+        // Driver should still be registered
+        assert!(router.get_driver("test_driver").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_driver_execution_with_context() {
+        use crate::config::ControlMapping;
+        use crate::drivers::ConsoleDriver;
+        use serde_json::json;
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        // Create a page with control mappings
+        let mut page = make_test_page("Test Page");
+        let mut controls = HashMap::new();
+        controls.insert(
+            "fader1".to_string(),
+            ControlMapping {
+                app: "test_console".to_string(),
+                action: Some("set_volume".to_string()),
+                params: Some(vec![json!(100)]),
+                midi: None,
+                overlay: None,
+                indicator: None,
+            },
+        );
+        page.controls = Some(controls);
+
+        let config = make_test_config(vec![page]);
+        let router = Router::new(config);
+
+        // Register driver
+        router
+            .register_driver("test_console".to_string(), Arc::new(ConsoleDriver::new("test_console")))
+            .await
+            .unwrap();
+
+        // Execute control action
+        let result = router.handle_control("fader1", Some(json!(127))).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_driver_execution_missing_driver() {
+        use crate::config::ControlMapping;
+        use serde_json::json;
+        use std::collections::HashMap;
+
+        // Create a page with control mapping pointing to non-existent driver
+        let mut page = make_test_page("Test Page");
+        let mut controls = HashMap::new();
+        controls.insert(
+            "fader1".to_string(),
+            ControlMapping {
+                app: "missing_driver".to_string(),
+                action: Some("test_action".to_string()),
+                params: None,
+                midi: None,
+                overlay: None,
+                indicator: None,
+            },
+        );
+        page.controls = Some(controls);
+
+        let config = make_test_config(vec![page]);
+        let router = Router::new(config);
+
+        // Attempt to execute control action (should fail)
+        let result = router.handle_control("fader1", Some(json!(127))).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Driver 'missing_driver' not registered"));
+    }
+
+    #[tokio::test]
+    async fn test_driver_execution_missing_control() {
+        use crate::drivers::ConsoleDriver;
+        use serde_json::json;
+        use std::sync::Arc;
+
+        let config = make_test_config(vec![make_test_page("Test Page")]);
+        let router = Router::new(config);
+
+        // Register driver
+        router
+            .register_driver("test_console".to_string(), Arc::new(ConsoleDriver::new("test_console")))
+            .await
+            .unwrap();
+
+        // Attempt to execute non-existent control
+        let result = router.handle_control("non_existent_control", Some(json!(127))).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No mapping for control"));
+    }
+
+    #[tokio::test]
+    async fn test_multiple_drivers_execution() {
+        use crate::config::ControlMapping;
+        use crate::drivers::ConsoleDriver;
+        use serde_json::json;
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        // Create a page with multiple control mappings to different drivers
+        let mut page = make_test_page("Multi Driver Page");
+        let mut controls = HashMap::new();
+        
+        controls.insert(
+            "obs_control".to_string(),
+            ControlMapping {
+                app: "obs_driver".to_string(),
+                action: Some("switch_scene".to_string()),
+                params: Some(vec![json!("Scene 1")]),
+                midi: None,
+                overlay: None,
+                indicator: None,
+            },
+        );
+        
+        controls.insert(
+            "vm_control".to_string(),
+            ControlMapping {
+                app: "vm_driver".to_string(),
+                action: Some("set_fader".to_string()),
+                params: Some(vec![json!(1), json!(0.5)]),
+                midi: None,
+                overlay: None,
+                indicator: None,
+            },
+        );
+        
+        page.controls = Some(controls);
+
+        let config = make_test_config(vec![page]);
+        let router = Router::new(config);
+
+        // Register multiple drivers
+        router
+            .register_driver("obs_driver".to_string(), Arc::new(ConsoleDriver::new("obs_driver")))
+            .await
+            .unwrap();
+        
+        router
+            .register_driver("vm_driver".to_string(), Arc::new(ConsoleDriver::new("vm_driver")))
+            .await
+            .unwrap();
+
+        // Execute controls for different drivers
+        let result1 = router.handle_control("obs_control", None).await;
+        assert!(result1.is_ok());
+
+        let result2 = router.handle_control("vm_control", Some(json!(64))).await;
+        assert!(result2.is_ok());
+
+        // Verify both drivers are still registered
+        assert_eq!(router.list_drivers().await.len(), 2);
+    }
 }
+
 
