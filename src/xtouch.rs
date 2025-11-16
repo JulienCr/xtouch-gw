@@ -2,6 +2,8 @@
 //! 
 //! Handles MIDI communication with the X-Touch control surface.
 
+pub mod fader_setpoint;
+
 use anyhow::{Context, Result, bail};
 use midir::{MidiInput, MidiOutput, MidiInputConnection, MidiOutputConnection};
 use std::sync::{Arc, Mutex};

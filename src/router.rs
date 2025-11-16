@@ -290,41 +290,6 @@ impl Router {
         Ok(())
     }
 
-    /// Process MIDI feedback from an application
-    pub fn on_midi_from_app(&self, app_key: &str, raw: &[u8], port_id: &str) {
-        let entry = match build_entry_from_raw(raw, port_id) {
-            Some(e) => e,
-            None => return,
-        };
-
-        let app = match AppKey::from_str(app_key) {
-            Some(a) => a,
-            None => {
-                warn!("Unknown app key: {}", app_key);
-                return;
-            }
-        };
-
-        // Update state store
-        self.state.update_from_feedback(app, entry.clone());
-
-        // Log for debugging
-        trace!(
-            "State <- {}: {:?} ch={} d1={} val={}",
-            app,
-            entry.addr.status,
-            entry.addr.channel.unwrap_or(0),
-            entry.addr.data1.unwrap_or(0),
-            entry
-                .value
-                .as_number()
-                .map(|n| n.to_string())
-                .unwrap_or_else(|| "binary".to_string())
-        );
-
-        // TODO: Forward to X-Touch if relevant for active page
-    }
-
     /// Process MIDI input from X-Touch (for page navigation)
     ///
     /// Handles navigation notes:
@@ -791,6 +756,55 @@ impl Router {
 
         let mut ts_map = self.last_user_action_ts.write().unwrap();
         ts_map.insert(key, Self::now_ms());
+    }
+
+    /// Ingest MIDI feedback from an application
+    ///
+    /// This is the entry point for feedback from applications (OBS, Voicemeeter, etc.).
+    /// It updates the state store and forwards to X-Touch if relevant for the active page.
+    ///
+    /// # Arguments
+    ///
+    /// * `app_key` - Application identifier (e.g., "obs", "voicemeeter")
+    /// * `raw` - Raw MIDI bytes from the application
+    /// * `port_id` - MIDI port identifier
+    pub fn on_midi_from_app(&self, app_key: &str, raw: &[u8], port_id: &str) {
+        // Parse the MIDI message
+        let entry = match build_entry_from_raw(raw, port_id) {
+            Some(e) => e,
+            None => {
+                debug!("Failed to parse MIDI from app '{}': {:02X?}", app_key, raw);
+                return;
+            }
+        };
+
+        // Update state store (this also notifies subscribers)
+        let app = match AppKey::from_str(app_key) {
+            Some(a) => a,
+            None => {
+                warn!("Unknown application key: {}", app_key);
+                return;
+            }
+        };
+
+        // Update state store
+        self.state.update_from_feedback(app, entry.clone());
+
+        // Log for debugging
+        trace!(
+            "State <- {}: status={:?} ch={:?} d1={:?} val={:?}",
+            app_key,
+            entry.addr.status,
+            entry.addr.channel,
+            entry.addr.data1,
+            entry.value
+        );
+
+        // Mark this as sent to app (for anti-echo)
+        self.update_app_shadow(app_key, &entry);
+
+        // TODO: Forward to X-Touch if relevant for active page
+        // This will be implemented in the forward module (Phase 6.2)
     }
 }
 
