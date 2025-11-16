@@ -83,7 +83,10 @@ This ensures feature parity and correct behavior during the migration.
 - [x] Value overlay on LCD during movement (deferred to Phase 7 - polish)
 - [x] **Validation**: Bidirectional sync infrastructure complete
 
-## Phase 7: Advanced Features (Week 6)
+## Phase 7: Advanced Features (Week 6) - IN PROGRESS
+- [x] **CRITICAL FIX**: notify + Tokio integration (capture runtime handle before creating watcher)
+  - Fixed panic: "there is no reactor running, must be called from the context of a Tokio 1.x runtime"
+  - All 50 tests now pass ✅
 - [ ] Hot config reload without dropping events
 - [ ] LCD management with labels/colors
 - [ ] Fader value overlay (percent/7bit/8bit modes)

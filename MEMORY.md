@@ -530,6 +530,38 @@ state_store.subscribe(|entry, app| {
 - Can now implement full bidirectional sync
 - Value overlay can be added as polish feature
 
+## Critical Bug Fix: notify + Tokio Integration (November 2025)
+
+**🐛 PROBLEM**: Test panic during file watcher initialization
+```
+thread 'notify-rs windows loop' panicked at src\config\watcher.rs:44:46:
+there is no reactor running, must be called from the context of a Tokio 1.x runtime
+```
+
+**ROOT CAUSE**: The `notify` crate spawns its own OS thread (not a Tokio thread) to watch for file system events. When trying to call `tokio::runtime::Handle::current()` from within the notify callback (which runs on the OS thread), it panics because that thread is not part of any Tokio runtime.
+
+**✅ SOLUTION**: Capture the Tokio runtime handle BEFORE creating the watcher closure (when you're still in a Tokio async context), then use that captured handle inside the callback:
+
+```rust
+// WRONG - Panics because callback runs on non-Tokio thread
+let watcher = notify::recommended_watcher(move |res| {
+    let handle = tokio::runtime::Handle::current(); // ❌ PANIC
+    handle.spawn(async { ... });
+})?;
+
+// CORRECT - Capture handle before creating closure
+let runtime_handle = tokio::runtime::Handle::current(); // ✅ In Tokio context
+let watcher = notify::recommended_watcher(move |res| {
+    runtime_handle.spawn(async { ... }); // ✅ Use captured handle
+})?;
+```
+
+**KEY INSIGHT**: Any blocking/sync library that spawns its own threads (notify, crossterm, etc.) cannot directly access Tokio runtime APIs. Always capture handles, channels, or other Tokio primitives before creating closures that will run on non-Tokio threads.
+
+**FILES FIXED**:
+- `src/config/watcher.rs:33` - Capture handle before watcher creation
+- `src/config/watcher.rs:48` - Use captured handle in callback
+
 ## TODO: Document During Development
 
 - [ ] Exact midir connection sequence for Windows
@@ -540,3 +572,4 @@ state_store.subscribe(|entry, app| {
 - [x] Phase 3 state management patterns and Router architecture
 - [x] Phase 5 driver implementations and async patterns
 - [x] Phase 6 feedback loop and fader setpoint patterns
+- [x] notify + Tokio integration (capture runtime handle before creating watcher)

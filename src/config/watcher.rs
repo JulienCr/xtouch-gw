@@ -28,6 +28,10 @@ impl ConfigWatcher {
         
         let config_path_clone = config_path.clone();
         
+        // Capture the Tokio runtime handle BEFORE creating the watcher
+        // (notify callbacks run on their own OS thread, not in Tokio context)
+        let runtime_handle = tokio::runtime::Handle::current();
+        
         // Create file watcher
         let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
             match res {
@@ -40,8 +44,7 @@ impl ConfigWatcher {
                         let config_path = config_path_clone.clone();
                         let tx = tx.clone();
                         
-                        // Spawn async task to reload config
-                        let runtime_handle = tokio::runtime::Handle::current();
+                        // Use the captured runtime handle to spawn async task
                         runtime_handle.spawn(async move {
                             // Debounce: wait a bit for file writes to complete
                             tokio::time::sleep(Duration::from_millis(100)).await;
