@@ -4,7 +4,7 @@
 
 use anyhow::Result;
 use clap::Parser;
-use tracing::{info, error};
+use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod config;
@@ -15,6 +15,7 @@ mod midi;
 mod drivers;
 mod cli;
 mod sniffer;
+mod control_mapping;
 
 use crate::config::AppConfig;
 use crate::router::Router;
@@ -42,6 +43,14 @@ struct Args {
     /// Web sniffer port
     #[arg(long, default_value = "8123")]
     web_port: u16,
+    
+    /// List available MIDI ports
+    #[arg(long)]
+    list_ports: bool,
+    
+    /// Test control mappings
+    #[arg(long)]
+    test_mappings: bool,
 }
 
 #[tokio::main]
@@ -57,6 +66,18 @@ async fn main() -> Result<()> {
 
     info!("Starting XTouch GW v3...");
     info!("Configuration file: {}", args.config);
+
+    // Handle list ports
+    if args.list_ports {
+        sniffer::list_ports_formatted();
+        return Ok(());
+    }
+    
+    // Handle test mappings
+    if args.test_mappings {
+        test_control_mappings().await?;
+        return Ok(());
+    }
 
     // Handle sniffer mode
     if args.sniffer || args.web_sniffer {
@@ -88,8 +109,8 @@ async fn main() -> Result<()> {
 }
 
 async fn run_app(
-    router: Router,
-    config: AppConfig,
+    _router: Router,
+    _config: AppConfig,
     shutdown: impl std::future::Future<Output = ()>,
 ) -> Result<()> {
     // This will be implemented as we build out the modules
@@ -124,4 +145,69 @@ async fn shutdown_signal() {
         .await
         .expect("Failed to install CTRL+C signal handler");
     info!("Shutdown signal received");
+}
+
+async fn test_control_mappings() -> Result<()> {
+    use crate::control_mapping::{load_default_mappings, MidiSpec};
+    use colored::*;
+    
+    println!("\n{}", "=== Testing Control Mappings ===".bold().cyan());
+    
+    let db = load_default_mappings()?;
+    
+    println!("\n{}", "Loaded Mappings:".bold());
+    println!("  Total controls: {}", db.mappings.len().to_string().green());
+    println!("  Groups: {}", db.groups().count().to_string().green());
+    
+    println!("\n{}", "Groups:".bold());
+    for group in db.groups() {
+        let count = db.get_group(group).map(|g| g.len()).unwrap_or(0);
+        println!("  {} ({} controls)", group.yellow(), count);
+    }
+    
+    println!("\n{}", "Sample Mappings:".bold());
+    
+    // Test fader1
+    if let Some(mapping) = db.get("fader1") {
+        println!("\n  {}:", "fader1".bright_white());
+        println!("    Group: {}", mapping.group.cyan());
+        println!("    CTRL mode: {}", mapping.ctrl_message.green());
+        println!("    MCU mode:  {}", mapping.mcu_message.green());
+        
+        // Parse and display
+        if let Ok(spec) = MidiSpec::parse(&mapping.ctrl_message) {
+            println!("    Parsed CTRL: {:?}", spec);
+        }
+        if let Ok(spec) = MidiSpec::parse(&mapping.mcu_message) {
+            println!("    Parsed MCU:  {:?}", spec);
+        }
+    }
+    
+    // Test transport controls
+    println!("\n  {}:", "Transport Controls".bright_white());
+    for control in &["play", "stop", "record", "rewind", "fast_forward"] {
+        if let Some(mapping) = db.get(control) {
+            println!("    {}: CTRL={}, MCU={}", 
+                control.yellow(),
+                mapping.ctrl_message.green(),
+                mapping.mcu_message.green()
+            );
+        }
+    }
+    
+    // Test reverse lookup
+    println!("\n{}", "Reverse Lookup Test:".bold());
+    let test_spec = MidiSpec::ControlChange { cc: 70 };
+    if let Some(control) = db.find_control_by_midi(&test_spec, false) {
+        println!("  CC 70 in CTRL mode maps to: {}", control.green());
+    }
+    
+    let test_spec = MidiSpec::PitchBend { channel: 0 };
+    if let Some(control) = db.find_control_by_midi(&test_spec, true) {
+        println!("  PitchBend ch1 in MCU mode maps to: {}", control.green());
+    }
+    
+    println!("\n{}", "✅ Control mapping test complete!".green().bold());
+    
+    Ok(())
 }

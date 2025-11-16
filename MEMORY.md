@@ -3,6 +3,48 @@
 > Important lessons from the TypeScript implementation and new discoveries during Rust development.
 > Goal: Avoid repeating mistakes and document critical implementation details.
 
+## Phase 1 Completion Summary (November 2025)
+
+**✅ Successfully completed Phase 1: Core Runtime Foundation**
+
+Key achievements:
+- Comprehensive config types with serde (all TS config fields supported)
+- Config validation catches errors before runtime (found real config bugs!)
+- Config file watcher with notify for hot-reload
+- Error handling strategy documented (anyhow for app code, thiserror for libraries)
+- Full config.yaml loading with validation working
+
+Important learnings:
+1. **Config Validation is Critical**: Found incomplete control mappings that would cause runtime issues
+2. **Make Fields Optional First**: Use `Option<T>` for all optional fields, validate in separate step
+3. **MIDI passthrough type**: Special case that doesn't require channel/cc/note fields
+4. **Windows Process Locking**: Running process prevents rebuild - always kill before rebuild
+5. **Validation Messages**: Rich error messages with context help debug config issues quickly
+
+## Phase 2 Completion Summary (November 2025)
+
+**✅ Successfully completed Phase 2: MIDI Infrastructure**
+
+Key achievements:
+- Complete MIDI message parsing/encoding (all MIDI 1.0 types)
+- XTouch hardware driver with async I/O and event channels
+- Port discovery with Windows-friendly substring matching
+- MIDI sniffer with CLI and web UI foundation
+- Control mapping database (129 controls, 11 groups)
+- Value conversion utilities (14-bit ↔ 7-bit, percentages)
+
+Critical learnings:
+1. **midir v0.10 API Change**: Uses port references, not indices - `midi_in.ports().iter()` required
+2. **Windows MIDI Port Names**: Vary ("UM-One" vs "2- UM-ONE") - substring matching essential
+3. **MIDI Channel Convention**: External 1-16, internal 0-15 - always subtract 1 when parsing "ch1"
+4. **Arc<Mutex<>> for MIDI Output**: Required for thread-safe async sending from multiple contexts
+5. **Event Channel Size**: 1000 messages buffer prevents loss during rapid MIDI bursts
+6. **Embedded CSV**: Use `include_str!` for control mappings - eliminates file dependency
+7. **Async Callbacks with midir**: Callback must be `'static` - use channels to escape lifetime
+8. **PitchBend vs CC**: MCU mode uses PitchBend for 14-bit faders, CTRL mode uses CC (7-bit)
+9. **CSV Parser Validation**: Validate MIDI specs during parsing to catch errors early
+10. **Reverse Lookup Pattern**: O(n) scan acceptable for 129 controls - HashMap would be overkill
+
 ## 🎯 REMEMBER: TypeScript is the Reference
 
 **The TypeScript implementation at `D:\dev\xtouch-gw-v2\` is the source of truth.**

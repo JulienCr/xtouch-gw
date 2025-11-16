@@ -2,11 +2,14 @@
 //! 
 //! Handles loading, parsing, and hot-reloading of YAML configuration files.
 
+pub mod watcher;
+
 use anyhow::{Result, Context};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::Path;
 use tokio::fs;
+
+pub use watcher::ConfigWatcher;
 
 /// Root configuration structure
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -148,6 +151,16 @@ pub struct PageConfig {
     pub passthroughs: Option<Vec<PassthroughConfig>>,
 }
 
+/// LED indicator configuration
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct IndicatorConfig {
+    pub signal: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub equals: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truthy: Option<bool>,
+}
+
 /// Control mapping
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ControlMapping {
@@ -158,6 +171,10 @@ pub struct ControlMapping {
     pub params: Option<Vec<serde_json::Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub midi: Option<MidiSpec>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overlay: Option<OverlayConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub indicator: Option<IndicatorConfig>,
 }
 
 /// MIDI control specification
@@ -165,7 +182,8 @@ pub struct ControlMapping {
 pub struct MidiSpec {
     #[serde(rename = "type")]
     pub midi_type: MidiType,
-    pub channel: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cc: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -267,7 +285,7 @@ pub struct PbToCcTransform {
 }
 
 impl AppConfig {
-    /// Load configuration from file
+    /// Load configuration from file with validation
     pub async fn load(path: &str) -> Result<Self> {
         let contents = fs::read_to_string(path)
             .await
@@ -275,6 +293,9 @@ impl AppConfig {
         
         let config: AppConfig = serde_yaml::from_str(&contents)
             .with_context(|| format!("Failed to parse YAML config: {}", path))?;
+        
+        // Validate the loaded configuration
+        config.validate()?;
         
         Ok(config)
     }
@@ -288,6 +309,146 @@ impl AppConfig {
             .await
             .with_context(|| format!("Failed to write config file: {}", path))?;
         
+        Ok(())
+    }
+
+    /// Validate configuration for correctness and consistency
+    pub fn validate(&self) -> Result<()> {
+        // Validate MIDI configuration
+        if self.midi.input_port.is_empty() {
+            anyhow::bail!("MIDI input_port cannot be empty");
+        }
+        if self.midi.output_port.is_empty() {
+            anyhow::bail!("MIDI output_port cannot be empty");
+        }
+
+        // Collect all app names referenced in MIDI config
+        let mut midi_app_names = std::collections::HashSet::new();
+        if let Some(apps) = &self.midi.apps {
+            for app in apps {
+                if app.name.is_empty() {
+                    anyhow::bail!("MIDI app name cannot be empty");
+                }
+                midi_app_names.insert(&app.name);
+            }
+        }
+
+        // Validate pages
+        if self.pages.is_empty() {
+            anyhow::bail!("At least one page must be defined");
+        }
+
+        for (page_idx, page) in self.pages.iter().enumerate() {
+            if page.name.is_empty() {
+                anyhow::bail!("Page {} name cannot be empty", page_idx);
+            }
+
+            // Validate controls in this page
+            if let Some(controls) = &page.controls {
+                for (control_id, mapping) in controls {
+                    self.validate_control_mapping(control_id, mapping, &midi_app_names)
+                        .with_context(|| format!("Invalid control '{}' in page '{}'", control_id, page.name))?;
+                }
+            }
+
+            // Validate LCD colors (should be 0-7 for X-Touch)
+            if let Some(lcd) = &page.lcd {
+                if let Some(colors) = &lcd.colors {
+                    for (idx, color) in colors.iter().enumerate() {
+                        if let LcdColor::Numeric(num) = color {
+                            if *num > 7 {
+                                anyhow::bail!(
+                                    "LCD color {} in page '{}' strip {} is invalid (must be 0-7)",
+                                    num, page.name, idx
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Validate global controls
+        if let Some(global) = &self.pages_global {
+            if let Some(controls) = &global.controls {
+                for (control_id, mapping) in controls {
+                    self.validate_control_mapping(control_id, mapping, &midi_app_names)
+                        .with_context(|| format!("Invalid global control '{}'", control_id))?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Validate a single control mapping
+    fn validate_control_mapping(
+        &self,
+        control_id: &str,
+        mapping: &ControlMapping,
+        _midi_app_names: &std::collections::HashSet<&String>,
+    ) -> Result<()> {
+        if mapping.app.is_empty() {
+            anyhow::bail!("Control '{}' app name cannot be empty", control_id);
+        }
+
+        // Validate MIDI specification if present
+        if let Some(midi_spec) = &mapping.midi {
+            match midi_spec.midi_type {
+                MidiType::Cc => {
+                    if midi_spec.cc.is_none() {
+                        anyhow::bail!("CC type requires 'cc' field in control '{}'", control_id);
+                    }
+                    if midi_spec.channel.is_none() {
+                        anyhow::bail!("CC type requires 'channel' field in control '{}'", control_id);
+                    }
+                }
+                MidiType::Note => {
+                    if midi_spec.note.is_none() {
+                        anyhow::bail!("Note type requires 'note' field in control '{}'", control_id);
+                    }
+                    if midi_spec.channel.is_none() {
+                        anyhow::bail!("Note type requires 'channel' field in control '{}'", control_id);
+                    }
+                }
+                MidiType::Pb => {
+                    if midi_spec.channel.is_none() {
+                        anyhow::bail!("PitchBend type requires 'channel' field in control '{}'", control_id);
+                    }
+                }
+                MidiType::Passthrough => {
+                    // Passthrough doesn't require specific fields
+                }
+            }
+
+            // Validate channel range (1-16 for MIDI, but 0-15 internally)
+            if let Some(channel) = midi_spec.channel {
+                if channel == 0 || channel > 16 {
+                    anyhow::bail!(
+                        "Control '{}' has invalid MIDI channel {} (must be 1-16)",
+                        control_id, channel
+                    );
+                }
+            }
+
+            // Validate CC/Note range (0-127)
+            if let Some(cc) = midi_spec.cc {
+                if cc > 127 {
+                    anyhow::bail!("Control '{}' has invalid CC number {} (must be 0-127)", control_id, cc);
+                }
+            }
+            if let Some(note) = midi_spec.note {
+                if note > 127 {
+                    anyhow::bail!("Control '{}' has invalid note number {} (must be 0-127)", control_id, note);
+                }
+            }
+        }
+
+        // Validate that action OR midi is specified (not both empty, unless passthrough)
+        if mapping.action.is_none() && mapping.midi.is_none() {
+            anyhow::bail!("Control '{}' must specify either 'action' or 'midi'", control_id);
+        }
+
         Ok(())
     }
 }

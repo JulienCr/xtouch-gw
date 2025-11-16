@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>XTouch GW - MIDI Sniffer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        header {
+            background: #2d2d30;
+            padding: 10px 20px;
+            border-bottom: 1px solid #3e3e42;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        h1 {
+            font-size: 20px;
+            font-weight: 500;
+            color: #0e97ff;
+        }
+        
+        .controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        
+        button {
+            background: #0e97ff;
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        
+        button:hover {
+            background: #0d87e7;
+        }
+        
+        button:disabled {
+            background: #3e3e42;
+            cursor: not-allowed;
+        }
+        
+        .status {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        
+        .status.connected {
+            background: #16825d;
+            color: white;
+        }
+        
+        .status.disconnected {
+            background: #a1260d;
+            color: white;
+        }
+        
+        .container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        
+        .filters {
+            background: #252526;
+            padding: 10px 20px;
+            display: flex;
+            gap: 20px;
+            align-items: center;
+            border-bottom: 1px solid #3e3e42;
+        }
+        
+        .filter-group {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        
+        .filter-group label {
+            font-size: 14px;
+            color: #969696;
+        }
+        
+        .filter-group input[type="checkbox"] {
+            cursor: pointer;
+        }
+        
+        .filter-group input[type="text"] {
+            background: #3c3c3c;
+            border: 1px solid #3e3e42;
+            color: #d4d4d4;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        
+        .messages {
+            flex: 1;
+            overflow-y: auto;
+            background: #1e1e1e;
+            font-family: 'Consolas', 'Courier New', monospace;
+            font-size: 13px;
+            padding: 10px 20px;
+        }
+        
+        .message {
+            padding: 2px 0;
+            display: flex;
+            gap: 10px;
+            border-bottom: 1px solid #2d2d30;
+        }
+        
+        .message:hover {
+            background: #2d2d30;
+        }
+        
+        .timestamp {
+            color: #666;
+            min-width: 80px;
+        }
+        
+        .direction {
+            min-width: 30px;
+            font-weight: bold;
+        }
+        
+        .direction.in {
+            color: #4ec9b0;
+        }
+        
+        .direction.out {
+            color: #f48771;
+        }
+        
+        .port {
+            color: #dcdcaa;
+            min-width: 150px;
+        }
+        
+        .data {
+            color: #ce9178;
+            font-weight: bold;
+        }
+        
+        .parsed {
+            color: #569cd6;
+            margin-left: 10px;
+        }
+        
+        .message.note-on .data {
+            color: #4ec9b0;
+        }
+        
+        .message.note-off .data {
+            color: #f48771;
+        }
+        
+        .message.cc .data {
+            color: #dcdcaa;
+        }
+        
+        .message.pitch-bend .data {
+            color: #569cd6;
+        }
+        
+        .message.sysex .data {
+            color: #c586c0;
+        }
+        
+        .stats {
+            background: #252526;
+            padding: 10px 20px;
+            border-top: 1px solid #3e3e42;
+            display: flex;
+            gap: 20px;
+            font-size: 12px;
+        }
+        
+        .stat {
+            color: #969696;
+        }
+        
+        .stat span {
+            color: #d4d4d4;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>🎹 XTouch GW - MIDI Sniffer</h1>
+        <div class="controls">
+            <span class="status disconnected" id="status">Disconnected</span>
+            <button id="connect">Connect</button>
+            <button id="clear">Clear</button>
+            <button id="export">Export</button>
+        </div>
+    </header>
+    
+    <div class="container">
+        <div class="filters">
+            <div class="filter-group">
+                <input type="checkbox" id="filter-note" checked>
+                <label for="filter-note">Notes</label>
+            </div>
+            <div class="filter-group">
+                <input type="checkbox" id="filter-cc" checked>
+                <label for="filter-cc">CC</label>
+            </div>
+            <div class="filter-group">
+                <input type="checkbox" id="filter-pb" checked>
+                <label for="filter-pb">PitchBend</label>
+            </div>
+            <div class="filter-group">
+                <input type="checkbox" id="filter-sysex" checked>
+                <label for="filter-sysex">SysEx</label>
+            </div>
+            <div class="filter-group">
+                <label>Port Filter:</label>
+                <input type="text" id="port-filter" placeholder="e.g., X-Touch">
+            </div>
+        </div>
+        
+        <div class="messages" id="messages">
+            <!-- Messages will appear here -->
+        </div>
+        
+        <div class="stats">
+            <div class="stat">Messages: <span id="msg-count">0</span></div>
+            <div class="stat">Rate: <span id="msg-rate">0/s</span></div>
+            <div class="stat">Uptime: <span id="uptime">00:00:00</span></div>
+        </div>
+    </div>
+    
+    <script>
+        let ws = null;
+        let messageCount = 0;
+        let startTime = null;
+        let lastMessageTime = Date.now();
+        let messageRate = 0;
+        let rateWindow = [];
+        
+        const messagesDiv = document.getElementById('messages');
+        const statusSpan = document.getElementById('status');
+        const connectBtn = document.getElementById('connect');
+        const clearBtn = document.getElementById('clear');
+        const exportBtn = document.getElementById('export');
+        const msgCountSpan = document.getElementById('msg-count');
+        const msgRateSpan = document.getElementById('msg-rate');
+        const uptimeSpan = document.getElementById('uptime');
+        
+        function connect() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                disconnect();
+                return;
+            }
+            
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+            
+            ws.onopen = () => {
+                statusSpan.textContent = 'Connected';
+                statusSpan.className = 'status connected';
+                connectBtn.textContent = 'Disconnect';
+                startTime = Date.now();
+            };
+            
+            ws.onclose = () => {
+                statusSpan.textContent = 'Disconnected';
+                statusSpan.className = 'status disconnected';
+                connectBtn.textContent = 'Connect';
+            };
+            
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+            
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                addMessage(data);
+            };
+        }
+        
+        function disconnect() {
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+        }
+        
+        function addMessage(data) {
+            messageCount++;
+            msgCountSpan.textContent = messageCount;
+            
+            // Update rate
+            const now = Date.now();
+            rateWindow.push(now);
+            rateWindow = rateWindow.filter(t => t > now - 1000);
+            msgRateSpan.textContent = `${rateWindow.length}/s`;
+            
+            // Check filters
+            const portFilter = document.getElementById('port-filter').value.toLowerCase();
+            if (portFilter && !data.port.toLowerCase().includes(portFilter)) {
+                return;
+            }
+            
+            // Create message element
+            const msg = document.createElement('div');
+            msg.className = 'message';
+            
+            // Add message type class
+            if (data.message) {
+                if (data.message.startsWith('NoteOn')) msg.classList.add('note-on');
+                else if (data.message.startsWith('NoteOff')) msg.classList.add('note-off');
+                else if (data.message.startsWith('CC')) msg.classList.add('cc');
+                else if (data.message.startsWith('PitchBend')) msg.classList.add('pitch-bend');
+                else if (data.message.startsWith('SysEx')) msg.classList.add('sysex');
+            }
+            
+            // Format timestamp
+            const timestamp = document.createElement('span');
+            timestamp.className = 'timestamp';
+            timestamp.textContent = `${data.timestamp_ms}ms`;
+            msg.appendChild(timestamp);
+            
+            // Direction
+            const direction = document.createElement('span');
+            direction.className = `direction ${data.direction.toLowerCase()}`;
+            direction.textContent = data.direction;
+            msg.appendChild(direction);
+            
+            // Port
+            const port = document.createElement('span');
+            port.className = 'port';
+            port.textContent = data.port;
+            msg.appendChild(port);
+            
+            // Data (hex)
+            const dataSpan = document.createElement('span');
+            dataSpan.className = 'data';
+            dataSpan.textContent = data.hex || data.data.map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ');
+            msg.appendChild(dataSpan);
+            
+            // Parsed message
+            if (data.message) {
+                const parsed = document.createElement('span');
+                parsed.className = 'parsed';
+                parsed.textContent = `=> ${data.message}`;
+                msg.appendChild(parsed);
+            }
+            
+            messagesDiv.appendChild(msg);
+            
+            // Auto-scroll
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            
+            // Limit messages
+            while (messagesDiv.children.length > 1000) {
+                messagesDiv.removeChild(messagesDiv.firstChild);
+            }
+        }
+        
+        function clear() {
+            messagesDiv.innerHTML = '';
+            messageCount = 0;
+            msgCountSpan.textContent = '0';
+        }
+        
+        function exportMessages() {
+            const messages = [];
+            for (const msg of messagesDiv.children) {
+                messages.push(msg.textContent);
+            }
+            
+            const blob = new Blob([messages.join('\n')], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `midi-log-${Date.now()}.txt`;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+        
+        // Update uptime
+        setInterval(() => {
+            if (startTime) {
+                const elapsed = Math.floor((Date.now() - startTime) / 1000);
+                const hours = Math.floor(elapsed / 3600);
+                const minutes = Math.floor((elapsed % 3600) / 60);
+                const seconds = elapsed % 60;
+                uptimeSpan.textContent = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+            }
+        }, 1000);
+        
+        // Event listeners
+        connectBtn.addEventListener('click', connect);
+        clearBtn.addEventListener('click', clear);
+        exportBtn.addEventListener('click', exportMessages);
+        
+        // Auto-connect
+        // connect();
+    </script>
+</body>
+</html>
