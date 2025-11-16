@@ -373,6 +373,66 @@ pub fn format_sniffer(timestamp_ms: u64, direction: &str, port: &str, data: &[u8
         timestamp_ms, direction, port, hex, message)
 }
 
+/// Find a MIDI output port by substring matching (case-insensitive)
+pub fn find_port_by_substring<T: midir::MidiIO>(midi: &T, substring: &str) -> Option<T::Port> {
+    let substring_lower = substring.to_lowercase();
+    
+    midi.ports().into_iter().find(|port| {
+        if let Ok(name) = midi.port_name(port) {
+            name.to_lowercase().contains(&substring_lower)
+        } else {
+            false
+        }
+    })
+}
+
+/// Alias for parse to match usage in other modules
+pub fn parse_message(data: &[u8]) -> Result<MidiMessage, &'static str> {
+    MidiMessage::parse(data).ok_or("Failed to parse MIDI message")
+}
+
+impl MidiMessage {
+    /// Alias for encode to match usage pattern to_bytes()
+    pub fn to_bytes(&self) -> Vec<u8> {
+        self.encode()
+    }
+
+    /// Get the note number for note messages
+    pub fn note(&self) -> Option<u8> {
+        match *self {
+            MidiMessage::NoteOff { note, .. } |
+            MidiMessage::NoteOn { note, .. } |
+            MidiMessage::PolyPressure { note, .. } => Some(note),
+            _ => None,
+        }
+    }
+
+    /// Get the velocity for note messages
+    pub fn velocity(&self) -> u8 {
+        match *self {
+            MidiMessage::NoteOff { velocity, .. } |
+            MidiMessage::NoteOn { velocity, .. } => velocity,
+            _ => 0,
+        }
+    }
+
+    /// Get the controller number for CC messages
+    pub fn controller(&self) -> Option<u8> {
+        match *self {
+            MidiMessage::ControlChange { cc, .. } => Some(cc),
+            _ => None,
+        }
+    }
+
+    /// Get the value for CC messages
+    pub fn value(&self) -> Option<u8> {
+        match *self {
+            MidiMessage::ControlChange { value, .. } => Some(value),
+            _ => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

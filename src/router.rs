@@ -80,6 +80,7 @@ impl Router {
         ExecutionContext {
             config: self.config.clone(),
             active_page: Some(self.get_active_page_name().await),
+            value: None,
         }
     }
 

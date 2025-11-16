@@ -156,6 +156,7 @@ mod tests {
         ExecutionContext {
             config: Arc::new(RwLock::new(config)),
             active_page: Some("TestPage".to_string()),
+            value: None,
         }
     }
 

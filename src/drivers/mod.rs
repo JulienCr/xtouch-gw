@@ -13,6 +13,8 @@ pub struct ExecutionContext {
     pub config: Arc<RwLock<crate::config::AppConfig>>,
     /// Active page name
     pub active_page: Option<String>,
+    /// Control value (for encoder/analog inputs)
+    pub value: Option<serde_json::Value>,
 }
 
 /// Driver trait - all application integrations implement this
@@ -44,6 +46,16 @@ pub trait Driver: Send + Sync {
 }
 
 pub mod console;
+pub mod qlc;
+pub mod midibridge;
+pub mod obs;
 
 // Re-export commonly used drivers
 pub use console::ConsoleDriver;
+pub use qlc::QlcDriver;
+pub use midibridge::MidiBridgeDriver;
+pub use obs::ObsDriver;
+
+// Suppress unused warnings temporarily during Phase 5 development
+#[allow(unused_imports)]
+use {ConsoleDriver as _, QlcDriver as _, MidiBridgeDriver as _, ObsDriver as _};
