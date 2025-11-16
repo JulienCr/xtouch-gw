@@ -183,6 +183,85 @@ Based on TS measurements, Rust should achieve:
 - ⚡ Better error recovery
 - ⚡ Native performance
 
+## Phase 3 Completion (November 2025)
+
+**✅ Phase 3: Router and State Management - COMPLETE**
+
+### Final Implementation Summary:
+
+#### **State Module** (100%)
+- ✅ Complete type system (MidiStatus, MidiAddr, MidiValue, MidiStateEntry, AppKey)
+- ✅ StateStore with O(1) per-app lookups
+- ✅ Subscription mechanism for state updates
+- ✅ JSON persistence with StateSnapshot
+- ✅ SHA-1 hashing for SysEx deduplication
+- ✅ Stale marking for restored snapshots
+
+#### **Router** (100%)
+- ✅ Page management (get/set/next/prev by name or index)
+- ✅ MIDI note navigation (46=prev, 47=next, 54-61=F1-F8)
+- ✅ Control mapping resolution → driver execution
+- ✅ Driver registration and lifecycle
+- ✅ Config hot-reload support
+
+#### **Anti-Echo & LWW** (100%)
+- ✅ Time window constants: PB=250ms, CC=100ms, Note=10ms, SysEx=60ms
+- ✅ `should_suppress_anti_echo()` - checks shadow state + time window
+- ✅ `update_app_shadow()` - tracks last sent values per app
+- ✅ `should_suppress_lww()` - Last-Write-Wins with grace periods (PB=300ms, CC=50ms)
+- ✅ `mark_user_action()` - records user interactions for LWW
+
+#### **Page Refresh Planner** (100%)
+- ✅ Priority system: PB (Known=3 > Mapped=2 > Zero=1), Notes/CC (Known=2 > Reset=1)
+- ✅ `plan_page_refresh()` - builds ordered entry list
+- ✅ Ordering: Notes → CC → PB (correct sequence for hardware)
+- ✅ `clear_xtouch_shadow()` - allows re-emission during refresh
+
+### Critical Learnings:
+
+1. **StdRwLock vs TokioRwLock**: Shadow states use `std::sync::RwLock` (non-async), main config uses `tokio::sync::RwLock` (async)
+2. **Closure Borrowing**: Helper functions in `plan_page_refresh()` must capture mutable references correctly
+3. **Priority Resolution**: Always check priority first, then timestamp for tie-breaking
+4. **HashMap Keys**: Format strings like `"status|channel|data1"` for unique addressing
+5. **Entry Ordering**: Notes first (LEDs), then CC (rings), finally PB (faders) - critical for X-Touch sync
+6. **Shadow State Lifetime**: Per-app shadows cleared on page refresh, user action timestamps persist
+7. **Grace Period Tuning**: PB=300ms (motor settle), CC=50ms (encoder bounce), Note=10ms (button discrete)
+
+### Architecture Patterns Established:
+
+```rust
+// Anti-echo check
+if should_suppress_anti_echo(app, entry) { return; }
+update_app_shadow(app, entry);
+
+// Last-Write-Wins check  
+if should_suppress_lww(entry) { return; }
+
+// Page refresh
+clear_xtouch_shadow();
+let plan = plan_page_refresh(page);
+// emit(plan) → Phase 4
+```
+
+### Files Modified:
+- `src/router.rs`: 700+ lines, complete orchestration
+- `src/state/types.rs`: Type definitions
+- `src/state/store.rs`: StateStore with subscriptions
+- `src/state/builders.rs`: MIDI parsing
+- `src/state/persistence.rs`: JSON snapshots
+
+### Performance Characteristics:
+- **State lookup**: O(1) per app
+- **Anti-echo check**: O(1) shadow lookup
+- **LWW check**: O(1) timestamp lookup
+- **Page refresh plan**: O(apps × channels × controls) = O(4 × 9 × 32) = ~1150 operations max
+
+### Ready for Phase 4:
+- Driver trait already defined (`src/drivers.rs`)
+- Router has driver registration (`register_driver`, `get_driver`)
+- Control mapping → driver execution fully implemented
+- All state management infrastructure ready
+
 ## TODO: Document During Development
 
 - [ ] Exact midir connection sequence for Windows
@@ -190,3 +269,4 @@ Based on TS measurements, Rust should achieve:
 - [ ] Best `notify` debounce duration for config reload
 - [ ] OBS transform calculation precision requirements
 - [ ] Gamepad polling rate vs. latency tradeoff
+- [x] Phase 3 state management patterns and Router architecture

@@ -303,7 +303,7 @@ pub mod convert {
     
     /// Convert 7-bit value (0-127) to 14-bit value (0-16383)
     pub fn to_14bit(value_7bit: u8) -> u16 {
-        ((value_7bit as u16) << 7) | (value_7bit as u16)
+        (value_7bit as u16) << 7
     }
     
     /// Convert 14-bit value to percentage (0-100)
@@ -335,6 +335,23 @@ pub mod convert {
     pub fn from_8bit(value_8bit: u8) -> u16 {
         (value_8bit as u16) << 6
     }
+}
+
+/// Extract the type nibble from a MIDI status byte (upper 4 bits)
+pub fn get_type_nibble(status: u8) -> u8 {
+    (status & 0xF0) >> 4
+}
+
+/// Construct a 14-bit pitch bend value from LSB and MSB
+pub fn pb14_from_raw(lsb: u8, msb: u8) -> u16 {
+    ((msb as u16) << 7) | (lsb as u16)
+}
+
+/// Deconstruct a 14-bit value into LSB and MSB bytes
+pub fn pb14_to_bytes(value: u16) -> (u8, u8) {
+    let lsb = (value & 0x7F) as u8;
+    let msb = ((value >> 7) & 0x7F) as u8;
+    (lsb, msb)
 }
 
 /// Format MIDI bytes as hex string for debugging

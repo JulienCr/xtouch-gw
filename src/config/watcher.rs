@@ -41,7 +41,8 @@ impl ConfigWatcher {
                         let tx = tx.clone();
                         
                         // Spawn async task to reload config
-                        tokio::spawn(async move {
+                        let runtime_handle = tokio::runtime::Handle::current();
+                        runtime_handle.spawn(async move {
                             // Debounce: wait a bit for file writes to complete
                             tokio::time::sleep(Duration::from_millis(100)).await;
                             

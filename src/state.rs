@@ -1,14 +1,15 @@
-//! State management module
+//! State management module - MIDI state tracking per application
+//!
+//! This module provides the state store that tracks MIDI state for each application
+//! (Voicemeeter, QLC+, OBS, etc.). It implements anti-echo, shadow states, and
+//! state persistence to avoid feedback loops and enable proper bidirectional sync.
 
-use std::collections::HashMap;
+mod builders;
+mod persistence;
+mod store;
+mod types;
 
-#[derive(Debug, Clone)]
-pub struct StateStore {
-    // Placeholder implementation
-}
-
-impl StateStore {
-    pub fn new() -> Self {
-        Self {}
-    }
-}
+pub use builders::build_entry_from_raw;
+pub use persistence::StateSnapshot;
+pub use store::StateStore;
+pub use types::{addr_key, AppKey, MidiAddr, MidiStateEntry, MidiStatus, MidiValue, Origin};
