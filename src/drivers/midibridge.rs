@@ -409,8 +409,24 @@ impl Driver for MidiBridgeDriver {
         Ok(())
     }
 
-    async fn execute(&self, action: &str, params: Vec<Value>, _ctx: ExecutionContext) -> Result<()> {
+    async fn execute(&self, action: &str, params: Vec<Value>, ctx: ExecutionContext) -> Result<()> {
         match action {
+            "passthrough" => {
+                // Extract raw MIDI bytes from context value
+                if let Some(value) = ctx.value {
+                    if let Value::Array(bytes_array) = value {
+                        let bytes: Vec<u8> = bytes_array
+                            .iter()
+                            .filter_map(|v| v.as_u64().map(|n| n as u8))
+                            .collect();
+                        if !bytes.is_empty() {
+                            debug!("→ Passthrough {} bytes to '{}'", bytes.len(), self.to_port);
+                            self.send_message(&bytes)?;
+                        }
+                    }
+                }
+                Ok(())
+            },
             "send" => {
                 if let Some(Value::Array(bytes_array)) = params.first() {
                     let bytes: Vec<u8> = bytes_array

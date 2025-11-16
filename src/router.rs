@@ -290,14 +290,15 @@ impl Router {
         Ok(())
     }
 
-    /// Process MIDI input from X-Touch (for page navigation)
+    /// Process MIDI input from X-Touch hardware
     ///
-    /// Handles navigation notes:
-    /// - Note 46 (default): Previous page
-    /// - Note 47 (default): Next page
-    /// - Notes 54-61: Direct page access (F1-F8)
+    /// Handles:
+    /// - Page navigation (F1-F8, prev/next buttons)
+    /// - Control routing (faders, buttons, encoders → drivers)
     pub async fn on_midi_from_xtouch(&self, raw: &[u8]) {
-        if raw.len() < 3 {
+        use crate::control_mapping::{load_default_mappings, MidiSpec};
+        
+        if raw.len() < 2 {
             return;
         }
 
@@ -305,66 +306,161 @@ impl Router {
         let type_nibble = (status & 0xF0) >> 4;
         let channel = (status & 0x0F) + 1;
 
-        // Only process Note On messages (0x9x)
-        if type_nibble != 0x9 {
-            return;
-        }
+        // First, check for page navigation (Note On messages only)
+        if type_nibble == 0x9 && raw.len() >= 3 {
+            let note = raw[1];
+            let velocity = raw[2];
 
-        let note = raw[1];
-        let velocity = raw[2];
-
-        // Ignore Note Off (velocity 0)
-        if velocity == 0 {
-            return;
-        }
-
-        // Get paging configuration
-        let config = self.config.read().await;
-        let paging_channel = config
-            .paging
-            .as_ref()
-            .map(|p| p.channel)
-            .unwrap_or(1);
-        let prev_note = config
-            .paging
-            .as_ref()
-            .map(|p| p.prev_note)
-            .unwrap_or(46);
-        let next_note = config
-            .paging
-            .as_ref()
-            .map(|p| p.next_note)
-            .unwrap_or(47);
-        drop(config);
-
-        // Only process notes on the paging channel
-        if channel != paging_channel {
-            return;
-        }
-
-        // Check for prev/next navigation
-        if note == prev_note {
-            debug!("X-Touch: Previous page (note {})", note);
-            self.prev_page().await;
-            return;
-        }
-
-        if note == next_note {
-            debug!("X-Touch: Next page (note {})", note);
-            self.next_page().await;
-            return;
-        }
-
-        // Check for F-key direct page access (F1-F8 = notes 54-61)
-        if (54..=61).contains(&note) {
-            let page_index = (note - 54) as usize;
-            debug!("X-Touch: Direct page access F{} (note {})", page_index + 1, note);
-            
-            let config = self.config.read().await;
-            if page_index < config.pages.len() {
+            // Ignore Note Off (velocity 0)
+            if velocity != 0 {
+                // Get paging configuration
+                let config = self.config.read().await;
+                let paging_channel = config
+                    .paging
+                    .as_ref()
+                    .map(|p| p.channel)
+                    .unwrap_or(1);
+                let prev_note = config
+                    .paging
+                    .as_ref()
+                    .map(|p| p.prev_note)
+                    .unwrap_or(46);
+                let next_note = config
+                    .paging
+                    .as_ref()
+                    .map(|p| p.next_note)
+                    .unwrap_or(47);
                 drop(config);
-                let _ = self.set_active_page(&page_index.to_string()).await;
+
+                // Only process navigation on the paging channel
+                if channel == paging_channel {
+                    // Check for prev/next navigation
+                    if note == prev_note {
+                        debug!("X-Touch: Previous page (note {})", note);
+                        self.prev_page().await;
+                        return;
+                    }
+
+                    if note == next_note {
+                        debug!("X-Touch: Next page (note {})", note);
+                        self.next_page().await;
+                        return;
+                    }
+
+                    // Check for F-key direct page access (F1-F8 = notes 54-61)
+                    if (54..=61).contains(&note) {
+                        let page_index = (note - 54) as usize;
+                        debug!("X-Touch: Direct page access F{} (note {})", page_index + 1, note);
+                        
+                        let config = self.config.read().await;
+                        if page_index < config.pages.len() {
+                            drop(config);
+                            let _ = self.set_active_page(&page_index.to_string()).await;
+                        }
+                        return;
+                    }
+                }
             }
+        }
+
+        // Route control events to drivers
+        let config = self.config.read().await;
+        let is_mcu_mode = config.xtouch.as_ref()
+            .map(|x| matches!(x.mode, crate::config::XTouchMode::Mcu))
+            .unwrap_or(true); // Default to MCU mode
+        drop(config);
+        
+        // Load control mappings
+        let mapping_db = match load_default_mappings() {
+            Ok(db) => db,
+            Err(e) => {
+                warn!("Failed to load control mappings: {}", e);
+                return;
+            }
+        };
+        
+        // Parse incoming MIDI to determine which control was triggered
+        let midi_spec = match MidiSpec::from_raw(raw) {
+            Ok(spec) => spec,
+            Err(_) => {
+                trace!("Unsupported MIDI message: {:02X?}", raw);
+                return;
+            }
+        };
+        
+        // Find the control ID from MIDI message
+        let control_id = match mapping_db.find_control_by_midi(&midi_spec, is_mcu_mode) {
+            Some(id) => id,
+            None => {
+                trace!("No control mapping found for MIDI: {:?}", midi_spec);
+                return;
+            }
+        };
+        
+        debug!("X-Touch control triggered: {} (MIDI: {:?})", control_id, midi_spec);
+        
+        // Mark user action for Last-Write-Wins
+        self.mark_user_action(raw);
+        
+        // Get active page and find control configuration
+        let page = match self.get_active_page().await {
+            Some(p) => p,
+            None => {
+                warn!("No active page");
+                return;
+            }
+        };
+        
+        // Check global controls first, then page-specific controls
+        let config = self.config.read().await;
+        let control_config = config.pages_global.as_ref()
+            .and_then(|pg| pg.controls.as_ref())
+            .and_then(|controls| controls.get(control_id))
+            .or_else(|| page.controls.as_ref().and_then(|controls| controls.get(control_id)));
+        
+        let control_config = match control_config {
+            Some(cc) => cc.clone(),
+            None => {
+                trace!("Control '{}' not mapped on page '{}'", control_id, page.name);
+                return;
+            }
+        };
+        drop(config);
+        
+        // Get driver
+        let driver = {
+            let drivers = self.drivers.read().await;
+            drivers.get(&control_config.app).cloned()
+        };
+        
+        let driver = match driver {
+            Some(d) => d,
+            None => {
+                warn!("Driver '{}' not found for control '{}'", control_config.app, control_id);
+                return;
+            }
+        };
+        
+        // Determine the action to execute
+        let action = control_config.action.as_deref().unwrap_or("passthrough");
+        
+        // Build parameters
+        let params = control_config.params.clone().unwrap_or_default();
+        
+        // Create execution context with MIDI value
+        let mut ctx = self.create_execution_context().await;
+        ctx.value = Some(match serde_json::to_value(raw) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("Failed to serialize MIDI data: {}", e);
+                return;
+            }
+        });
+        
+        // Execute driver action
+        info!("→ Routing: {} → app={} action={}", control_id, control_config.app, action);
+        if let Err(e) = driver.execute(action, params, ctx).await {
+            warn!("Driver execution failed: {}", e);
         }
     }
 
