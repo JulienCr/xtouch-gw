@@ -1,0 +1,44 @@
+# Rust formatting configuration
+
+edition = "2021"
+max_width = 100
+tab_spaces = 4
+hard_tabs = false
+newline_style = "Windows"
+use_small_heuristics = "Default"
+
+# Imports
+imports_granularity = "Module"
+group_imports = "StdExternalCrate"
+reorder_imports = true
+reorder_modules = true
+
+# Code style
+format_code_in_doc_comments = true
+format_strings = false
+format_macro_matchers = true
+format_macro_bodies = true
+use_field_init_shorthand = true
+use_try_shorthand = true
+match_block_trailing_comma = true
+trailing_semicolon = true
+trailing_comma = "Vertical"
+
+# Comments
+comment_width = 80
+wrap_comments = true
+normalize_comments = true
+normalize_doc_attributes = true
+
+# Alignment
+struct_field_align_threshold = 20
+enum_discrim_align_threshold = 20
+match_arm_blocks = true
+force_multiline_blocks = false
+
+# Misc
+inline_attribute_width = 0
+blank_lines_upper_bound = 2
+blank_lines_lower_bound = 0
+remove_nested_parens = true
+overflow_delimited_expr = true
