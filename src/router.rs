@@ -726,6 +726,63 @@ impl Router {
             .map(|(_, ms)| *ms)
             .unwrap_or(60)
     }
+    
+    /// Update F1-F8 LEDs to reflect active page
+    /// 
+    /// Matches TypeScript updateFKeyLedsForActivePage() from xtouch/fkeys.ts
+    pub async fn update_fkey_leds_for_active_page(
+        &self,
+        xtouch: &crate::xtouch::XTouchDriver,
+        _paging_channel: u8,
+    ) -> Result<()> {
+        let config = self.config.read().await;
+        let active_index = *self.active_page_index.read().await;
+        
+        // Get F-key notes based on mode
+        let mode = config.xtouch.as_ref().map(|x| x.mode).unwrap_or(crate::config::XTouchMode::Mcu);
+        let fkey_notes = self.get_fkey_notes(mode);
+        
+        // Clamp active index to valid range
+        let clamped_index = if active_index < fkey_notes.len() {
+            active_index as i32
+        } else {
+            (fkey_notes.len().saturating_sub(1)) as i32
+        };
+        
+        // Update LEDs
+        for (i, &note) in fkey_notes.iter().enumerate() {
+            let on = (i as i32) == clamped_index;
+            xtouch.set_button_led(note, on).await?;
+        }
+        
+        Ok(())
+    }
+    
+    /// Update prev/next navigation button LEDs (always on)
+    /// 
+    /// Matches TypeScript updatePrevNextLeds() from xtouch/fkeys.ts
+    pub async fn update_prev_next_leds(
+        &self,
+        xtouch: &crate::xtouch::XTouchDriver,
+        prev_note: u8,
+        next_note: u8,
+    ) -> Result<()> {
+        xtouch.set_button_led(prev_note, true).await?;
+        xtouch.set_button_led(next_note, true).await?;
+        Ok(())
+    }
+    
+    /// Get F-key note numbers based on X-Touch mode
+    fn get_fkey_notes(&self, mode: crate::config::XTouchMode) -> Vec<u8> {
+        // From xtouch-matching.csv for MCU mode:
+        // f1 = 54, f2 = 55, f3 = 56, f4 = 57, f5 = 58, f6 = 59, f7 = 60, f8 = 61
+        // These are the default note numbers for F1-F8 in both MCU and Ctrl modes
+        match mode {
+            crate::config::XTouchMode::Mcu | crate::config::XTouchMode::Ctrl => {
+                vec![54, 55, 56, 57, 58, 59, 60, 61]
+            }
+        }
+    }
 
     /// Check if a value should be suppressed due to anti-echo
     fn should_suppress_anti_echo(&self, app_key: &str, entry: &MidiStateEntry) -> bool {

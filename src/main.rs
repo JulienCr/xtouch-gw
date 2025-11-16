@@ -6,6 +6,7 @@ use anyhow::Result;
 use clap::Parser;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use tokio::sync::mpsc;
 
 mod config;
 mod router;
@@ -17,9 +18,9 @@ mod cli;
 mod sniffer;
 mod control_mapping;
 
-use crate::config::AppConfig;
+use crate::config::{AppConfig, watcher::ConfigWatcher};
 use crate::router::Router;
-use crate::xtouch::{XTouchDriver, XTouchEvent};
+use crate::xtouch::XTouchDriver;
 use crate::drivers::midibridge::MidiBridgeDriver;
 use std::sync::Arc;
 
@@ -93,19 +94,19 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Load configuration
-    let config = AppConfig::load(&args.config).await?;
-    info!("Configuration loaded successfully");
+    // Load configuration with hot-reload watcher
+    let (config_watcher, initial_config) = ConfigWatcher::new(args.config.clone()).await?;
+    info!("Configuration loaded successfully with hot-reload enabled");
 
     // Initialize router
-    let router = Router::new(config.clone());
+    let router = Router::new((*initial_config).clone());
     info!("Router initialized");
 
     // Set up shutdown signal
     let shutdown_signal = shutdown_signal();
 
     // Start the main application
-    run_app(router, config, shutdown_signal).await?;
+    run_app(router, (*initial_config).clone(), config_watcher, shutdown_signal).await?;
 
     info!("XTouch GW shutdown complete");
     Ok(())
@@ -114,9 +115,10 @@ async fn main() -> Result<()> {
 async fn run_app(
     router: Router,
     config: AppConfig,
+    mut config_watcher: ConfigWatcher,
     shutdown: impl std::future::Future<Output = ()>,
 ) -> Result<()> {
-    use tracing::{debug};
+    use tracing::{debug, warn};
     
     info!("Starting main application loop...");
     
@@ -126,6 +128,55 @@ async fn run_app(
     
     xtouch.connect().await?;
     info!("X-Touch connected successfully");
+    
+    // Initialize LCD and LEDs for the active page
+    info!("Initializing X-Touch display...");
+    
+    // Clear all displays first
+    if let Err(e) = xtouch.clear_all_lcds().await {
+        warn!("Failed to clear LCDs: {}", e);
+    }
+    
+    // Get active page config
+    let active_page = router.get_active_page().await;
+    let active_page_name = router.get_active_page_name().await;
+    
+    if let Some(page) = active_page {
+        // Apply LCD labels and colors
+        let labels = page.lcd.as_ref().and_then(|lcd| lcd.labels.as_ref());
+        
+        // Convert LcdColor to u8 values
+        let colors_u8: Option<Vec<u8>> = page.lcd.as_ref().and_then(|lcd| {
+            lcd.colors.as_ref().map(|colors| {
+                colors.iter().map(|c| match c {
+                    crate::config::LcdColor::Numeric(n) => (*n as u8).min(7),
+                    crate::config::LcdColor::Named(_) => 0, // TODO: Parse named colors
+                }).collect()
+            })
+        });
+        
+        if let Err(e) = xtouch.apply_lcd_for_page(labels, colors_u8.as_ref(), &active_page_name).await {
+            warn!("Failed to apply LCD for page: {}", e);
+        }
+    }
+    
+    // Update F-key LEDs to show active page
+    let paging_channel = config.paging.as_ref().map(|p| p.channel).unwrap_or(1) as u8;
+    if let Err(e) = router.update_fkey_leds_for_active_page(&xtouch, paging_channel).await {
+        warn!("Failed to update F-key LEDs: {}", e);
+    }
+    
+    // Update prev/next navigation LEDs (always on)
+    if let Some(paging) = &config.paging {
+        if let Err(e) = router.update_prev_next_leds(&xtouch, paging.prev_note as u8, paging.next_note as u8).await {
+            warn!("Failed to update prev/next LEDs: {}", e);
+        }
+    }
+    
+    info!("✅ X-Touch display initialized");
+    
+    // Create a channel for feedback from apps to X-Touch
+    let (feedback_tx, mut feedback_rx) = mpsc::channel::<Vec<u8>>(1000);
     
     // Take the event receiver from XTouch
     let mut xtouch_rx = xtouch
@@ -143,10 +194,25 @@ async fn run_app(
                 false, // Not optional
             ));
             
+            // Set up feedback callback to route MIDI from app back to X-Touch via channel
+            let feedback_tx_clone = feedback_tx.clone();
+            let app_name = app_config.name.clone();
+            driver.set_feedback_callback(Arc::new(move |data: &[u8]| {
+                debug!("📥 Feedback from {}: {:02X?}", app_name, data);
+                
+                // Send to channel for main loop to forward to X-Touch
+                if let Err(e) = feedback_tx_clone.try_send(data.to_vec()) {
+                    warn!("Failed to send feedback to channel: {}", e);
+                }
+            }));
+            
             router.register_driver(app_config.name.clone(), driver).await?;
             info!("Registered MIDI bridge driver for: {}", app_config.name);
         }
     }
+    
+    // Drop the original sender so the channel closes when all drivers are shut down
+    drop(feedback_tx);
     
     info!("All drivers registered and initialized");
     info!("Ready to process MIDI events!");
@@ -162,6 +228,30 @@ async fn run_app(
                 
                 // Route the event through the router
                 router.on_midi_from_xtouch(&event.raw_data).await;
+            }
+            
+            // Handle feedback from applications → X-Touch
+            Some(feedback_data) = feedback_rx.recv() => {
+                debug!("📤 Forwarding feedback to X-Touch: {:02X?}", feedback_data);
+                
+                // Forward to X-Touch
+                if let Err(e) = xtouch.send_raw(&feedback_data).await {
+                    warn!("Failed to send feedback to X-Touch: {}", e);
+                }
+            }
+            
+            // Handle config reload
+            Some(new_config) = config_watcher.next_config() => {
+                info!("📝 Configuration file changed, reloading...");
+                
+                match router.update_config(new_config).await {
+                    Ok(()) => {
+                        info!("✅ Configuration reloaded successfully without dropping events");
+                    }
+                    Err(e) => {
+                        warn!("⚠️  Failed to reload config (keeping old config): {}", e);
+                    }
+                }
             }
             
             // Handle shutdown signal

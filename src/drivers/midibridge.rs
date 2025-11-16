@@ -16,6 +16,9 @@ use super::{Driver, ExecutionContext};
 use crate::config::{MidiFilterConfig, TransformConfig};
 use crate::midi::{MidiMessage, parse_message, find_port_by_substring};
 
+/// Callback type for MIDI feedback from applications
+pub type FeedbackCallback = Arc<dyn Fn(&[u8]) + Send + Sync>;
+
 /// Parse a number that might be in hex format (string "0x..." or number)
 fn parse_number_maybe_hex(value: &serde_json::Value, default: u16) -> u16 {
     match value {
@@ -44,6 +47,9 @@ pub struct MidiBridgeDriver {
     // Note: Using Arc<Mutex<>> instead of Arc<tokio::sync::Mutex<>> for non-async interior mutability
     midi_out: Arc<Mutex<Option<midir::MidiOutputConnection>>>,
     midi_in: Arc<Mutex<Option<midir::MidiInputConnection<()>>>>,
+    
+    // Feedback callback for routing MIDI from app to X-Touch
+    feedback_callback: Arc<Mutex<Option<FeedbackCallback>>>,
     
     // Reconnection state
     reconnect_count_out: Arc<Mutex<usize>>,
@@ -81,10 +87,16 @@ impl MidiBridgeDriver {
             optional,
             midi_out: Arc::new(Mutex::new(None)),
             midi_in: Arc::new(Mutex::new(None)),
+            feedback_callback: Arc::new(Mutex::new(None)),
             reconnect_count_out: Arc::new(Mutex::new(0)),
             reconnect_count_in: Arc::new(Mutex::new(0)),
             shutdown_flag: Arc::new(Mutex::new(false)),
         }
+    }
+    
+    /// Set the feedback callback for routing MIDI from app to X-Touch
+    pub fn set_feedback_callback(&self, callback: FeedbackCallback) {
+        *self.feedback_callback.lock() = Some(callback);
     }
 
     /// Try to open the output port once
@@ -110,11 +122,16 @@ impl MidiBridgeDriver {
         let port = find_port_by_substring(&midi_in, &self.from_port)
             .ok_or_else(|| anyhow!("Input port '{}' not found", self.from_port))?;
 
-        // For now, we'll just open the port without callbacks
-        // The callback will be added when we integrate with the router feedback
-        let connection = midi_in.connect(&port, &format!("xtouch-gw-{}", self.from_port), |_timestamp, data, _| {
-            // Feedback from application - will be handled by router
-            debug!("🔙 Bridge RX <- {} bytes", data.len());
+        // Clone the callback Arc for use in the MIDI callback
+        let feedback_callback = self.feedback_callback.clone();
+        
+        let connection = midi_in.connect(&port, &format!("xtouch-gw-{}", self.from_port), move |_timestamp, data, _| {
+            debug!("🔙 Bridge RX <- {} bytes: {:02X?}", data.len(), data);
+            
+            // Call the feedback callback if set
+            if let Some(callback) = feedback_callback.lock().as_ref() {
+                callback(data);
+            }
         }, ())?;
         
         *self.midi_in.lock() = Some(connection);

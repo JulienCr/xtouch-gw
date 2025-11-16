@@ -237,6 +237,24 @@ impl XTouchDriver {
         Ok(())
     }
     
+    /// Send raw MIDI data directly to X-Touch (synchronous, for callbacks)
+    /// 
+    /// Used for feedback routing from MIDI bridge drivers.
+    /// This is a non-async version safe to call from within MIDI callbacks.
+    pub fn send_raw_sync(&self, data: &[u8]) -> Result<()> {
+        let output = self.output_conn
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Not connected to output port"))?;
+        
+        let mut conn = output.lock().unwrap();
+        conn.send(data)
+            .context("Failed to send raw MIDI data")?;
+        
+        debug!("Sent raw feedback: {}", format_hex(data));
+        
+        Ok(())
+    }
+    
     /// Send raw MIDI bytes to X-Touch
     pub async fn send_raw(&self, data: &[u8]) -> Result<()> {
         let output = self.output_conn
@@ -348,37 +366,250 @@ impl XTouchDriver {
         self.send(&message).await
     }
     
-    /// Send LCD text (using SysEx)
-    pub async fn set_lcd_text(&self, position: u8, line: u8, text: &str) -> Result<()> {
-        if position > 7 {
-            bail!("Invalid LCD position: {} (must be 0-7)", position);
-        }
-        if line > 1 {
-            bail!("Invalid LCD line: {} (must be 0-1)", line);
+    /// Send LCD strip text (upper and lower lines)
+    /// 
+    /// Matches TypeScript sendLcdStripText() from api-lcd.ts
+    pub async fn send_lcd_strip_text(&self, strip_index: u8, upper: &str, lower: &str) -> Result<()> {
+        if strip_index > 7 {
+            bail!("Invalid LCD strip index: {} (must be 0-7)", strip_index);
         }
         
-        // MCU LCD SysEx format
-        let mut data = vec![
-            0x00, 0x00, 0x66, 0x14, // MCU header
-            0x12, // LCD command
-            position * 7 + line * 0x38, // Position offset
+        // Convert text to 7-byte ASCII arrays
+        let upper_bytes = Self::ascii7(upper, 7);
+        let lower_bytes = Self::ascii7(lower, 7);
+        
+        // SysEx header for X-Touch LCD
+        let header = vec![0x00, 0x00, 0x66, 0x14, 0x12];
+        
+        // Position for upper line (0x00 + strip * 7)
+        let pos_top = 0x00 + strip_index * 7;
+        
+        // Position for lower line (0x38 + strip * 7)
+        let pos_bot = 0x38 + strip_index * 7;
+        
+        // Send upper line
+        let mut upper_data = header.clone();
+        upper_data.push(pos_top);
+        upper_data.extend_from_slice(&upper_bytes);
+        self.send(&MidiMessage::SysEx { data: upper_data }).await?;
+        
+        // Send lower line
+        let mut lower_data = header;
+        lower_data.push(pos_bot);
+        lower_data.extend_from_slice(&lower_bytes);
+        self.send(&MidiMessage::SysEx { data: lower_data }).await?;
+        
+        Ok(())
+    }
+    
+    /// Convert text to 7-bit ASCII array with specific length
+    fn ascii7(text: &str, length: usize) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(length);
+        
+        for (i, ch) in text.chars().enumerate() {
+            if i >= length {
+                break;
+            }
+            
+            // Only printable ASCII (0x20-0x7E), otherwise space
+            let code = ch as u32;
+            let byte = if (0x20..=0x7E).contains(&code) {
+                code as u8
+            } else {
+                0x20 // Space
+            };
+            bytes.push(byte);
+        }
+        
+        // Pad with spaces to reach desired length
+        while bytes.len() < length {
+            bytes.push(0x20);
+        }
+        
+        bytes
+    }
+    
+    /// Send only lower line LCD text (for value overlay)
+    pub async fn send_lcd_strip_lower_text(&self, strip_index: u8, lower: &str) -> Result<()> {
+        if strip_index > 7 {
+            bail!("Invalid LCD strip index: {} (must be 0-7)", strip_index);
+        }
+        
+        let lower_bytes = Self::ascii7(lower, 7);
+        
+        let header = vec![0x00, 0x00, 0x66, 0x14, 0x12];
+        let pos_bot = 0x38 + strip_index * 7;
+        
+        let mut data = header;
+        data.push(pos_bot);
+        data.extend_from_slice(&lower_bytes);
+        
+        self.send(&MidiMessage::SysEx { data }).await
+    }
+    
+    /// Set LCD colors for all 8 strips (firmware >= 1.22)
+    /// 
+    /// Colors: 0=black, 1=red, 2=green, 3=yellow, 4=blue, 5=magenta, 6=cyan, 7=white
+    pub async fn set_lcd_colors(&self, colors: &[u8]) -> Result<()> {
+        // Prepare payload (8 bytes, pad with 0 if needed)
+        let mut payload = Vec::with_capacity(8);
+        for i in 0..8 {
+            let color = colors.get(i).copied().unwrap_or(0);
+            payload.push(color.min(7)); // Clamp to 0-7
+        }
+        
+        // SysEx: F0 00 00 66 14 72 [8 colors] F7
+        let data = vec![
+            0x00, 0x00, 0x66, 0x14, 0x72,
+            payload[0], payload[1], payload[2], payload[3],
+            payload[4], payload[5], payload[6], payload[7],
         ];
         
-        // Add text (max 7 chars per position)
-        let text_bytes: Vec<u8> = text.chars()
-            .take(7)
-            .map(|c| (c as u8).min(0x7F))
+        self.send(&MidiMessage::SysEx { data }).await
+    }
+    
+    /// Set 7-segment display text (timecode display)
+    /// 
+    /// Matches TypeScript setSevenSegmentText() from api-lcd.ts
+    pub async fn set_seven_segment_text(&self, text: &str) -> Result<()> {
+        // Center text to 12 characters
+        let centered = Self::center_to_length(text, 12);
+        
+        // Convert each character to 7-segment encoding
+        let segs: Vec<u8> = centered.chars()
+            .take(12)
+            .map(Self::seven_seg_for_char)
             .collect();
         
-        data.extend_from_slice(&text_bytes);
+        // Dots (disabled by default)
+        let dots1 = 0x00;
+        let dots2 = 0x00;
         
-        // Pad with spaces if needed
-        for _ in text_bytes.len()..7 {
-            data.push(b' ');
+        // Send to both device IDs (0x14 and 0x15)
+        for device_id in [0x14, 0x15] {
+            let mut data = vec![0x00, 0x20, 0x32, device_id, 0x37];
+            data.extend_from_slice(&segs);
+            data.push(dots1);
+            data.push(dots2);
+            
+            self.send(&MidiMessage::SysEx { data }).await?;
         }
         
-        let sysex = MidiMessage::SysEx { data };
-        self.send(&sysex).await
+        Ok(())
+    }
+    
+    /// Center text to specific length (for 7-segment display)
+    fn center_to_length(text: &str, length: usize) -> String {
+        if text.len() >= length {
+            text.chars().take(length).collect()
+        } else {
+            let padding = length - text.len();
+            let left_pad = padding / 2;
+            let right_pad = padding - left_pad;
+            
+            format!("{}{}{}", 
+                " ".repeat(left_pad),
+                text,
+                " ".repeat(right_pad))
+        }
+    }
+    
+    /// Convert character to 7-segment display encoding
+    fn seven_seg_for_char(ch: char) -> u8 {
+        // Basic 7-segment encoding for common characters
+        // This is a simplified version - full implementation in TypeScript seg7.ts
+        match ch {
+            '0' => 0x3F,
+            '1' => 0x06,
+            '2' => 0x5B,
+            '3' => 0x4F,
+            '4' => 0x66,
+            '5' => 0x6D,
+            '6' => 0x7D,
+            '7' => 0x07,
+            '8' => 0x7F,
+            '9' => 0x6F,
+            'A' | 'a' => 0x77,
+            'B' | 'b' => 0x7C,
+            'C' | 'c' => 0x39,
+            'D' | 'd' => 0x5E,
+            'E' | 'e' => 0x79,
+            'F' | 'f' => 0x71,
+            'H' | 'h' => 0x76,
+            'L' | 'l' => 0x38,
+            'O' | 'o' => 0x3F,
+            'P' | 'p' => 0x73,
+            'U' | 'u' => 0x3E,
+            '-' => 0x40,
+            '_' => 0x08,
+            ' ' => 0x00,
+            _ => 0x00, // Unknown chars = blank
+        }
+    }
+    
+    /// Clear all LCD strips (text and colors)
+    pub async fn clear_all_lcds(&self) -> Result<()> {
+        // Clear text on all 8 strips
+        for i in 0..8 {
+            self.send_lcd_strip_text(i, "", "").await?;
+        }
+        
+        // Reset colors to black
+        let black_colors = [0u8; 8];
+        self.set_lcd_colors(&black_colors).await?;
+        
+        // Clear 7-segment display
+        self.set_seven_segment_text("").await?;
+        
+        Ok(())
+    }
+    
+    /// Apply LCD configuration for active page
+    /// 
+    /// Matches TypeScript applyLcdForActivePage() from ui/lcd.ts
+    pub async fn apply_lcd_for_page(
+        &self,
+        labels: Option<&Vec<crate::config::LcdLabel>>,
+        colors: Option<&Vec<u8>>,
+        page_name: &str,
+    ) -> Result<()> {
+        // Clear all strips first to avoid leaks from previous pages
+        for i in 0..8 {
+            self.send_lcd_strip_text(i, "", "").await?;
+        }
+        
+        // Apply labels if provided
+        if let Some(labels) = labels {
+            for (i, label) in labels.iter().enumerate().take(8) {
+                let (upper, lower) = match label {
+                    crate::config::LcdLabel::Simple(text) => {
+                        // Split on newline
+                        let parts: Vec<&str> = text.splitn(2, '\n').collect();
+                        (parts.get(0).copied().unwrap_or(""), 
+                         parts.get(1).copied().unwrap_or(""))
+                    }
+                    crate::config::LcdLabel::Structured { upper, lower } => {
+                        (upper.as_deref().unwrap_or(""),
+                         lower.as_deref().unwrap_or(""))
+                    }
+                };
+                
+                self.send_lcd_strip_text(i as u8, upper, lower).await?;
+            }
+        }
+        
+        // Apply colors if provided, otherwise set to black
+        if let Some(colors) = colors {
+            self.set_lcd_colors(colors).await?;
+        } else {
+            let black_colors = [0u8; 8];
+            self.set_lcd_colors(&black_colors).await?;
+        }
+        
+        // Display page name on 7-segment display
+        self.set_seven_segment_text(page_name).await?;
+        
+        Ok(())
     }
 }
 

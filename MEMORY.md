@@ -530,6 +530,61 @@ state_store.subscribe(|entry, app| {
 - Can now implement full bidirectional sync
 - Value overlay can be added as polish feature
 
+## Phase 7 Progress (November 2025)
+
+**✅ Phase 7: Advanced Features - PARTIAL COMPLETION**
+
+### Completed Features:
+
+#### **Hot Config Reload** (100%)
+- ConfigWatcher integrated into main event loop's tokio::select!
+- Router.update_config() syncs all drivers without dropping MIDI events
+- Non-blocking updates with graceful error handling
+- Keeps old config if new config fails validation
+
+#### **LCD Management** (100%)
+- send_lcd_strip_text(strip, upper, lower) - full LCD control
+- set_lcd_colors(colors) - 8-strip color control (firmware >= 1.22)
+- set_seven_segment_text(text) - timecode display with centering
+- apply_lcd_for_page(labels, colors, page_name) - complete page setup
+- clear_all_lcds() - reset all displays
+- Matches TypeScript api-lcd.ts exactly
+
+#### **F1-F8 Navigation LEDs** (100%)
+- update_fkey_leds_for_active_page() - lights active page LED
+- update_prev_next_leds() - keeps nav buttons lit
+- get_fkey_notes() - notes 54-61 for F1-F8
+- Matches TypeScript xtouch/fkeys.ts behavior
+
+### Key Learnings:
+
+1. **tokio::sync::RwLock vs std::sync::RwLock**: Must use `.await` on tokio locks. ConfigWatcher returns owned AppConfig (not Arc), Router.update_config accepts AppConfig directly.
+
+2. **LCD SysEx Protocol**: 
+   - Header: F0 00 00 66 14 12
+   - Upper line position: 0x00 + strip*7
+   - Lower line position: 0x38 + strip*7
+   - Colors: F0 00 00 66 14 72 [8 colors] F7
+   - 7-segment: F0 00 20 32 [device_id] 37 [12 segs] [dots1] [dots2] F7
+
+3. **ascii7() Helper**: Convert text to 7-bit ASCII with padding, clamp to 0x20-0x7E range, pad with spaces to exact length.
+
+4. **F-Key Notes**: MCU and Ctrl modes both use notes 54-61 for F1-F8 (from xtouch-matching.csv).
+
+5. **Unused Parameter Warnings**: Prefix with underscore when parameter required by trait but not used in implementation (_paging_channel).
+
+### Files Modified:
+- `src/main.rs`: Integrated ConfigWatcher into event loop
+- `src/xtouch.rs`: Added 200+ lines of LCD/7-segment methods
+- `src/router.rs`: Added F-key LED management methods
+- `TASKS.md`: Updated Phase 7 progress
+
+### Remaining Phase 7 Tasks:
+- [ ] Fader value overlay (in progress)
+- [ ] Web sniffer interface
+- [ ] CLI REPL
+- [ ] Gamepad input (optional - can defer to Phase 8)
+
 ## Critical Bug Fix: notify + Tokio Integration (November 2025)
 
 **🐛 PROBLEM**: Test panic during file watcher initialization

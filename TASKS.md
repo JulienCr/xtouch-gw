@@ -87,10 +87,21 @@ This ensures feature parity and correct behavior during the migration.
 - [x] **CRITICAL FIX**: notify + Tokio integration (capture runtime handle before creating watcher)
   - Fixed panic: "there is no reactor running, must be called from the context of a Tokio 1.x runtime"
   - All 50 tests now pass ✅
-- [ ] Hot config reload without dropping events
-- [ ] LCD management with labels/colors
+- [x] **Hot config reload without dropping events**
+  - Integrated ConfigWatcher into main event loop
+  - Router.update_config() syncs all drivers on reload
+  - Non-blocking config updates with error handling
+- [x] **LCD management with labels/colors**
+  - send_lcd_strip_text() for upper/lower LCD text
+  - set_lcd_colors() for 8-strip color control (0-7)
+  - set_seven_segment_text() for timecode display
+  - apply_lcd_for_page() for complete page LCD setup
+  - clear_all_lcds() for reset
+- [x] **F1-F8 page navigation with LED feedback**
+  - update_fkey_leds_for_active_page() lights active page LED
+  - update_prev_next_leds() keeps nav buttons lit
+  - Matches TypeScript xtouch/fkeys.ts behavior
 - [ ] Fader value overlay (percent/7bit/8bit modes)
-- [ ] F1-F8 page navigation with LED feedback
 - [ ] Gamepad input support (HID)
 - [ ] Web sniffer interface (axum + WebSocket)
 - [ ] CLI REPL with command completion
