@@ -20,10 +20,10 @@ use tracing::{debug, info, trace, warn};
 
 /// Anti-echo time windows (in milliseconds) per MIDI status type
 const ANTI_ECHO_WINDOWS: &[(MidiStatus, u64)] = &[
-    (MidiStatus::PB, 250),    // Pitch Bend: motors need time to settle
-    (MidiStatus::CC, 100),     // Control Change: encoders can generate rapid changes
-    (MidiStatus::Note, 10),    // Note On/Off: buttons are discrete events
-    (MidiStatus::SysEx, 60),   // SysEx: fallback for other messages
+    (MidiStatus::PB, 250),   // Pitch Bend: motors need time to settle
+    (MidiStatus::CC, 100),   // Control Change: encoders can generate rapid changes
+    (MidiStatus::Note, 10),  // Note On/Off: buttons are discrete events
+    (MidiStatus::SysEx, 60), // SysEx: fallback for other messages
 ];
 
 /// Last-Write-Wins grace periods (in milliseconds)
@@ -60,6 +60,8 @@ pub struct Router {
     app_shadows: Arc<StdRwLock<HashMap<String, HashMap<String, ShadowEntry>>>>,
     /// Last user action timestamps per X-Touch control (for Last-Write-Wins)
     last_user_action_ts: Arc<StdRwLock<HashMap<String, u64>>>,
+    /// Flag indicating display needs update after page change
+    display_needs_update: Arc<tokio::sync::Mutex<bool>>,
 }
 
 impl Router {
@@ -72,7 +74,16 @@ impl Router {
             state: StateStore::new(),
             app_shadows: Arc::new(StdRwLock::new(HashMap::new())),
             last_user_action_ts: Arc::new(StdRwLock::new(HashMap::new())),
+            display_needs_update: Arc::new(tokio::sync::Mutex::new(false)),
         }
+    }
+
+    /// Check if display needs update after page change and reset flag
+    pub async fn check_and_clear_display_update(&self) -> bool {
+        let mut flag = self.display_needs_update.lock().await;
+        let needs_update = *flag;
+        *flag = false;
+        needs_update
     }
 
     /// Create an execution context for driver calls
@@ -85,7 +96,7 @@ impl Router {
     }
 
     /// Register a driver by name (e.g., "voicemeeter", "qlc", "obs")
-    /// 
+    ///
     /// The driver will be initialized immediately upon registration
     pub async fn register_driver(&self, name: String, driver: Arc<dyn Driver>) -> Result<()> {
         info!("Registering driver '{}'...", name);
@@ -102,7 +113,7 @@ impl Router {
         // Store the driver
         let mut drivers = self.drivers.write().await;
         drivers.insert(name.clone(), driver);
-        
+
         info!("✅ Driver '{}' registered and initialized", name);
         Ok(())
     }
@@ -122,9 +133,12 @@ impl Router {
     /// Shutdown all registered drivers
     pub async fn shutdown_all_drivers(&self) -> Result<()> {
         info!("Shutting down all drivers...");
-        
+
         let drivers = self.drivers.read().await;
-        let driver_list: Vec<_> = drivers.iter().map(|(name, driver)| (name.clone(), driver.clone())).collect();
+        let driver_list: Vec<_> = drivers
+            .iter()
+            .map(|(name, driver)| (name.clone(), driver.clone()))
+            .collect();
         drop(drivers);
 
         let mut errors = Vec::new();
@@ -144,7 +158,11 @@ impl Router {
                 .map(|(n, e)| format!("{}: {}", n, e))
                 .collect::<Vec<_>>()
                 .join(", ");
-            return Err(anyhow!("Failed to shutdown {} driver(s): {}", errors.len(), error_msg));
+            return Err(anyhow!(
+                "Failed to shutdown {} driver(s): {}",
+                errors.len(),
+                error_msg
+            ));
         }
 
         // Clear the driver registry
@@ -297,7 +315,7 @@ impl Router {
     /// - Control routing (faders, buttons, encoders → drivers)
     pub async fn on_midi_from_xtouch(&self, raw: &[u8]) {
         use crate::control_mapping::{load_default_mappings, MidiSpec};
-        
+
         if raw.len() < 2 {
             return;
         }
@@ -315,21 +333,9 @@ impl Router {
             if velocity != 0 {
                 // Get paging configuration
                 let config = self.config.read().await;
-                let paging_channel = config
-                    .paging
-                    .as_ref()
-                    .map(|p| p.channel)
-                    .unwrap_or(1);
-                let prev_note = config
-                    .paging
-                    .as_ref()
-                    .map(|p| p.prev_note)
-                    .unwrap_or(46);
-                let next_note = config
-                    .paging
-                    .as_ref()
-                    .map(|p| p.next_note)
-                    .unwrap_or(47);
+                let paging_channel = config.paging.as_ref().map(|p| p.channel).unwrap_or(1);
+                let prev_note = config.paging.as_ref().map(|p| p.prev_note).unwrap_or(46);
+                let next_note = config.paging.as_ref().map(|p| p.next_note).unwrap_or(47);
                 drop(config);
 
                 // Only process navigation on the paging channel
@@ -350,8 +356,12 @@ impl Router {
                     // Check for F-key direct page access (F1-F8 = notes 54-61)
                     if (54..=61).contains(&note) {
                         let page_index = (note - 54) as usize;
-                        debug!("X-Touch: Direct page access F{} (note {})", page_index + 1, note);
-                        
+                        debug!(
+                            "X-Touch: Direct page access F{} (note {})",
+                            page_index + 1,
+                            note
+                        );
+
                         let config = self.config.read().await;
                         if page_index < config.pages.len() {
                             drop(config);
@@ -365,88 +375,224 @@ impl Router {
 
         // Route control events to drivers
         let config = self.config.read().await;
-        let is_mcu_mode = config.xtouch.as_ref()
+        let is_mcu_mode = config
+            .xtouch
+            .as_ref()
             .map(|x| matches!(x.mode, crate::config::XTouchMode::Mcu))
             .unwrap_or(true); // Default to MCU mode
         drop(config);
-        
+
         // Load control mappings
         let mapping_db = match load_default_mappings() {
             Ok(db) => db,
             Err(e) => {
                 warn!("Failed to load control mappings: {}", e);
                 return;
-            }
+            },
         };
-        
+
         // Parse incoming MIDI to determine which control was triggered
         let midi_spec = match MidiSpec::from_raw(raw) {
             Ok(spec) => spec,
             Err(_) => {
                 trace!("Unsupported MIDI message: {:02X?}", raw);
                 return;
-            }
+            },
         };
-        
+
         // Find the control ID from MIDI message
         let control_id = match mapping_db.find_control_by_midi(&midi_spec, is_mcu_mode) {
             Some(id) => id,
             None => {
                 trace!("No control mapping found for MIDI: {:?}", midi_spec);
                 return;
-            }
+            },
         };
-        
-        debug!("X-Touch control triggered: {} (MIDI: {:?})", control_id, midi_spec);
-        
+
+        debug!(
+            "X-Touch control triggered: {} (MIDI: {:?})",
+            control_id, midi_spec
+        );
+
         // Mark user action for Last-Write-Wins
         self.mark_user_action(raw);
-        
+
         // Get active page and find control configuration
         let page = match self.get_active_page().await {
             Some(p) => p,
             None => {
                 warn!("No active page");
                 return;
-            }
+            },
         };
-        
+
         // Check global controls first, then page-specific controls
         let config = self.config.read().await;
-        let control_config = config.pages_global.as_ref()
+        let control_config = config
+            .pages_global
+            .as_ref()
             .and_then(|pg| pg.controls.as_ref())
             .and_then(|controls| controls.get(control_id))
-            .or_else(|| page.controls.as_ref().and_then(|controls| controls.get(control_id)));
-        
+            .or_else(|| {
+                page.controls
+                    .as_ref()
+                    .and_then(|controls| controls.get(control_id))
+            });
+
         let control_config = match control_config {
             Some(cc) => cc.clone(),
             None => {
-                trace!("Control '{}' not mapped on page '{}'", control_id, page.name);
+                trace!(
+                    "Control '{}' not mapped on page '{}'",
+                    control_id,
+                    page.name
+                );
                 return;
-            }
+            },
         };
         drop(config);
-        
-        // Get driver
+
+        // Check if this is MIDI direct mode (send raw MIDI to bridge)
+        if let Some(target_spec) = &control_config.midi {
+            // MIDI direct mode: transform and send to the app's bridge
+
+            // 1. Parse input MIDI to get normalized value (0.0 - 1.0)
+            let input_msg = crate::midi::MidiMessage::parse(raw);
+            let normalized_value = match input_msg {
+                Some(msg) => match msg {
+                    crate::midi::MidiMessage::PitchBend { value, .. } => {
+                        crate::midi::convert::to_percent_14bit(value) / 100.0
+                    },
+                    crate::midi::MidiMessage::ControlChange { value, .. } => {
+                        crate::midi::convert::to_percent_7bit(value) / 100.0
+                    },
+                    crate::midi::MidiMessage::NoteOn { velocity, .. } => {
+                        crate::midi::convert::to_percent_7bit(velocity) / 100.0
+                    },
+                    _ => 0.0,
+                },
+                None => 0.0,
+            };
+
+            // 2. Construct target message based on config
+            let target_msg = match target_spec.midi_type {
+                crate::config::MidiType::Cc => {
+                    if let (Some(ch), Some(cc)) = (target_spec.channel, target_spec.cc) {
+                        let value =
+                            crate::midi::convert::from_percent_7bit(normalized_value * 100.0);
+                        Some(crate::midi::MidiMessage::ControlChange {
+                            channel: ch.saturating_sub(1), // Config is 1-based, internal is 0-based
+                            cc,
+                            value,
+                        })
+                    } else {
+                        None
+                    }
+                },
+                crate::config::MidiType::Note => {
+                    if let (Some(ch), Some(note)) = (target_spec.channel, target_spec.note) {
+                        let velocity =
+                            crate::midi::convert::from_percent_7bit(normalized_value * 100.0);
+                        // If velocity is 0, send NoteOff, otherwise NoteOn
+                        if velocity == 0 {
+                            Some(crate::midi::MidiMessage::NoteOff {
+                                channel: ch.saturating_sub(1),
+                                note,
+                                velocity: 0,
+                            })
+                        } else {
+                            Some(crate::midi::MidiMessage::NoteOn {
+                                channel: ch.saturating_sub(1),
+                                note,
+                                velocity,
+                            })
+                        }
+                    } else {
+                        None
+                    }
+                },
+                crate::config::MidiType::Pb => {
+                    if let Some(ch) = target_spec.channel {
+                        let value =
+                            crate::midi::convert::from_percent_14bit(normalized_value * 100.0);
+                        Some(crate::midi::MidiMessage::PitchBend {
+                            channel: ch.saturating_sub(1),
+                            value,
+                        })
+                    } else {
+                        None
+                    }
+                },
+                crate::config::MidiType::Passthrough => {
+                    // Raw passthrough (no transformation)
+                    crate::midi::MidiMessage::parse(raw)
+                },
+            };
+
+            if let Some(msg) = target_msg {
+                let bytes = msg.to_bytes();
+                debug!(
+                    "→ Transform: {} -> {} ({} bytes) to '{}'",
+                    control_id,
+                    msg,
+                    bytes.len(),
+                    control_config.app
+                );
+
+                // Get the MIDI bridge driver for this app
+                let driver = {
+                    let drivers = self.drivers.read().await;
+                    drivers.get(&control_config.app).cloned()
+                };
+
+                if let Some(driver) = driver {
+                    // Create execution context with transformed MIDI
+                    let mut ctx = self.create_execution_context().await;
+                    ctx.value = Some(match serde_json::to_value(&bytes) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            warn!("Failed to serialize MIDI data: {}", e);
+                            return;
+                        },
+                    });
+
+                    // Call passthrough action on the bridge
+                    if let Err(e) = driver.execute("passthrough", vec![], ctx).await {
+                        warn!("Failed to passthrough MIDI: {}", e);
+                    }
+                } else {
+                    warn!(
+                        "Bridge driver '{}' not found for MIDI passthrough",
+                        control_config.app
+                    );
+                }
+            }
+            return;
+        }
+
+        // Driver action mode
         let driver = {
             let drivers = self.drivers.read().await;
             drivers.get(&control_config.app).cloned()
         };
-        
+
         let driver = match driver {
             Some(d) => d,
             None => {
-                warn!("Driver '{}' not found for control '{}'", control_config.app, control_id);
+                warn!(
+                    "Driver '{}' not found for control '{}'",
+                    control_config.app, control_id
+                );
                 return;
-            }
+            },
         };
-        
+
         // Determine the action to execute
-        let action = control_config.action.as_deref().unwrap_or("passthrough");
-        
+        let action = control_config.action.as_deref().unwrap_or("execute");
+
         // Build parameters
         let params = control_config.params.clone().unwrap_or_default();
-        
+
         // Create execution context with MIDI value
         let mut ctx = self.create_execution_context().await;
         ctx.value = Some(match serde_json::to_value(raw) {
@@ -454,14 +600,188 @@ impl Router {
             Err(e) => {
                 warn!("Failed to serialize MIDI data: {}", e);
                 return;
-            }
+            },
         });
-        
+
         // Execute driver action
-        info!("→ Routing: {} → app={} action={}", control_id, control_config.app, action);
+        info!(
+            "→ Routing: {} → app={} action={}",
+            control_id, control_config.app, action
+        );
         if let Err(e) = driver.execute(action, params, ctx).await {
             warn!("Driver execution failed: {}", e);
         }
+    }
+
+    /// Process feedback from an application (reverse transformation)
+    pub async fn process_feedback(&self, app_name: &str, raw_data: &[u8]) -> Option<Vec<u8>> {
+        use crate::control_mapping::{load_default_mappings, MidiSpec};
+
+        // Parse incoming MIDI from app
+        let input_msg = match crate::midi::MidiMessage::parse(raw_data) {
+            Some(msg) => msg,
+            None => return Some(raw_data.to_vec()), // Pass through invalid/sys messages
+        };
+
+        // Get normalized value from input
+        let normalized_value = match input_msg {
+            crate::midi::MidiMessage::PitchBend { value, .. } => {
+                crate::midi::convert::to_percent_14bit(value) / 100.0
+            },
+            crate::midi::MidiMessage::ControlChange { value, .. } => {
+                crate::midi::convert::to_percent_7bit(value) / 100.0
+            },
+            crate::midi::MidiMessage::NoteOn { velocity, .. } => {
+                crate::midi::convert::to_percent_7bit(velocity) / 100.0
+            },
+            crate::midi::MidiMessage::NoteOff { .. } => 0.0,
+            _ => return Some(raw_data.to_vec()), // Pass through other messages
+        };
+
+        // Find which control this message maps to
+        let config = self.config.read().await;
+        let active_page_idx = *self.active_page_index.read().await;
+
+        // Helper to check if a mapping matches the incoming message
+        let matches_mapping = |mapping: &crate::config::ControlMapping| -> bool {
+            if mapping.app != app_name {
+                return false;
+            }
+
+            if let Some(midi_spec) = &mapping.midi {
+                match midi_spec.midi_type {
+                    crate::config::MidiType::Cc => {
+                        if let (Some(target_ch), Some(target_cc)) =
+                            (midi_spec.channel, midi_spec.cc)
+                        {
+                            if let crate::midi::MidiMessage::ControlChange { channel, cc, .. } =
+                                input_msg
+                            {
+                                return channel == target_ch.saturating_sub(1) && cc == target_cc;
+                            }
+                        }
+                    },
+                    crate::config::MidiType::Note => {
+                        if let (Some(target_ch), Some(target_note)) =
+                            (midi_spec.channel, midi_spec.note)
+                        {
+                            match input_msg {
+                                crate::midi::MidiMessage::NoteOn { channel, note, .. }
+                                | crate::midi::MidiMessage::NoteOff { channel, note, .. } => {
+                                    return channel == target_ch.saturating_sub(1)
+                                        && note == target_note;
+                                },
+                                _ => {},
+                            }
+                        }
+                    },
+                    crate::config::MidiType::Pb => {
+                        if let Some(target_ch) = midi_spec.channel {
+                            if let crate::midi::MidiMessage::PitchBend { channel, .. } = input_msg {
+                                return channel == target_ch.saturating_sub(1);
+                            }
+                        }
+                    },
+                    _ => {},
+                }
+            }
+            false
+        };
+
+        // Search in active page controls
+        let mut found_control_id = None;
+
+        if let Some(page) = config.pages.get(active_page_idx) {
+            if let Some(controls) = &page.controls {
+                for (id, mapping) in controls {
+                    if matches_mapping(mapping) {
+                        found_control_id = Some(id.clone());
+                        break;
+                    }
+                }
+            }
+        }
+
+        // If not found, search in global controls
+        if found_control_id.is_none() {
+            if let Some(global) = &config.pages_global {
+                if let Some(controls) = &global.controls {
+                    for (id, mapping) in controls {
+                        if matches_mapping(mapping) {
+                            found_control_id = Some(id.clone());
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Also check X-Touch mode
+        let is_mcu_mode = config
+            .xtouch
+            .as_ref()
+            .map(|x| matches!(x.mode, crate::config::XTouchMode::Mcu))
+            .unwrap_or(true);
+
+        drop(config);
+
+        if let Some(control_id) = found_control_id {
+            // Load hardware mapping to find native message
+            if let Ok(db) = load_default_mappings() {
+                if let Some(native_spec) = db.get_midi_spec(&control_id, is_mcu_mode) {
+                    // Construct native message with scaled value
+                    let native_msg = match native_spec {
+                        MidiSpec::ControlChange { cc } => {
+                            // For X-Touch, CCs are usually on channel 1 (0)
+                            // But we should probably check the group or assume standard MCU
+                            Some(crate::midi::MidiMessage::ControlChange {
+                                channel: 0, // Default to Ch 1 for buttons
+                                cc,
+                                value: crate::midi::convert::from_percent_7bit(
+                                    normalized_value * 100.0,
+                                ),
+                            })
+                        },
+                        MidiSpec::Note { note } => {
+                            let velocity =
+                                crate::midi::convert::from_percent_7bit(normalized_value * 100.0);
+                            if velocity == 0 {
+                                Some(crate::midi::MidiMessage::NoteOff {
+                                    channel: 0, // Default to Ch 1 for buttons
+                                    note,
+                                    velocity: 0,
+                                })
+                            } else {
+                                Some(crate::midi::MidiMessage::NoteOn {
+                                    channel: 0, // Default to Ch 1 for buttons
+                                    note,
+                                    velocity,
+                                })
+                            }
+                        },
+                        MidiSpec::PitchBend { channel } => {
+                            Some(crate::midi::MidiMessage::PitchBend {
+                                channel,
+                                value: crate::midi::convert::from_percent_14bit(
+                                    normalized_value * 100.0,
+                                ),
+                            })
+                        },
+                    };
+
+                    if let Some(msg) = native_msg {
+                        debug!(
+                            "← Feedback Transform: {} -> {} ({} -> {})",
+                            app_name, control_id, input_msg, msg
+                        );
+                        return Some(msg.to_bytes());
+                    }
+                }
+            }
+        }
+
+        // No mapping found, pass through raw
+        Some(raw_data.to_vec())
     }
 
     /// Refresh the active page (replay all known states to X-Touch)
@@ -478,18 +798,35 @@ impl Router {
 
         // Build and execute refresh plan
         let entries = self.plan_page_refresh(&page);
-        
+
         debug!(
             "Page refresh plan: {} Notes, {} CCs, {} PBs",
-            entries.iter().filter(|e| e.addr.status == MidiStatus::Note).count(),
-            entries.iter().filter(|e| e.addr.status == MidiStatus::CC).count(),
-            entries.iter().filter(|e| e.addr.status == MidiStatus::PB).count()
+            entries
+                .iter()
+                .filter(|e| e.addr.status == MidiStatus::Note)
+                .count(),
+            entries
+                .iter()
+                .filter(|e| e.addr.status == MidiStatus::CC)
+                .count(),
+            entries
+                .iter()
+                .filter(|e| e.addr.status == MidiStatus::PB)
+                .count()
         );
 
         // TODO: Send entries to X-Touch via MIDI output
-        // This will be implemented in Phase 4 when we have XTouchDriver integration
+        // For now, just log that we planned the refresh
+        // The actual MIDI sending will be handled by main loop when it detects display_needs_update
 
-        info!("Page refresh completed: {} (planned {} entries)", page.name, entries.len());
+        info!(
+            "Page refresh completed: {} (planned {} entries)",
+            page.name,
+            entries.len()
+        );
+
+        // Signal that display needs update (LCD + LEDs)
+        *self.display_needs_update.lock().await = true;
     }
 
     /// Clear X-Touch shadow state (allows re-emission during refresh)
@@ -501,7 +838,7 @@ impl Router {
     }
 
     /// Plan page refresh: build ordered list of MIDI entries to send
-    /// 
+    ///
     /// Returns entries in order: Notes → CC → SysEx → PB
     /// Priority for each type:
     /// - PB: Known PB = 3 > Mapped CC = 2 > Zero = 1
@@ -521,24 +858,44 @@ impl Router {
 
         // Helper to push candidates with priority
         let push_note = |map: &mut HashMap<String, PlanEntry>, e: MidiStateEntry, prio: u8| {
-            let key = format!("{}|{}", e.addr.channel.unwrap_or(0), e.addr.data1.unwrap_or(0));
+            let key = format!(
+                "{}|{}",
+                e.addr.channel.unwrap_or(0),
+                e.addr.data1.unwrap_or(0)
+            );
             let should_insert = match map.get(&key) {
                 None => true,
                 Some(cur) => prio > cur.priority || (prio == cur.priority && e.ts > cur.entry.ts),
             };
             if should_insert {
-                map.insert(key, PlanEntry { entry: e, priority: prio });
+                map.insert(
+                    key,
+                    PlanEntry {
+                        entry: e,
+                        priority: prio,
+                    },
+                );
             }
         };
 
         let push_cc = |map: &mut HashMap<String, PlanEntry>, e: MidiStateEntry, prio: u8| {
-            let key = format!("{}|{}", e.addr.channel.unwrap_or(0), e.addr.data1.unwrap_or(0));
+            let key = format!(
+                "{}|{}",
+                e.addr.channel.unwrap_or(0),
+                e.addr.data1.unwrap_or(0)
+            );
             let should_insert = match map.get(&key) {
                 None => true,
                 Some(cur) => prio > cur.priority || (prio == cur.priority && e.ts > cur.entry.ts),
             };
             if should_insert {
-                map.insert(key, PlanEntry { entry: e, priority: prio });
+                map.insert(
+                    key,
+                    PlanEntry {
+                        entry: e,
+                        priority: prio,
+                    },
+                );
             }
         };
 
@@ -548,7 +905,13 @@ impl Router {
                 Some(cur) => prio > cur.priority || (prio == cur.priority && e.ts > cur.entry.ts),
             };
             if should_insert {
-                map.insert(ch, PlanEntry { entry: e, priority: prio });
+                map.insert(
+                    ch,
+                    PlanEntry {
+                        entry: e,
+                        priority: prio,
+                    },
+                );
             }
         };
 
@@ -561,7 +924,10 @@ impl Router {
             // PB plan (priority: Known PB = 3 > Mapped CC = 2 > Zero = 1)
             for &ch in &channels {
                 // Try to get known PB value
-                if let Some(latest_pb) = self.state.get_known_latest_for_app(*app, MidiStatus::PB, Some(ch), Some(0)) {
+                if let Some(latest_pb) =
+                    self.state
+                        .get_known_latest_for_app(*app, MidiStatus::PB, Some(ch), Some(0))
+                {
                     push_pb(&mut pb_plan, ch, latest_pb, 3);
                     continue;
                 }
@@ -587,7 +953,12 @@ impl Router {
             // Notes: 0-31 (priority: Known = 2 > Reset OFF = 1)
             for &ch in &channels {
                 for note in 0..=31 {
-                    if let Some(latest_note) = self.state.get_known_latest_for_app(*app, MidiStatus::Note, Some(ch), Some(note)) {
+                    if let Some(latest_note) = self.state.get_known_latest_for_app(
+                        *app,
+                        MidiStatus::Note,
+                        Some(ch),
+                        Some(note),
+                    ) {
                         push_note(&mut note_plan, latest_note, 2);
                     } else {
                         // Reset to OFF
@@ -613,7 +984,12 @@ impl Router {
             // CC (rings): 0-31 (priority: Known = 2 > Reset 0 = 1)
             for &ch in &channels {
                 for cc in 0..=31 {
-                    if let Some(latest_cc) = self.state.get_known_latest_for_app(*app, MidiStatus::CC, Some(ch), Some(cc)) {
+                    if let Some(latest_cc) = self.state.get_known_latest_for_app(
+                        *app,
+                        MidiStatus::CC,
+                        Some(ch),
+                        Some(cc),
+                    ) {
                         push_cc(&mut cc_plan, latest_cc, 2);
                     } else {
                         // Reset to 0
@@ -639,17 +1015,17 @@ impl Router {
 
         // Materialize plans into ordered list: Notes → CC → PB
         let mut entries = Vec::new();
-        
+
         // Notes first
         for plan_entry in note_plan.values() {
             entries.push(plan_entry.entry.clone());
         }
-        
+
         // Then CC
         for plan_entry in cc_plan.values() {
             entries.push(plan_entry.entry.clone());
         }
-        
+
         // Finally PB
         for plan_entry in pb_plan.values() {
             entries.push(plan_entry.entry.clone());
@@ -682,7 +1058,10 @@ impl Router {
 
         // Notify all drivers to sync with new config
         let drivers = self.drivers.read().await;
-        let driver_list: Vec<_> = drivers.iter().map(|(name, driver)| (name.clone(), driver.clone())).collect();
+        let driver_list: Vec<_> = drivers
+            .iter()
+            .map(|(name, driver)| (name.clone(), driver.clone()))
+            .collect();
         drop(drivers);
 
         let mut sync_errors = Vec::new();
@@ -726,9 +1105,9 @@ impl Router {
             .map(|(_, ms)| *ms)
             .unwrap_or(60)
     }
-    
+
     /// Update F1-F8 LEDs to reflect active page
-    /// 
+    ///
     /// Matches TypeScript updateFKeyLedsForActivePage() from xtouch/fkeys.ts
     pub async fn update_fkey_leds_for_active_page(
         &self,
@@ -737,29 +1116,39 @@ impl Router {
     ) -> Result<()> {
         let config = self.config.read().await;
         let active_index = *self.active_page_index.read().await;
-        
+
         // Get F-key notes based on mode
-        let mode = config.xtouch.as_ref().map(|x| x.mode).unwrap_or(crate::config::XTouchMode::Mcu);
+        let mode = config
+            .xtouch
+            .as_ref()
+            .map(|x| x.mode)
+            .unwrap_or(crate::config::XTouchMode::Mcu);
         let fkey_notes = self.get_fkey_notes(mode);
-        
+
         // Clamp active index to valid range
         let clamped_index = if active_index < fkey_notes.len() {
             active_index as i32
         } else {
             (fkey_notes.len().saturating_sub(1)) as i32
         };
-        
-        // Update LEDs
+
+        // Update LEDs - ALWAYS turn all off first, then light the active one
         for (i, &note) in fkey_notes.iter().enumerate() {
             let on = (i as i32) == clamped_index;
             xtouch.set_button_led(note, on).await?;
         }
-        
+
+        debug!(
+            "F-key LEDs updated: active index {} (note {})",
+            clamped_index,
+            fkey_notes.get(clamped_index as usize).copied().unwrap_or(0)
+        );
+
         Ok(())
     }
-    
+
     /// Update prev/next navigation button LEDs (always on)
-    /// 
+    ///
     /// Matches TypeScript updatePrevNextLeds() from xtouch/fkeys.ts
     pub async fn update_prev_next_leds(
         &self,
@@ -771,7 +1160,7 @@ impl Router {
         xtouch.set_button_led(next_note, true).await?;
         Ok(())
     }
-    
+
     /// Get F-key note numbers based on X-Touch mode
     fn get_fkey_notes(&self, mode: crate::config::XTouchMode) -> Vec<u8> {
         // From xtouch-matching.csv for MCU mode:
@@ -780,7 +1169,7 @@ impl Router {
         match mode {
             crate::config::XTouchMode::Mcu | crate::config::XTouchMode::Ctrl => {
                 vec![54, 55, 56, 57, 58, 59, 60, 61]
-            }
+            },
         }
     }
 
@@ -836,7 +1225,9 @@ impl Router {
         let shadow_entry = ShadowEntry::new(value);
 
         let mut app_shadows = self.app_shadows.write().unwrap();
-        let app_shadow = app_shadows.entry(app_key.to_string()).or_insert_with(HashMap::new);
+        let app_shadow = app_shadows
+            .entry(app_key.to_string())
+            .or_insert_with(HashMap::new);
         app_shadow.insert(key, shadow_entry);
     }
 
@@ -849,7 +1240,9 @@ impl Router {
             entry.addr.data1.unwrap_or(0)
         );
 
-        let last_user_ts = self.last_user_action_ts.try_read()
+        let last_user_ts = self
+            .last_user_action_ts
+            .try_read()
             .ok()
             .and_then(|ts_map| ts_map.get(&key).copied())
             .unwrap_or(0);
@@ -894,16 +1287,16 @@ impl Router {
                 // Note On/Off
                 let note = raw.get(1).copied().unwrap_or(0);
                 format!("note|{}|{}", channel, note)
-            }
+            },
             0xB => {
                 // Control Change
                 let cc = raw.get(1).copied().unwrap_or(0);
                 format!("cc|{}|{}", channel, cc)
-            }
+            },
             0xE => {
                 // Pitch Bend
                 format!("pb|{}|0", channel)
-            }
+            },
             _ => return,
         };
 
@@ -928,7 +1321,7 @@ impl Router {
             None => {
                 debug!("Failed to parse MIDI from app '{}': {:02X?}", app_key, raw);
                 return;
-            }
+            },
         };
 
         // Update state store (this also notifies subscribers)
@@ -937,7 +1330,7 @@ impl Router {
             None => {
                 warn!("Unknown application key: {}", app_key);
                 return;
-            }
+            },
         };
 
         // Update state store
@@ -1019,10 +1412,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_set_page_by_name() {
-        let config = make_test_config(vec![
-            make_test_page("Voicemeeter"),
-            make_test_page("OBS"),
-        ]);
+        let config = make_test_config(vec![make_test_page("Voicemeeter"), make_test_page("OBS")]);
 
         let router = Router::new(config);
 
@@ -1035,10 +1425,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_set_page_by_index() {
-        let config = make_test_config(vec![
-            make_test_page("Page 0"),
-            make_test_page("Page 1"),
-        ]);
+        let config = make_test_config(vec![make_test_page("Page 0"), make_test_page("Page 1")]);
 
         let router = Router::new(config);
 
@@ -1077,10 +1464,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_midi_note_navigation_ignores_velocity_zero() {
-        let config = make_test_config(vec![
-            make_test_page("Page 1"),
-            make_test_page("Page 2"),
-        ]);
+        let config = make_test_config(vec![make_test_page("Page 1"), make_test_page("Page 2")]);
 
         let router = Router::new(config);
 
@@ -1102,7 +1486,9 @@ mod tests {
 
         // Create and register a console driver
         let driver = Arc::new(ConsoleDriver::new("test_console"));
-        let result = router.register_driver("test_console".to_string(), driver).await;
+        let result = router
+            .register_driver("test_console".to_string(), driver)
+            .await;
 
         assert!(result.is_ok());
 
@@ -1126,12 +1512,18 @@ mod tests {
 
         // Register multiple drivers
         router
-            .register_driver("driver1".to_string(), Arc::new(ConsoleDriver::new("driver1")))
+            .register_driver(
+                "driver1".to_string(),
+                Arc::new(ConsoleDriver::new("driver1")),
+            )
             .await
             .unwrap();
-        
+
         router
-            .register_driver("driver2".to_string(), Arc::new(ConsoleDriver::new("driver2")))
+            .register_driver(
+                "driver2".to_string(),
+                Arc::new(ConsoleDriver::new("driver2")),
+            )
             .await
             .unwrap();
 
@@ -1151,16 +1543,17 @@ mod tests {
         use crate::drivers::ConsoleDriver;
         use std::sync::Arc;
 
-        let initial_config = make_test_config(vec![
-            make_test_page("Page 1"),
-            make_test_page("Page 2"),
-        ]);
-        
+        let initial_config =
+            make_test_config(vec![make_test_page("Page 1"), make_test_page("Page 2")]);
+
         let router = Router::new(initial_config);
 
         // Register a driver
         router
-            .register_driver("test_driver".to_string(), Arc::new(ConsoleDriver::new("test_driver")))
+            .register_driver(
+                "test_driver".to_string(),
+                Arc::new(ConsoleDriver::new("test_driver")),
+            )
             .await
             .unwrap();
 
@@ -1213,7 +1606,10 @@ mod tests {
 
         // Register driver
         router
-            .register_driver("test_console".to_string(), Arc::new(ConsoleDriver::new("test_console")))
+            .register_driver(
+                "test_console".to_string(),
+                Arc::new(ConsoleDriver::new("test_console")),
+            )
             .await
             .unwrap();
 
@@ -1250,7 +1646,10 @@ mod tests {
         // Attempt to execute control action (should fail)
         let result = router.handle_control("fader1", Some(json!(127))).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Driver 'missing_driver' not registered"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Driver 'missing_driver' not registered"));
     }
 
     #[tokio::test]
@@ -1264,14 +1663,22 @@ mod tests {
 
         // Register driver
         router
-            .register_driver("test_console".to_string(), Arc::new(ConsoleDriver::new("test_console")))
+            .register_driver(
+                "test_console".to_string(),
+                Arc::new(ConsoleDriver::new("test_console")),
+            )
             .await
             .unwrap();
 
         // Attempt to execute non-existent control
-        let result = router.handle_control("non_existent_control", Some(json!(127))).await;
+        let result = router
+            .handle_control("non_existent_control", Some(json!(127)))
+            .await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("No mapping for control"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("No mapping for control"));
     }
 
     #[tokio::test]
@@ -1285,7 +1692,7 @@ mod tests {
         // Create a page with multiple control mappings to different drivers
         let mut page = make_test_page("Multi Driver Page");
         let mut controls = HashMap::new();
-        
+
         controls.insert(
             "obs_control".to_string(),
             ControlMapping {
@@ -1297,7 +1704,7 @@ mod tests {
                 indicator: None,
             },
         );
-        
+
         controls.insert(
             "vm_control".to_string(),
             ControlMapping {
@@ -1309,7 +1716,7 @@ mod tests {
                 indicator: None,
             },
         );
-        
+
         page.controls = Some(controls);
 
         let config = make_test_config(vec![page]);
@@ -1317,12 +1724,18 @@ mod tests {
 
         // Register multiple drivers
         router
-            .register_driver("obs_driver".to_string(), Arc::new(ConsoleDriver::new("obs_driver")))
+            .register_driver(
+                "obs_driver".to_string(),
+                Arc::new(ConsoleDriver::new("obs_driver")),
+            )
             .await
             .unwrap();
-        
+
         router
-            .register_driver("vm_driver".to_string(), Arc::new(ConsoleDriver::new("vm_driver")))
+            .register_driver(
+                "vm_driver".to_string(),
+                Arc::new(ConsoleDriver::new("vm_driver")),
+            )
             .await
             .unwrap();
 
@@ -1337,5 +1750,3 @@ mod tests {
         assert_eq!(router.list_drivers().await.len(), 2);
     }
 }
-
-

@@ -368,11 +368,9 @@ impl MidiBridgeDriver {
             let mut midi_out = self.midi_out.lock();
             match &mut *midi_out {
                 Some(conn) => {
+                    debug!("Bridge TX -> {}: {:02X?}", self.to_port, transformed);
                     match conn.send(&transformed) {
-                        Ok(_) => {
-                            debug!("Bridge TX -> {}: {} bytes", self.to_port, transformed.len());
-                            Ok(())
-                        },
+                        Ok(_) => Ok(()),
                         Err(e) => {
                             warn!("MIDI Bridge send failed: {}", e);
                             *midi_out = None; // Close broken connection
