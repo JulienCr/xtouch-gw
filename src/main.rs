@@ -126,7 +126,7 @@ async fn run_app(
     mut config_watcher: ConfigWatcher,
     shutdown: impl std::future::Future<Output = ()>,
 ) -> Result<()> {
-    use tracing::{debug, warn};
+    use tracing::{debug, trace, warn};
 
     info!("Starting main application loop...");
 
@@ -203,6 +203,16 @@ async fn run_app(
         .take_event_receiver()
         .ok_or_else(|| anyhow::anyhow!("Failed to get X-Touch event receiver"))?;
 
+    // Wrap XTouch in Arc for sharing
+    let xtouch = Arc::new(xtouch);
+
+    // Take the setpoint apply receiver from router
+    let mut setpoint_apply_rx = router
+        .take_setpoint_receiver()
+        .await
+        .expect("Failed to get setpoint receiver");
+    info!("FaderSetpoint receiver initialized");
+
     // Register MIDI bridge drivers for each configured app
     if let Some(apps) = &config.midi.apps {
         for app_config in apps {
@@ -269,6 +279,24 @@ async fn run_app(
 
     loop {
         tokio::select! {
+            // Apply fader setpoints (from FaderSetpoint async tasks)
+            Some(cmd) = setpoint_apply_rx.recv() => {
+                let setpoint = router.get_fader_setpoint();
+
+                // Check if epoch still current (double-check for race conditions)
+                if setpoint.is_epoch_current(cmd.channel, cmd.epoch) {
+                    debug!("🎚️  Applying setpoint: ch={} value={} epoch={}", cmd.channel, cmd.value14, cmd.epoch);
+                    let fader_num = cmd.channel - 1; // Convert 1-based to 0-based
+                    if let Err(_e) = xtouch.set_fader(fader_num, cmd.value14).await {
+                        // Retry logic: reschedule after 120ms
+                        trace!("Setpoint apply failed, requeueing: ch={} value={}", cmd.channel, cmd.value14);
+                        setpoint.schedule(cmd.channel, cmd.value14, Some(120));
+                    }
+                } else {
+                    trace!("Setpoint apply skipped (obsolete): ch={} epoch={}", cmd.channel, cmd.epoch);
+                }
+            }
+
             // Handle X-Touch events
             Some(event) = xtouch_rx.recv() => {
                 debug!("Received X-Touch event: raw={:02X?}", event.raw_data);
@@ -325,8 +353,29 @@ async fn run_app(
                 // Process feedback through router (reverse transformation)
                 if let Some(transformed) = router.process_feedback(&app_name, &feedback_data).await {
                     debug!("📤 Forwarding feedback to X-Touch: {:02X?}", transformed);
-                    if let Err(e) = xtouch.send_raw(&transformed).await {
-                        warn!("Failed to send feedback to X-Touch: {}", e);
+
+                    // Check if this is a PitchBend message - use set_fader with squelch
+                    if transformed.len() == 3 && (transformed[0] & 0xF0) == 0xE0 {
+                        // PitchBend message: status byte Exch, LSB, MSB
+                        let channel = (transformed[0] & 0x0F);
+                        let lsb = transformed[1];
+                        let msb = transformed[2];
+                        let value14 = ((msb as u16) << 7) | (lsb as u16);
+
+                        debug!("📤 Using set_fader for feedback: ch={} value={}", channel, value14);
+
+                        // Activate 120ms squelch BEFORE sending (matches TypeScript emit.ts)
+                        // This prevents the motor movement from being echoed back to the app
+                        xtouch.activate_squelch(120);
+
+                        if let Err(e) = xtouch.set_fader(channel, value14).await {
+                            warn!("Failed to set fader from feedback: {}", e);
+                        }
+                    } else {
+                        // For other message types, use send_raw
+                        if let Err(e) = xtouch.send_raw(&transformed).await {
+                            warn!("Failed to send feedback to X-Touch: {}", e);
+                        }
                     }
                 }
             }
@@ -355,9 +404,10 @@ async fn run_app(
 
     // Cleanup
     info!("Shutting down...");
-    xtouch.disconnect();
     router.shutdown_all_drivers().await?;
     info!("All drivers shut down");
+    // Note: XTouch will be automatically disconnected when dropped
+    drop(xtouch);
 
     Ok(())
 }

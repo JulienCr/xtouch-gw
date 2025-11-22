@@ -10,12 +10,13 @@
 use crate::config::{AppConfig, PageConfig};
 use crate::drivers::{Driver, ExecutionContext};
 use crate::state::{build_entry_from_raw, AppKey, MidiStateEntry, MidiStatus, StateStore};
+use crate::xtouch::fader_setpoint::{ApplySetpointCmd, FaderSetpoint};
 use anyhow::{anyhow, Result};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock as StdRwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::RwLock;
+use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, info, trace, warn};
 
 /// Anti-echo time windows (in milliseconds) per MIDI status type
@@ -62,11 +63,17 @@ pub struct Router {
     last_user_action_ts: Arc<StdRwLock<HashMap<String, u64>>>,
     /// Flag indicating display needs update after page change
     display_needs_update: Arc<tokio::sync::Mutex<bool>>,
+    /// Fader setpoint scheduler (motor position tracking)
+    fader_setpoint: Arc<FaderSetpoint>,
+    /// Receiver for setpoint apply commands (stored for retrieval)
+    setpoint_rx: Arc<tokio::sync::Mutex<Option<mpsc::UnboundedReceiver<ApplySetpointCmd>>>>,
 }
 
 impl Router {
     /// Create a new Router with initial configuration
     pub fn new(config: AppConfig) -> Self {
+        let (fader_setpoint, setpoint_rx) = FaderSetpoint::new();
+
         Self {
             config: Arc::new(RwLock::new(config)),
             drivers: Arc::new(RwLock::new(HashMap::new())),
@@ -75,6 +82,8 @@ impl Router {
             app_shadows: Arc::new(StdRwLock::new(HashMap::new())),
             last_user_action_ts: Arc::new(StdRwLock::new(HashMap::new())),
             display_needs_update: Arc::new(tokio::sync::Mutex::new(false)),
+            fader_setpoint: Arc::new(fader_setpoint),
+            setpoint_rx: Arc::new(tokio::sync::Mutex::new(Some(setpoint_rx))),
         }
     }
 
@@ -417,6 +426,20 @@ impl Router {
         // Mark user action for Last-Write-Wins
         self.mark_user_action(raw);
 
+        // CRITICAL: Update fader setpoint for user actions (PitchBend from X-Touch)
+        // This ensures the motor tracks the user's physical position
+        if type_nibble == 0xE && raw.len() >= 3 {
+            // PitchBend message
+            let lsb = raw[1];
+            let msb = raw[2];
+            let value14 = (((msb as u16) << 7) | (lsb as u16)) as u16;
+            debug!(
+                "← User moved fader: ch={} value14={}",
+                channel, value14
+            );
+            self.fader_setpoint.schedule(channel as u8, value14, None);
+        }
+
         // Get active page and find control configuration
         let page = match self.get_active_page().await {
             Some(p) => p,
@@ -638,6 +661,18 @@ impl Router {
             _ => return Some(raw_data.to_vec()), // Pass through other messages
         };
 
+        // CRITICAL: Schedule motor setpoints BEFORE anti-echo logic
+        // This ensures the motor knows the correct position even if MIDI emission is suppressed
+        // (matches TypeScript forward.ts:41-52)
+        if let crate::midi::MidiMessage::PitchBend { channel, value } = input_msg {
+            let channel1 = channel + 1; // Convert 0-based to 1-based
+            debug!(
+                "← Scheduling fader setpoint from {}: ch={} value14={}",
+                app_name, channel1, value
+            );
+            self.fader_setpoint.schedule(channel1, value, None);
+        }
+
         // Find which control this message maps to
         let config = self.config.read().await;
         let active_page_idx = *self.active_page_index.read().await;
@@ -760,11 +795,21 @@ impl Router {
                             }
                         },
                         MidiSpec::PitchBend { channel } => {
+                            let value14 =
+                                crate::midi::convert::from_percent_14bit(normalized_value * 100.0);
+
+                            // CRITICAL: Schedule motor setpoint for CC→PB transformations
+                            // This handles the case where QLC+ sends CC but the fader needs PB
+                            let channel1 = channel + 1; // Convert 0-based to 1-based
+                            debug!(
+                                "← Scheduling fader setpoint (CC→PB): {} -> ch={} value14={}",
+                                app_name, channel1, value14
+                            );
+                            self.fader_setpoint.schedule(channel1, value14, None);
+
                             Some(crate::midi::MidiMessage::PitchBend {
                                 channel,
-                                value: crate::midi::convert::from_percent_14bit(
-                                    normalized_value * 100.0,
-                                ),
+                                value: value14,
                             })
                         },
                     };
@@ -921,7 +966,7 @@ impl Router {
 
         // Build plans for each app
         for app in AppKey::all() {
-            // PB plan (priority: Known PB = 3 > Mapped CC = 2 > Zero = 1)
+            // PB plan (priority: Known PB = 3 > Fader Setpoint = 2 > Zero = 1)
             for &ch in &channels {
                 // Try to get known PB value
                 if let Some(latest_pb) =
@@ -929,6 +974,26 @@ impl Router {
                         .get_known_latest_for_app(*app, MidiStatus::PB, Some(ch), Some(0))
                 {
                     push_pb(&mut pb_plan, ch, latest_pb, 3);
+                    continue;
+                }
+
+                // Try to get from fader setpoint (motor position)
+                if let Some(desired14) = self.fader_setpoint.get_desired(ch) {
+                    let setpoint_pb = MidiStateEntry {
+                        addr: MidiAddr {
+                            port_id: app.as_str().to_string(),
+                            status: MidiStatus::PB,
+                            channel: Some(ch),
+                            data1: Some(0),
+                        },
+                        value: MidiValue::Number(desired14),
+                        ts: Self::now_ms(),
+                        origin: Origin::XTouch,
+                        known: false,
+                        stale: false,
+                        hash: None,
+                    };
+                    push_pb(&mut pb_plan, ch, setpoint_pb, 2);
                     continue;
                 }
 
@@ -1095,6 +1160,17 @@ impl Router {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64
+    }
+
+    /// Get the fader setpoint scheduler (for applying setpoints)
+    pub fn get_fader_setpoint(&self) -> Arc<FaderSetpoint> {
+        self.fader_setpoint.clone()
+    }
+
+    /// Take the setpoint apply receiver (should only be called once by main loop)
+    pub async fn take_setpoint_receiver(&self) -> Option<mpsc::UnboundedReceiver<ApplySetpointCmd>> {
+        let mut rx_guard = self.setpoint_rx.lock().await;
+        rx_guard.take()
     }
 
     /// Get anti-echo window for a MIDI status type
