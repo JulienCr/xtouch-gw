@@ -318,12 +318,12 @@ pub mod convert {
     
     /// Convert percentage to 14-bit value
     pub fn from_percent_14bit(percent: f32) -> u16 {
-        ((percent.clamp(0.0, 100.0) * 16383.0) / 100.0) as u16
+        ((percent.clamp(0.0, 100.0) * 16383.0) / 100.0).round() as u16
     }
-    
+
     /// Convert percentage to 7-bit value
     pub fn from_percent_7bit(percent: f32) -> u8 {
-        ((percent.clamp(0.0, 100.0) * 127.0) / 100.0) as u8
+        ((percent.clamp(0.0, 100.0) * 127.0) / 100.0).round() as u8
     }
     
     /// Convert 14-bit value to 8-bit value (0-255) - for 8-bit CC mode
