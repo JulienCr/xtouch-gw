@@ -963,7 +963,8 @@ impl Router {
     fn entry_to_midi_bytes(&self, entry: &MidiStateEntry) -> Vec<u8> {
         use crate::state::MidiValue;
 
-        let channel = entry.addr.channel.unwrap_or(0);
+        // Convert external channel (1-16) to MIDI wire format (0-15)
+        let channel = entry.addr.channel.map(|ch| ch.saturating_sub(1)).unwrap_or(0);
         let data1 = entry.addr.data1.unwrap_or(0);
 
         match entry.addr.status {
