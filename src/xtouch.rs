@@ -12,7 +12,7 @@ use midir::{MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::mpsc;
-use tracing::{debug, info};
+use tracing::{debug, info, trace};
 
 use crate::config::{AppConfig, XTouchMode};
 use crate::midi::{format_hex, MidiMessage};
@@ -259,7 +259,7 @@ impl XTouchDriver {
         let mut conn = output.lock().unwrap();
         conn.send(&data).context("Failed to send MIDI message")?;
 
-        debug!("Sent: {} | {}", format_hex(&data), message);
+        trace!("Sent: {} | {}", format_hex(&data), message);
 
         Ok(())
     }
@@ -277,7 +277,7 @@ impl XTouchDriver {
         let mut conn = output.lock().unwrap();
         conn.send(data).context("Failed to send raw MIDI data")?;
 
-        debug!("Sent raw feedback: {}", format_hex(data));
+        trace!("Sent raw feedback: {}", format_hex(data));
 
         Ok(())
     }
@@ -292,7 +292,7 @@ impl XTouchDriver {
         let mut conn = output.lock().unwrap();
         conn.send(data).context("Failed to send raw MIDI data")?;
 
-        debug!("Sent raw: {}", format_hex(data));
+        trace!("Sent raw: {}", format_hex(data));
 
         Ok(())
     }
@@ -372,18 +372,12 @@ impl XTouchDriver {
 
     /// Set button LED state
     pub async fn set_button_led(&self, note: u8, on: bool) -> Result<()> {
-        let message = if on {
-            MidiMessage::NoteOn {
-                channel: 0,
-                note,
-                velocity: 127,
-            }
-        } else {
-            MidiMessage::NoteOff {
-                channel: 0,
-                note,
-                velocity: 0,
-            }
+        // Always use NoteOn - velocity 0 turns LED off, velocity 127 turns it on
+        // NoteOff is for button release events, not LED control
+        let message = MidiMessage::NoteOn {
+            channel: 0,
+            note,
+            velocity: if on { 127 } else { 0 },
         };
 
         self.send(&message).await

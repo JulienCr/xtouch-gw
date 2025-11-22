@@ -236,10 +236,10 @@ async fn run_app(
                 }
             }));
 
-            router
-                .register_driver(app_config.name.clone(), driver)
-                .await?;
-            info!("Registered MIDI bridge driver for: {}", app_config.name);
+            match router.register_driver(app_config.name.clone(), driver).await {
+                Ok(_) => info!("✅ Registered MIDI bridge driver for: {}", app_config.name),
+                Err(e) => warn!("⚠️  Failed to register MIDI bridge driver for {} (will continue without it): {}", app_config.name, e),
+            }
         }
     }
 
@@ -253,20 +253,20 @@ async fn run_app(
             obs_config.port,
             obs_config.password.clone(),
         ));
-        router
-            .register_driver("obs".to_string(), obs_driver)
-            .await?;
-        info!("Registered OBS driver");
+        match router.register_driver("obs".to_string(), obs_driver).await {
+            Ok(_) => info!("✅ Registered OBS driver"),
+            Err(e) => warn!("⚠️  Failed to register OBS driver (will continue without it): {}", e),
+        }
     }
 
     // Register QLC driver (stub - uses MIDI passthrough)
     // Only register if not already registered (e.g. by MIDI bridge)
     if router.get_driver("qlc").await.is_none() {
         let qlc_driver = Arc::new(QlcDriver::new());
-        router
-            .register_driver("qlc".to_string(), qlc_driver)
-            .await?;
-        info!("Registered QLC+ driver (stub)");
+        match router.register_driver("qlc".to_string(), qlc_driver).await {
+            Ok(_) => info!("✅ Registered QLC+ driver (stub)"),
+            Err(e) => warn!("⚠️  Failed to register QLC+ driver (will continue without it): {}", e),
+        }
     } else {
         info!("Skipping QLC+ stub driver registration (MIDI bridge 'qlc' already active)");
     }

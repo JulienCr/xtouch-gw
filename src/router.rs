@@ -911,11 +911,9 @@ impl Router {
                     MidiValue::Number(v) => (*v as u8).min(127),
                     _ => 0,
                 };
-                if velocity > 0 {
-                    vec![0x90 | channel, data1, velocity] // Note On
-                } else {
-                    vec![0x80 | channel, data1, 0] // Note Off
-                }
+                // Always use Note On - velocity 0 turns LED off, velocity >0 turns it on
+                // NoteOff (0x80) is for button release events, not LED control
+                vec![0x90 | channel, data1, velocity]
             }
             MidiStatus::CC => {
                 let value = match &entry.value {
@@ -1015,9 +1013,10 @@ impl Router {
             }
         };
 
-        // For simplicity, assume all apps use channels 1-9
-        // In a full implementation, this would check page.passthroughs for actual channels
-        let channels: Vec<u8> = (1..=9).collect();
+        // X-Touch buttons are on channel 1 (0-indexed as channel 0 in MIDI, but config uses 1)
+        // Faders use channels 1-9 for PitchBend (handled separately above)
+        // TODO: In full implementation, extract channels from page.passthroughs config
+        let channels: Vec<u8> = vec![1];
 
         // Build plans for each app
         for app in AppKey::all() {
@@ -1070,55 +1069,46 @@ impl Router {
                 push_pb(&mut pb_plan, ch, zero_pb, 1);
             }
 
-            // Notes: 0-101 to cover all X-Touch buttons
-            // Always send Note Off during page refresh to clear previous page buttons
-            // Let drivers send feedback to turn on the buttons that should be on
-            for note in 0..=101 {
-                let off = MidiStateEntry {
-                    addr: MidiAddr {
-                        port_id: app.as_str().to_string(),
-                        status: MidiStatus::Note,
-                        channel: Some(0), // X-Touch buttons are on channel 1 (0-indexed)
-                        data1: Some(note),
-                    },
-                    value: MidiValue::Number(0),
-                    ts: Self::now_ms(),
-                    origin: Origin::XTouch,
-                    known: false,
-                    stale: false,
-                    hash: None,
-                };
-                push_note(&mut note_plan, off, 1);
+            // Notes: 0-31 - Always send Note Off to clear previous page buttons
+            // Then let drivers send feedback to turn on buttons that should be ON
+            for &ch in &channels {
+                for note in 0..=31 {
+                    let off = MidiStateEntry {
+                        addr: MidiAddr {
+                            port_id: app.as_str().to_string(),
+                            status: MidiStatus::Note,
+                            channel: Some(ch),
+                            data1: Some(note),
+                        },
+                        value: MidiValue::Number(0),
+                        ts: Self::now_ms(),
+                        origin: Origin::XTouch,
+                        known: false,
+                        stale: false,
+                        hash: None,
+                    };
+                    push_note(&mut note_plan, off, 1);
+                }
             }
 
-            // CC (rings): 0-31 (priority: Known = 2 > Reset 0 = 1)
+            // CC (rings): 0-31 - Always send 0 to clear previous page
             for &ch in &channels {
                 for cc in 0..=31 {
-                    if let Some(latest_cc) = self.state.get_known_latest_for_app(
-                        *app,
-                        MidiStatus::CC,
-                        Some(ch),
-                        Some(cc),
-                    ) {
-                        push_cc(&mut cc_plan, latest_cc, 2);
-                    } else {
-                        // Reset to 0
-                        let zero = MidiStateEntry {
-                            addr: MidiAddr {
-                                port_id: app.as_str().to_string(),
-                                status: MidiStatus::CC,
-                                channel: Some(ch),
-                                data1: Some(cc),
-                            },
-                            value: MidiValue::Number(0),
-                            ts: Self::now_ms(),
-                            origin: Origin::XTouch,
-                            known: false,
-                            stale: false,
-                            hash: None,
-                        };
-                        push_cc(&mut cc_plan, zero, 1);
-                    }
+                    let zero = MidiStateEntry {
+                        addr: MidiAddr {
+                            port_id: app.as_str().to_string(),
+                            status: MidiStatus::CC,
+                            channel: Some(ch),
+                            data1: Some(cc),
+                        },
+                        value: MidiValue::Number(0),
+                        ts: Self::now_ms(),
+                        origin: Origin::XTouch,
+                        known: false,
+                        stale: false,
+                        hash: None,
+                    };
+                    push_cc(&mut cc_plan, zero, 1);
                 }
             }
         }
