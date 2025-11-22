@@ -5,7 +5,7 @@
 use anyhow::Result;
 use clap::Parser;
 use tokio::sync::mpsc;
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod cli;
@@ -104,9 +104,22 @@ async fn main() -> Result<()> {
     let (config_watcher, initial_config) = ConfigWatcher::new(args.config.clone()).await?;
     info!("Configuration loaded successfully with hot-reload enabled");
 
+    // Create .state directory for persistence
+    tokio::fs::create_dir_all(".state").await?;
+
     // Initialize router
     let router = Router::new((*initial_config).clone());
     info!("Router initialized");
+
+    // Load state snapshot from disk if it exists
+    let snapshot_path = std::path::PathBuf::from(".state/snapshot.json");
+    if snapshot_path.exists() {
+        if let Err(e) = router.get_state_store().load_snapshot(&snapshot_path).await {
+            warn!("Failed to load state snapshot: {}", e);
+        } else {
+            info!("✅ State snapshot loaded from disk");
+        }
+    }
 
     // Set up shutdown signal
     let shutdown_signal = shutdown_signal();
@@ -413,6 +426,14 @@ async fn run_app(
                 }
             }
 
+            // Periodic state snapshot save (every 5 seconds)
+            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
+                let snapshot_path = std::path::PathBuf::from(".state/snapshot.json");
+                if let Err(e) = router.save_state_snapshot(&snapshot_path).await {
+                    warn!("Failed to save state snapshot: {}", e);
+                }
+            }
+
             // Handle shutdown signal
             _ = &mut shutdown => {
                 info!("Shutdown signal received, stopping event loop");
@@ -425,6 +446,15 @@ async fn run_app(
     info!("Shutting down...");
     router.shutdown_all_drivers().await?;
     info!("All drivers shut down");
+
+    // Save final state snapshot
+    info!("Saving final state snapshot...");
+    let snapshot_path = std::path::PathBuf::from(".state/snapshot.json");
+    if let Err(e) = router.save_state_snapshot(&snapshot_path).await {
+        warn!("Failed to save final state snapshot: {}", e);
+    } else {
+        info!("✅ State snapshot saved");
+    }
 
     // Reset X-Touch hardware to clean state before disconnecting
     if let Err(e) = xtouch.reset_all(true).await {

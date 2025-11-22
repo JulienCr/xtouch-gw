@@ -1075,9 +1075,9 @@ impl Router {
         };
 
         // X-Touch buttons are on channel 1 (0-indexed as channel 0 in MIDI, but config uses 1)
-        // Faders use channels 1-9 for PitchBend (handled separately above)
-        // TODO: In full implementation, extract channels from page.passthroughs config
-        let channels: Vec<u8> = vec![1];
+        // Faders use channels 1-9 for PitchBend: 8 strip faders + 1 master fader
+        // (fader1-8 on ch1-8, fader_master on ch9)
+        let channels: Vec<u8> = (1..=9).collect();
 
         // Build plans for each app
         for app in AppKey::all() {
@@ -1267,6 +1267,16 @@ impl Router {
     pub async fn take_setpoint_receiver(&self) -> Option<mpsc::UnboundedReceiver<ApplySetpointCmd>> {
         let mut rx_guard = self.setpoint_rx.lock().await;
         rx_guard.take()
+    }
+
+    /// Get reference to StateStore (for loading snapshots)
+    pub fn get_state_store(&self) -> &StateStore {
+        &self.state
+    }
+
+    /// Save state snapshot to disk
+    pub async fn save_state_snapshot(&self, path: impl AsRef<std::path::Path>) -> Result<()> {
+        self.state.save_snapshot(path).await
     }
 
     /// Get anti-echo window for a MIDI status type
