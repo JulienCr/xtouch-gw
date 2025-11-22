@@ -362,7 +362,14 @@ async fn run_app(
 
             // Handle feedback from applications → X-Touch
             Some((app_name, feedback_data)) = feedback_rx.recv() => {
-                // Process feedback through router (reverse transformation)
+                // ALWAYS update state (even if app not on active page)
+                // This ensures StateStore tracks all app values for page refresh
+                // (matches TypeScript onMidiFromApp behavior)
+                router.on_midi_from_app(&app_name, &feedback_data, &app_name);
+
+                // Conditionally forward to X-Touch (only if app mapped on active page)
+                // This prevents off-page apps from moving faders
+                // (matches TypeScript forwardFromApp behavior)
                 if let Some(transformed) = router.process_feedback(&app_name, &feedback_data).await {
                     debug!("📤 Forwarding feedback to X-Touch: {:02X?}", transformed);
 
