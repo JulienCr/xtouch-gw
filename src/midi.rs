@@ -296,9 +296,24 @@ impl fmt::Display for MidiMessage {
 
 /// MIDI value conversion utilities
 pub mod convert {
-    /// Convert 14-bit value (0-16383) to 7-bit value (0-127)
+    /// Convert 14-bit value (0-16383) to 7-bit value (0-127) using bit shift
+    /// Note: This uses bit shift and may lose precision. Use to_7bit_from_14bit() for precise conversion.
     pub fn to_7bit(value_14bit: u16) -> u8 {
         ((value_14bit >> 7) & 0x7F) as u8
+    }
+
+    /// Convert 14-bit value (0-16383) to 7-bit value (0-127) with proper rounding
+    /// Matches TypeScript to7bitFrom14bit(): Math.round((v / 16383) * 127)
+    pub fn to_7bit_from_14bit(value_14bit: u16) -> u8 {
+        let clamped = value_14bit.min(16383);
+        ((clamped as f32 / 16383.0) * 127.0).round() as u8
+    }
+
+    /// Convert 14-bit value (0-16383) to 8-bit value (0-255) with proper rounding
+    /// Matches TypeScript to8bitFrom14bit(): Math.round((v / 16383) * 255)
+    pub fn to_8bit_from_14bit(value_14bit: u16) -> u8 {
+        let clamped = value_14bit.min(16383);
+        ((clamped as f32 / 16383.0) * 255.0).round() as u8
     }
     
     /// Convert 7-bit value (0-127) to 14-bit value (0-16383)

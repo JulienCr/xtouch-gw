@@ -292,9 +292,8 @@ impl MidiBridgeDriver {
         if let Some(pb_to_cc) = &transform.pb_to_cc {
             if let MidiMessage::PitchBend { channel, value } = msg {
                 // Convert 14-bit PB (0-16383) to 7-bit CC (0-127)
-                // Use proper floating-point math with rounding (matches TypeScript convert.ts)
-                let value_clamped = value.min(16383);
-                let value_7bit = ((value_clamped as f32 / 16383.0) * 127.0).round() as u8;
+                // Use centralized conversion function (matches TypeScript to7bitFrom14bit)
+                let value_7bit = crate::midi::convert::to_7bit_from_14bit(value);
                 
                 let target_channel = pb_to_cc.target_channel.unwrap_or(1);
                 
