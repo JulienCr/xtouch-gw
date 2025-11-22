@@ -308,6 +308,14 @@ async fn run_app(
                 if router.check_and_clear_display_update().await {
                     info!("📺 Updating display after page change...");
 
+                    // Send pending MIDI messages to X-Touch (e.g., Note Off for unmapped buttons)
+                    let pending_midi = router.take_pending_midi().await;
+                    for msg in pending_midi {
+                        if let Err(e) = xtouch.send_raw(&msg).await {
+                            warn!("Failed to send page refresh MIDI: {}", e);
+                        }
+                    }
+
                     // Get active page config
                     let active_page = router.get_active_page().await;
                     let active_page_name = router.get_active_page_name().await;
@@ -406,6 +414,12 @@ async fn run_app(
     info!("Shutting down...");
     router.shutdown_all_drivers().await?;
     info!("All drivers shut down");
+
+    // Reset X-Touch hardware to clean state before disconnecting
+    if let Err(e) = xtouch.reset_all(true).await {
+        warn!("Failed to reset X-Touch hardware on shutdown: {}", e);
+    }
+
     // Note: XTouch will be automatically disconnected when dropped
     drop(xtouch);
 

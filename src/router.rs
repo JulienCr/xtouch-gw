@@ -67,6 +67,8 @@ pub struct Router {
     fader_setpoint: Arc<FaderSetpoint>,
     /// Receiver for setpoint apply commands (stored for retrieval)
     setpoint_rx: Arc<tokio::sync::Mutex<Option<mpsc::UnboundedReceiver<ApplySetpointCmd>>>>,
+    /// Pending MIDI messages to send to X-Touch (e.g., from page refresh)
+    pending_midi_messages: Arc<tokio::sync::Mutex<Vec<Vec<u8>>>>,
 }
 
 impl Router {
@@ -84,6 +86,7 @@ impl Router {
             display_needs_update: Arc::new(tokio::sync::Mutex::new(false)),
             fader_setpoint: Arc::new(fader_setpoint),
             setpoint_rx: Arc::new(tokio::sync::Mutex::new(Some(setpoint_rx))),
+            pending_midi_messages: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         }
     }
 
@@ -93,6 +96,11 @@ impl Router {
         let needs_update = *flag;
         *flag = false;
         needs_update
+    }
+
+    /// Take pending MIDI messages (consumes them, leaving empty Vec)
+    pub async fn take_pending_midi(&self) -> Vec<Vec<u8>> {
+        std::mem::take(&mut *self.pending_midi_messages.lock().await)
     }
 
     /// Create an execution context for driver calls
@@ -860,15 +868,23 @@ impl Router {
                 .count()
         );
 
-        // TODO: Send entries to X-Touch via MIDI output
-        // For now, just log that we planned the refresh
-        // The actual MIDI sending will be handled by main loop when it detects display_needs_update
+        // Convert entries to MIDI bytes and collect for sending
+        let mut midi_messages = Vec::new();
+        for entry in &entries {
+            let bytes = self.entry_to_midi_bytes(entry);
+            if !bytes.is_empty() {
+                midi_messages.push(bytes);
+            }
+        }
 
         info!(
-            "Page refresh completed: {} (planned {} entries)",
+            "Page refresh completed: {} (sending {} MIDI messages)",
             page.name,
-            entries.len()
+            midi_messages.len()
         );
+
+        // Store pending MIDI messages for main loop to send to X-Touch
+        *self.pending_midi_messages.lock().await = midi_messages;
 
         // Signal that display needs update (LCD + LEDs)
         *self.display_needs_update.lock().await = true;
@@ -879,6 +895,45 @@ impl Router {
         // X-Touch shadow is per-app, clear all
         if let Ok(mut shadows) = self.app_shadows.write() {
             shadows.clear();
+        }
+    }
+
+    /// Convert MidiStateEntry to raw MIDI bytes for sending to X-Touch
+    fn entry_to_midi_bytes(&self, entry: &MidiStateEntry) -> Vec<u8> {
+        use crate::state::MidiValue;
+
+        let channel = entry.addr.channel.unwrap_or(0);
+        let data1 = entry.addr.data1.unwrap_or(0);
+
+        match entry.addr.status {
+            MidiStatus::Note => {
+                let velocity = match &entry.value {
+                    MidiValue::Number(v) => (*v as u8).min(127),
+                    _ => 0,
+                };
+                if velocity > 0 {
+                    vec![0x90 | channel, data1, velocity] // Note On
+                } else {
+                    vec![0x80 | channel, data1, 0] // Note Off
+                }
+            }
+            MidiStatus::CC => {
+                let value = match &entry.value {
+                    MidiValue::Number(v) => (*v as u8).min(127),
+                    _ => 0,
+                };
+                vec![0xB0 | channel, data1, value] // Control Change
+            }
+            MidiStatus::PB => {
+                let value14 = match &entry.value {
+                    MidiValue::Number(v) => (*v).min(16383),
+                    _ => 0,
+                };
+                let lsb = (value14 & 0x7F) as u8;
+                let msb = ((value14 >> 7) & 0x7F) as u8;
+                vec![0xE0 | channel, lsb, msb] // Pitch Bend
+            }
+            _ => vec![], // Other types not handled
         }
     }
 
@@ -1015,35 +1070,25 @@ impl Router {
                 push_pb(&mut pb_plan, ch, zero_pb, 1);
             }
 
-            // Notes: 0-31 (priority: Known = 2 > Reset OFF = 1)
-            for &ch in &channels {
-                for note in 0..=31 {
-                    if let Some(latest_note) = self.state.get_known_latest_for_app(
-                        *app,
-                        MidiStatus::Note,
-                        Some(ch),
-                        Some(note),
-                    ) {
-                        push_note(&mut note_plan, latest_note, 2);
-                    } else {
-                        // Reset to OFF
-                        let off = MidiStateEntry {
-                            addr: MidiAddr {
-                                port_id: app.as_str().to_string(),
-                                status: MidiStatus::Note,
-                                channel: Some(ch),
-                                data1: Some(note),
-                            },
-                            value: MidiValue::Number(0),
-                            ts: Self::now_ms(),
-                            origin: Origin::XTouch,
-                            known: false,
-                            stale: false,
-                            hash: None,
-                        };
-                        push_note(&mut note_plan, off, 1);
-                    }
-                }
+            // Notes: 0-101 to cover all X-Touch buttons
+            // Always send Note Off during page refresh to clear previous page buttons
+            // Let drivers send feedback to turn on the buttons that should be on
+            for note in 0..=101 {
+                let off = MidiStateEntry {
+                    addr: MidiAddr {
+                        port_id: app.as_str().to_string(),
+                        status: MidiStatus::Note,
+                        channel: Some(0), // X-Touch buttons are on channel 1 (0-indexed)
+                        data1: Some(note),
+                    },
+                    value: MidiValue::Number(0),
+                    ts: Self::now_ms(),
+                    origin: Origin::XTouch,
+                    known: false,
+                    stale: false,
+                    hash: None,
+                };
+                push_note(&mut note_plan, off, 1);
             }
 
             // CC (rings): 0-31 (priority: Known = 2 > Reset 0 = 1)

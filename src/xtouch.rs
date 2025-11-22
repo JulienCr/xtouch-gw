@@ -653,6 +653,43 @@ impl XTouchDriver {
 
         Ok(())
     }
+
+    /// Reset all hardware to clean state
+    ///
+    /// Matches TypeScript resetAll() from api-midi.ts
+    /// - Turns off all button LEDs (notes 0-101)
+    /// - Resets all faders to 0
+    /// - Optionally clears LCD displays
+    pub async fn reset_all(&self, clear_lcds: bool) -> Result<()> {
+        info!("🔄 Resetting X-Touch hardware...");
+
+        // Turn off all button LEDs (notes 0-101 on channel 1)
+        // Matches TypeScript setAllButtonsVelocity(driver, 1, 0, 101, 0, 2)
+        for note in 0..=101 {
+            let message = MidiMessage::NoteOn {
+                channel: 0, // Channel 1 (0-indexed)
+                note,
+                velocity: 0, // Velocity 0 turns off LED
+            };
+            self.send(&message).await;
+            // Small delay between messages to avoid overwhelming MIDI buffer
+            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+        }
+
+        // Reset all faders to 0 (faders 0-8: strips 1-8 + master)
+        // Matches TypeScript resetFadersToZero(driver, [1,2,3,4,5,6,7,8,9])
+        for fader_num in 0..=8 {
+            self.set_fader(fader_num, 0).await?;
+        }
+
+        // Optionally clear LCD displays
+        if clear_lcds {
+            self.clear_all_lcds().await?;
+        }
+
+        info!("✅ X-Touch hardware reset complete");
+        Ok(())
+    }
 }
 
 /// Port discovery utilities
