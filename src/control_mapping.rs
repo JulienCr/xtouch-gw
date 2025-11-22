@@ -5,7 +5,9 @@
 use anyhow::{Result, Context};
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::SystemTime;
 use tracing::{info, debug};
 
 /// Control mapping entry from CSV
@@ -244,9 +246,71 @@ impl ControlMappingDB {
 /// Default embedded CSV content (for when file is not available)
 pub const DEFAULT_CSV: &str = include_str!("../docs/xtouch-matching.csv");
 
-/// Load the default control mappings
+/// Global cache for the embedded default mappings
+static DEFAULT_DB: OnceLock<ControlMappingDB> = OnceLock::new();
+
+/// In-memory cache for on-disk CSV (path + mtime)
+struct FileCache {
+    path: PathBuf,
+    mtime: SystemTime,
+    db: ControlMappingDB,
+}
+
+static FILE_DB: OnceLock<Mutex<Option<FileCache>>> = OnceLock::new();
+
+/// Load the default control mappings (cached after first parse)
 pub fn load_default_mappings() -> Result<ControlMappingDB> {
-    ControlMappingDB::load_from_string(DEFAULT_CSV)
+    if let Some(db) = DEFAULT_DB.get() {
+        return Ok(db.clone());
+    }
+
+    let db = ControlMappingDB::load_from_string(DEFAULT_CSV)?;
+    // Ignore error if another thread set it first
+    let _ = DEFAULT_DB.set(db.clone());
+    Ok(db)
+}
+
+/// Warm the default cache so parsing happens at startup
+pub fn warm_default_mappings() -> Result<()> {
+    let _ = load_default_mappings()?;
+    Ok(())
+}
+
+/// Load mappings from a CSV path, re-parsing only when the file changed.
+pub async fn load_mappings_from_path(path: impl AsRef<Path>) -> Result<ControlMappingDB> {
+    let path = path.as_ref().to_path_buf();
+
+    // Check file metadata (mtime)
+    let meta = tokio::fs::metadata(&path)
+        .await
+        .with_context(|| format!("Failed to stat CSV file: {}", path.display()))?;
+    let mtime = meta
+        .modified()
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+
+    let cache = FILE_DB.get_or_init(|| Mutex::new(None));
+    {
+        let guard = cache.lock().expect("cache mutex poisoned");
+        if let Some(FileCache { path: cached_path, mtime: cached_mtime, db }) = guard.as_ref() {
+            if *cached_path == path && *cached_mtime == mtime {
+                return Ok(db.clone());
+            }
+        }
+    }
+
+    // Not cached or outdated -> re-read
+    let csv_content = tokio::fs::read_to_string(&path)
+        .await
+        .with_context(|| format!("Failed to read CSV file: {}", path.display()))?;
+    let db = ControlMappingDB::parse_csv(&csv_content)?;
+
+    // Update cache
+    {
+        let mut guard = cache.lock().expect("cache mutex poisoned");
+        *guard = Some(FileCache { path, mtime, db: db.clone() });
+    }
+
+    Ok(db)
 }
 
 #[cfg(test)]

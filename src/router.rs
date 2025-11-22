@@ -457,16 +457,16 @@ impl Router {
             },
         };
 
-        // Check global controls first, then page-specific controls
+        // Check page-specific controls first, then global controls as fallback
         let config = self.config.read().await;
-        let control_config = config
-            .pages_global
+        let control_config = page.controls
             .as_ref()
-            .and_then(|pg| pg.controls.as_ref())
             .and_then(|controls| controls.get(control_id))
             .or_else(|| {
-                page.controls
+                config
+                    .pages_global
                     .as_ref()
+                    .and_then(|pg| pg.controls.as_ref())
                     .and_then(|controls| controls.get(control_id))
             });
 
@@ -644,6 +644,45 @@ impl Router {
         }
     }
 
+    /// Get all apps that are active on a given page
+    ///
+    /// This includes apps referenced in:
+    /// 1. Page-specific controls (`page.controls.*.app`)
+    /// 2. Global controls (`pages_global.controls.*.app`)
+    /// 3. Passthrough configurations (TODO)
+    ///
+    /// Used for page-aware feedback filtering (matches TypeScript getAppsForPage)
+    fn get_apps_for_page(&self, page: &crate::config::PageConfig, config: &crate::config::AppConfig) -> std::collections::HashSet<String> {
+        use std::collections::HashSet;
+
+        let mut apps = HashSet::new();
+
+        // 1. Extract apps from page-specific controls
+        if let Some(controls) = &page.controls {
+            for (_, mapping) in controls {
+                apps.insert(mapping.app.clone());
+            }
+        }
+
+        // 2. Extract apps from global controls (always available on all pages)
+        if let Some(global) = &config.pages_global {
+            if let Some(controls) = &global.controls {
+                for (_, mapping) in controls {
+                    apps.insert(mapping.app.clone());
+                }
+            }
+        }
+
+        // 3. TODO: Extract apps from passthrough configurations
+        // if let Some(passthroughs) = &page.passthroughs {
+        //     for pt in passthroughs {
+        //         apps.insert(pt.app.clone());
+        //     }
+        // }
+
+        apps
+    }
+
     /// Process feedback from an application (reverse transformation)
     pub async fn process_feedback(&self, app_name: &str, raw_data: &[u8]) -> Option<Vec<u8>> {
         use crate::control_mapping::{load_default_mappings, MidiSpec};
@@ -669,9 +708,37 @@ impl Router {
             _ => return Some(raw_data.to_vec()), // Pass through other messages
         };
 
-        // CRITICAL: Schedule motor setpoints BEFORE anti-echo logic
-        // This ensures the motor knows the correct position even if MIDI emission is suppressed
-        // (matches TypeScript forward.ts:41-52)
+        // PAGE-AWARE FILTERING: Check if app is mapped on active page BEFORE scheduling setpoints
+        // This prevents faders from moving on Page 2 when Voicemeeter sends feedback
+        let config = self.config.read().await;
+        let active_page_idx = *self.active_page_index.read().await;
+
+        let active_page = match config.pages.get(active_page_idx) {
+            Some(page) => page,
+            None => {
+                trace!("No active page, skipping feedback forward to X-Touch");
+                return None;
+            }
+        };
+
+        let apps_on_page = self.get_apps_for_page(active_page, &config);
+        if !apps_on_page.contains(app_name) {
+            trace!(
+                "App '{}' not mapped on active page '{}', skipping X-Touch forward",
+                app_name,
+                active_page.name
+            );
+            return None;
+        }
+
+        debug!(
+            "✓ App '{}' is mapped on page '{}', forwarding feedback to X-Touch",
+            app_name,
+            active_page.name
+        );
+
+        // CRITICAL: Schedule motor setpoints AFTER page filtering
+        // Only schedule if the app is actually on this page (prevents off-page movements)
         if let crate::midi::MidiMessage::PitchBend { channel, value } = input_msg {
             let channel1 = channel + 1; // Convert 0-based to 1-based
             debug!(
@@ -680,10 +747,6 @@ impl Router {
             );
             self.fader_setpoint.schedule(channel1, value, None);
         }
-
-        // Find which control this message maps to
-        let config = self.config.read().await;
-        let active_page_idx = *self.active_page_index.read().await;
 
         // Helper to check if a mapping matches the incoming message
         let matches_mapping = |mapping: &crate::config::ControlMapping| -> bool {
@@ -731,16 +794,14 @@ impl Router {
             false
         };
 
-        // Search in active page controls
+        // Search in active page controls (use the active_page we already have)
         let mut found_control_id = None;
 
-        if let Some(page) = config.pages.get(active_page_idx) {
-            if let Some(controls) = &page.controls {
-                for (id, mapping) in controls {
-                    if matches_mapping(mapping) {
-                        found_control_id = Some(id.clone());
-                        break;
-                    }
+        if let Some(controls) = &active_page.controls {
+            for (id, mapping) in controls {
+                if matches_mapping(mapping) {
+                    found_control_id = Some(id.clone());
+                    break;
                 }
             }
         }

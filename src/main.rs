@@ -19,6 +19,7 @@ mod state;
 mod xtouch;
 
 use crate::config::{watcher::ConfigWatcher, AppConfig};
+use crate::control_mapping::warm_default_mappings;
 use crate::drivers::midibridge::MidiBridgeDriver;
 use crate::drivers::obs::ObsDriver;
 use crate::drivers::qlc::QlcDriver;
@@ -72,6 +73,9 @@ async fn main() -> Result<()> {
 
     info!("Starting XTouch GW v3...");
     info!("Configuration file: {}", args.config);
+
+    // Parse and cache control mappings up-front to avoid per-event parsing
+    warm_default_mappings()?;
 
     // Handle list ports
     if args.list_ports {
