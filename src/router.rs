@@ -997,6 +997,80 @@ impl Router {
         }
     }
 
+    /// Try to transform CC value to PB for page refresh (reverse transformation)
+    ///
+    /// When a fader is mapped to send CC to an app (like QLC+), the StateStore
+    /// will have CC values. But X-Touch faders need PB messages. This function:
+    /// 1. Looks up which control uses the given PB channel
+    /// 2. Checks if that control has a CC mapping in the page config
+    /// 3. Queries StateStore for the CC value
+    /// 4. Transforms CC (7-bit) to PB (14-bit) using fast approximation
+    ///
+    /// Returns transformed PB entry if CC value found, None otherwise
+    fn try_cc_to_pb_transform(
+        &self,
+        page: &PageConfig,
+        app: &AppKey,
+        pb_channel: u8,
+    ) -> Option<MidiStateEntry> {
+        use crate::control_mapping::{load_default_mappings, MidiSpec};
+        use crate::state::{MidiAddr, MidiValue, Origin};
+
+        // 1. Reverse lookup: Find control ID for this PB channel (e.g., "fader1" for ch1)
+        let mapping_db = load_default_mappings().ok()?;
+        let control_id = mapping_db
+            .mappings
+            .iter()
+            .find(|(_, mapping)| {
+                if let Ok(spec) = MidiSpec::parse(&mapping.mcu_message) {
+                    matches!(spec, MidiSpec::PitchBend { channel } if channel == pb_channel.saturating_sub(1))
+                } else {
+                    false
+                }
+            })
+            .map(|(id, _)| id.clone())?;
+
+        // 2. Get control config from page
+        let control_config = page.controls.as_ref()?.get(&control_id)?;
+
+        // 3. Check if control has CC mapping (not PB passthrough)
+        let midi_spec = control_config.midi.as_ref()?;
+        if !matches!(midi_spec.midi_type, crate::config::MidiType::Cc) {
+            return None; // Not a CC mapping, skip
+        }
+
+        // 4. Query StateStore for CC value
+        let cc_channel = midi_spec.channel?;
+        let cc_num = midi_spec.cc?;
+        let cc_entry = self.state.get_known_latest_for_app(
+            *app,
+            crate::state::MidiStatus::CC,
+            Some(cc_channel),
+            Some(cc_num),
+        )?;
+
+        // 5. Transform CC (7-bit) to PB (14-bit)
+        // Use TypeScript fast approximation: (v7 << 7) | v7
+        let cc_value = cc_entry.value.as_number()? as u8;
+        let pb_value = ((cc_value as u16) << 7) | (cc_value as u16);
+
+        // 6. Create transformed PB entry
+        Some(MidiStateEntry {
+            addr: MidiAddr {
+                port_id: app.as_str().to_string(),
+                status: crate::state::MidiStatus::PB,
+                channel: Some(pb_channel),
+                data1: Some(0),
+            },
+            value: MidiValue::Number(pb_value),
+            ts: cc_entry.ts,
+            origin: Origin::App,
+            known: true,
+            stale: false,
+            hash: None,
+        })
+    }
+
     /// Plan page refresh: build ordered list of MIDI entries to send
     ///
     /// Returns entries in order: Notes → CC → SysEx → PB
@@ -1082,9 +1156,9 @@ impl Router {
 
         // Build plans for each app
         for app in AppKey::all() {
-            // PB plan (priority: Known PB = 3 > Fader Setpoint = 2 > Zero = 1)
+            // PB plan (priority: Known PB = 3 > Mapped CC→PB = 2 > Fader Setpoint = 2 > Zero = 1)
             for &ch in &channels {
-                // Try to get known PB value
+                // Priority 3: Try to get known PB value
                 if let Some(latest_pb) =
                     self.state
                         .get_known_latest_for_app(*app, MidiStatus::PB, Some(ch), Some(0))
@@ -1093,7 +1167,13 @@ impl Router {
                     continue;
                 }
 
-                // Try to get from fader setpoint (motor position)
+                // Priority 2: Try to transform CC to PB (for apps like QLC+)
+                if let Some(transformed_pb) = self.try_cc_to_pb_transform(_page, app, ch) {
+                    push_pb(&mut pb_plan, ch, transformed_pb, 2);
+                    continue;
+                }
+
+                // Priority 2: Try to get from fader setpoint (motor position)
                 if let Some(desired14) = self.fader_setpoint.get_desired(ch) {
                     let setpoint_pb = MidiStateEntry {
                         addr: MidiAddr {
