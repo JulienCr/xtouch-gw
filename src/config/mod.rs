@@ -156,9 +156,12 @@ pub struct PageConfig {
 pub struct IndicatorConfig {
     pub signal: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub equals: Option<String>,
+    pub equals: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truthy: Option<bool>,
+    #[serde(rename = "in")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub in_array: Option<Vec<serde_json::Value>>,
 }
 
 /// Control mapping

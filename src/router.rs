@@ -624,18 +624,63 @@ impl Router {
         // Build parameters
         let params = control_config.params.clone().unwrap_or_default();
 
-        // Create execution context with MIDI value
-        let mut ctx = self.create_execution_context().await;
-        ctx.value = Some(match serde_json::to_value(raw) {
-            Ok(v) => v,
-            Err(e) => {
-                warn!("Failed to serialize MIDI data: {}", e);
+        // Filter button releases (Note On with velocity 0)
+        // This prevents toggle actions from firing twice (press + release)
+        let status = raw[0];
+        let type_nibble = (status & 0xF0) >> 4;
+        if type_nibble == 0x9 && raw.len() >= 3 {
+            let velocity = raw[2];
+            if velocity == 0 {
+                debug!("Ignoring Note Off (velocity 0) for control '{}'", control_id);
                 return;
-            },
-        });
+            }
+        }
+
+        // Create execution context with parsed MIDI value
+        let mut ctx = self.create_execution_context().await;
+
+        // Parse MIDI message to extract the value/velocity byte
+        // This allows drivers to receive a Number instead of raw bytes array
+        if raw.len() >= 3 {
+            let value = match type_nibble {
+                0x9 => raw[2] as f64,        // Note On: velocity
+                0xB => raw[2] as f64,        // Control Change: value
+                0xE => {                      // Pitch Bend: 14-bit value (0-16383)
+                    let lsb = raw[1] as u16;
+                    let msb = raw[2] as u16;
+                    ((msb << 7) | lsb) as f64
+                },
+                _ => {
+                    // Unknown message type, pass raw bytes
+                    match serde_json::to_value(raw) {
+                        Ok(v) => {
+                            ctx.value = Some(v);
+                            0.0 // unused
+                        },
+                        Err(e) => {
+                            warn!("Failed to serialize MIDI data: {}", e);
+                            return;
+                        },
+                    }
+                },
+            };
+
+            if type_nibble == 0x9 || type_nibble == 0xB || type_nibble == 0xE {
+                ctx.value = Some(Value::Number(serde_json::Number::from_f64(value).unwrap()));
+            }
+        } else {
+            // Short message, pass raw bytes
+            ctx.value = Some(match serde_json::to_value(raw) {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!("Failed to serialize MIDI data: {}", e);
+                    return;
+                },
+            });
+        }
 
         // Execute driver action
-        info!(
+        debug!(
             "→ Routing: {} → app={} action={}",
             control_id, control_config.app, action
         );
@@ -1733,6 +1778,145 @@ impl Router {
 
         // TODO: Forward to X-Touch if relevant for active page
         // This will be implemented in the forward module (Phase 6.2)
+    }
+
+    /// Evaluate indicator conditions for a signal emission
+    ///
+    /// Returns a HashMap of control_id -> should_be_lit for all controls
+    /// on the active page that have indicators matching the given signal.
+    ///
+    /// This is called by the indicator subscription handler when drivers
+    /// emit signals (e.g., "obs.selectedScene", "obs.studioMode").
+    pub async fn evaluate_indicators(&self, signal: &str, value: &Value) -> HashMap<String, bool> {
+        let mut result = HashMap::new();
+
+        // Get active page controls
+        let config = self.config.read().await;
+        let page_index = *self.active_page_index.read().await;
+
+        let page = match config.pages.get(page_index) {
+            Some(p) => p,
+            None => return result,
+        };
+
+        let controls = match &page.controls {
+            Some(c) => c,
+            None => return result,
+        };
+
+        // Also check global controls
+        let global_controls = config.pages_global.as_ref().and_then(|g| g.controls.as_ref());
+
+        // Iterate through all controls (page + global)
+        // First check page controls
+        for (control_id, mapping) in controls.iter() {
+            let indicator = match &mapping.indicator {
+                Some(ind) => ind,
+                None => continue,
+            };
+
+            // Check if this indicator matches the signal
+            if indicator.signal != signal {
+                continue;
+            }
+
+            // Evaluate the condition
+            let should_be_lit = if let Some(truthy) = indicator.truthy {
+                // Truthy check: LED on if value is truthy
+                if truthy {
+                    match value {
+                        Value::Bool(b) => *b,
+                        Value::Null => false,
+                        Value::Number(n) => n.as_f64().map(|f| f != 0.0).unwrap_or(false),
+                        Value::String(s) => !s.is_empty(),
+                        Value::Array(a) => !a.is_empty(),
+                        Value::Object(o) => !o.is_empty(),
+                    }
+                } else {
+                    false
+                }
+            } else if let Some(in_array) = &indicator.in_array {
+                // "in" check: LED on if value matches any in array
+                in_array.iter().any(|v| {
+                    // String comparison: trim and compare
+                    if let (Value::String(a), Value::String(b)) = (v, value) {
+                        a.trim() == b.trim()
+                    } else {
+                        // Use serde_json equality (similar to Object.is)
+                        v == value
+                    }
+                })
+            } else if let Some(equals_value) = &indicator.equals {
+                // Equals check: LED on if value matches exactly
+                if let (Value::String(a), Value::String(b)) = (equals_value, value) {
+                    a.trim() == b.trim()
+                } else {
+                    equals_value == value
+                }
+            } else {
+                // No condition specified, default to off
+                false
+            };
+
+            result.insert(control_id.clone(), should_be_lit);
+        }
+
+        // Then check global controls
+        if let Some(global_ctrls) = global_controls {
+            for (control_id, mapping) in global_ctrls.iter() {
+                let indicator = match &mapping.indicator {
+                    Some(ind) => ind,
+                    None => continue,
+                };
+
+                // Check if this indicator matches the signal
+                if indicator.signal != signal {
+                    continue;
+                }
+
+                // Evaluate the condition
+                let should_be_lit = if let Some(truthy) = indicator.truthy {
+                    // Truthy check: LED on if value is truthy
+                    if truthy {
+                        match value {
+                            Value::Bool(b) => *b,
+                            Value::Null => false,
+                            Value::Number(n) => n.as_f64().map(|f| f != 0.0).unwrap_or(false),
+                            Value::String(s) => !s.is_empty(),
+                            Value::Array(a) => !a.is_empty(),
+                            Value::Object(o) => !o.is_empty(),
+                        }
+                    } else {
+                        false
+                    }
+                } else if let Some(in_array) = &indicator.in_array {
+                    // "in" check: LED on if value matches any in array
+                    in_array.iter().any(|v| {
+                        // String comparison: trim and compare
+                        if let (Value::String(a), Value::String(b)) = (v, value) {
+                            a.trim() == b.trim()
+                        } else {
+                            // Use serde_json equality (similar to Object.is)
+                            v == value
+                        }
+                    })
+                } else if let Some(equals_value) = &indicator.equals {
+                    // Equals check: LED on if value matches exactly
+                    if let (Value::String(a), Value::String(b)) = (equals_value, value) {
+                        a.trim() == b.trim()
+                    } else {
+                        equals_value == value
+                    }
+                } else {
+                    // No condition specified, default to off
+                    false
+                };
+
+                result.insert(control_id.clone(), should_be_lit);
+            }
+        }
+
+        result
     }
 }
 

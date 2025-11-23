@@ -8,7 +8,8 @@
       "Bash(cargo check:*)",
       "Bash(cargo doc:*)",
       "WebSearch",
-      "WebFetch(domain:docs.rs)"
+      "WebFetch(domain:docs.rs)",
+      "Bash(grep:*)"
     ],
     "deny": [],
     "ask": []

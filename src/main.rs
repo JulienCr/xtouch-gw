@@ -19,10 +19,11 @@ mod state;
 mod xtouch;
 
 use crate::config::{watcher::ConfigWatcher, AppConfig};
-use crate::control_mapping::warm_default_mappings;
+use crate::control_mapping::{warm_default_mappings, ControlMappingDB, MidiSpec};
 use crate::drivers::midibridge::MidiBridgeDriver;
 use crate::drivers::obs::ObsDriver;
 use crate::drivers::qlc::QlcDriver;
+use crate::drivers::{Driver, IndicatorCallback};
 use crate::router::Router;
 use crate::xtouch::XTouchDriver;
 use std::sync::Arc;
@@ -108,7 +109,7 @@ async fn main() -> Result<()> {
     tokio::fs::create_dir_all(".state").await?;
 
     // Initialize router
-    let router = Router::new((*initial_config).clone());
+    let router = Arc::new(Router::new((*initial_config).clone()));
     info!("Router initialized");
 
     // Load state snapshot from disk if it exists
@@ -138,7 +139,7 @@ async fn main() -> Result<()> {
 }
 
 async fn run_app(
-    router: Router,
+    router: Arc<Router>,
     config: AppConfig,
     mut config_watcher: ConfigWatcher,
     shutdown: impl std::future::Future<Output = ()>,
@@ -268,6 +269,21 @@ async fn run_app(
     // Drop the original sender so the channel closes when all drivers are shut down
     drop(feedback_tx);
 
+    // Load control database for LED indicator mapping
+    let control_db = match ControlMappingDB::load_from_csv("docs/xtouch-matching.csv").await {
+        Ok(db) => {
+            info!("✅ Loaded control database ({} controls)", db.mappings.len());
+            Arc::new(db)
+        },
+        Err(e) => {
+            warn!("⚠️  Failed to load control database: {}", e);
+            Arc::new(ControlMappingDB { mappings: Default::default(), groups: Default::default() })
+        },
+    };
+
+    // Create LED update channel for indicator system
+    let (led_tx, mut led_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+
     // Register OBS driver if configured
     if let Some(obs_config) = &config.obs {
         let obs_driver = Arc::new(ObsDriver::new(
@@ -275,11 +291,55 @@ async fn run_app(
             obs_config.port,
             obs_config.password.clone(),
         ));
+
+        // Subscribe to OBS indicator signals before registering
+        let router_clone = router.clone();
+        let control_db_clone = control_db.clone();
+        let config_clone = config.clone();
+        let led_tx_clone = led_tx.clone();
+
+        let indicator_callback: IndicatorCallback = Arc::new(move |signal: String, value: serde_json::Value| {
+            let router = router_clone.clone();
+            let control_db = control_db_clone.clone();
+            let config = config_clone.clone();
+            let led_tx = led_tx_clone.clone();
+
+            tokio::spawn(async move {
+                // Evaluate which controls should be lit
+                let lit_controls = router.evaluate_indicators(&signal, &value).await;
+
+                // Get MCU mode from config
+                let is_mcu_mode = config.xtouch.as_ref()
+                    .map(|x| matches!(x.mode, crate::config::XTouchMode::Mcu))
+                    .unwrap_or(true);
+
+                // Send LED updates to channel for each control
+                for (control_id, should_be_lit) in lit_controls.iter() {
+                    if let Some(midi_spec) = control_db.get_midi_spec(control_id, is_mcu_mode) {
+                        if let MidiSpec::Note { note } = midi_spec {
+                            let velocity = if *should_be_lit { 127 } else { 0 };
+                            let midi_msg = vec![0x90, note, velocity]; // Note On, channel 1
+
+                            if let Err(e) = led_tx.send(midi_msg) {
+                                warn!("Failed to send LED update to channel: {}", e);
+                            }
+                        }
+                    }
+                }
+            });
+        });
+
+        obs_driver.subscribe_indicators(indicator_callback);
+        info!("✅ Subscribed to OBS indicator signals");
+
         match router.register_driver("obs".to_string(), obs_driver).await {
             Ok(_) => info!("✅ Registered OBS driver"),
             Err(e) => warn!("⚠️  Failed to register OBS driver (will continue without it): {}", e),
         }
     }
+
+    // Keep led_tx alive for the duration of the program
+    // Don't drop it or the channel will close!
 
     // Register QLC driver (stub - uses MIDI passthrough)
     // Only register if not already registered (e.g. by MIDI bridge)
@@ -316,6 +376,13 @@ async fn run_app(
                     }
                 } else {
                     trace!("Setpoint apply skipped (obsolete): ch={} epoch={}", cmd.channel, cmd.epoch);
+                }
+            }
+
+            // Handle LED indicator updates
+            Some(midi_msg) = led_rx.recv() => {
+                if let Err(e) = xtouch.send_raw(&midi_msg).await {
+                    warn!("Failed to send LED update: {}", e);
                 }
             }
 
