@@ -1091,6 +1091,12 @@ impl Router {
             }
         };
 
+        // Ensure control's app matches the app we're querying for
+        if control_config.app != app.as_str() {
+            debug!("  ❌ Control app '{}' doesn't match queried app '{:?}'", control_config.app, app);
+            return None;
+        }
+
         // 3. Check if control has CC mapping (not PB passthrough)
         let midi_spec = match control_config.midi.as_ref() {
             Some(spec) => spec,
@@ -1258,8 +1264,16 @@ impl Router {
         // (fader1-8 on ch1-8, fader_master on ch9)
         let channels: Vec<u8> = (1..=9).collect();
 
-        // Build plans for each app
+        // Get apps mapped on this page (only restore state for mapped apps)
+        let config = self.config.try_read().expect("Config lock poisoned");
+        let apps_on_page = self.get_apps_for_page(_page, &config);
+
+        // Build plans for each app (only apps mapped on this page)
         for app in AppKey::all() {
+            // Skip apps not mapped on this page
+            if !apps_on_page.contains(app.as_str()) {
+                continue;
+            }
             // PB plan (priority: Known PB = 3 > Mapped CC→PB = 2 > Fader Setpoint = 2 > Zero = 1)
             for &ch in &channels {
                 // Priority 3: Try to get known PB value

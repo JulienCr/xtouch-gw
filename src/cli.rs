@@ -10,9 +10,22 @@ pub async fn run_repl() -> Result<()> {
         let readline = rl.readline("xtouch> ");
         match readline {
             Ok(line) => {
-                if line.trim() == "exit" || line.trim() == "quit" {
+                let trimmed = line.trim();
+
+                if trimmed == "exit" || trimmed == "quit" {
                     break;
                 }
+
+                if trimmed == "$" {
+                    // Clear the terminal (works on ANSI terminals incl. Windows 10+)
+                    // Move cursor to home after clearing.
+                    print!("\x1B[2J\x1B[H");
+                    // Ensure the clear is flushed immediately.
+                    use std::io::Write;
+                    let _ = std::io::stdout().flush();
+                    continue;
+                }
+
                 // Process command
                 println!("Command: {}", line);
             }
