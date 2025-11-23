@@ -212,6 +212,11 @@ async fn run_app(
 
     info!("✅ X-Touch display initialized");
 
+    // Apply loaded state snapshot to X-Touch (restore fader positions, LEDs, etc.)
+    info!("Applying loaded state to X-Touch...");
+    router.refresh_page().await;
+    info!("✅ Initial state applied to X-Touch");
+
     // Create a channel for feedback from apps to X-Touch
     let (feedback_tx, mut feedback_rx) = mpsc::channel::<(String, Vec<u8>)>(1000);
 
@@ -328,6 +333,7 @@ async fn run_app(
                     // Send pending MIDI messages to X-Touch (e.g., Note Off for unmapped buttons)
                     let pending_midi = router.take_pending_midi().await;
                     for msg in pending_midi {
+                        trace!("  → Sending MIDI: {:02X?}", msg);
                         if let Err(e) = xtouch.send_raw(&msg).await {
                             warn!("Failed to send page refresh MIDI: {}", e);
                         }
@@ -448,7 +454,7 @@ async fn run_app(
     info!("All drivers shut down");
 
     // Save final state snapshot
-    info!("Saving final state snapshot...");
+    //info!("Saving final state snapshot...");
     let snapshot_path = std::path::PathBuf::from(".state/snapshot.json");
     if let Err(e) = router.save_state_snapshot(&snapshot_path).await {
         warn!("Failed to save final state snapshot: {}", e);

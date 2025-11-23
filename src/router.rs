@@ -899,7 +899,7 @@ impl Router {
     }
 
     /// Refresh the active page (replay all known states to X-Touch)
-    async fn refresh_page(&self) {
+    pub async fn refresh_page(&self) {
         let page = match self.get_active_page().await {
             Some(p) => p,
             None => return,
@@ -929,11 +929,29 @@ impl Router {
                 .count()
         );
 
+        // Log PB entries in detail
+        for entry in entries.iter().filter(|e| e.addr.status == MidiStatus::PB) {
+            debug!(
+                "  PB entry: ch={} value={:?} port={}",
+                entry.addr.channel.unwrap_or(0),
+                entry.value,
+                entry.addr.port_id
+            );
+        }
+
         // Convert entries to MIDI bytes and collect for sending
         let mut midi_messages = Vec::new();
         for entry in &entries {
             let bytes = self.entry_to_midi_bytes(entry);
             if !bytes.is_empty() {
+                if entry.addr.status == MidiStatus::PB {
+                    debug!(
+                        "  Converting PB entry to MIDI: ch={} value={:?} → bytes={:02X?}",
+                        entry.addr.channel.unwrap_or(0),
+                        entry.value,
+                        bytes
+                    );
+                }
                 midi_messages.push(bytes);
             }
         }
@@ -1016,8 +1034,20 @@ impl Router {
         use crate::control_mapping::{load_default_mappings, MidiSpec};
         use crate::state::{MidiAddr, MidiValue, Origin};
 
+        debug!(
+            "🔄 CC→PB transform: app={:?} page={} pb_channel={}",
+            app, page.name, pb_channel
+        );
+
         // 1. Reverse lookup: Find control ID for this PB channel (e.g., "fader1" for ch1)
-        let mapping_db = load_default_mappings().ok()?;
+        let mapping_db = match load_default_mappings() {
+            Ok(db) => db,
+            Err(e) => {
+                debug!("❌ Failed to load mapping DB: {}", e);
+                return None;
+            }
+        };
+
         let control_id = mapping_db
             .mappings
             .iter()
@@ -1028,31 +1058,105 @@ impl Router {
                     false
                 }
             })
-            .map(|(id, _)| id.clone())?;
+            .map(|(id, _)| id.clone());
+
+        let control_id = match control_id {
+            Some(id) => {
+                debug!("  ✓ Found control_id: {}", id);
+                id
+            }
+            None => {
+                debug!("  ❌ No control found for PB channel {}", pb_channel);
+                return None;
+            }
+        };
 
         // 2. Get control config from page
-        let control_config = page.controls.as_ref()?.get(&control_id)?;
+        let page_controls = match page.controls.as_ref() {
+            Some(controls) => controls,
+            None => {
+                debug!("  ❌ Page has no controls");
+                return None;
+            }
+        };
+
+        let control_config = match page_controls.get(&control_id) {
+            Some(config) => {
+                debug!("  ✓ Found control config for {}: app={}", control_id, config.app);
+                config
+            }
+            None => {
+                debug!("  ❌ Control '{}' not found in page", control_id);
+                return None;
+            }
+        };
 
         // 3. Check if control has CC mapping (not PB passthrough)
-        let midi_spec = control_config.midi.as_ref()?;
+        let midi_spec = match control_config.midi.as_ref() {
+            Some(spec) => spec,
+            None => {
+                debug!("  ❌ Control has no MIDI spec");
+                return None;
+            }
+        };
+
         if !matches!(midi_spec.midi_type, crate::config::MidiType::Cc) {
-            return None; // Not a CC mapping, skip
+            debug!("  ❌ Control MIDI type is not CC (is {:?})", midi_spec.midi_type);
+            return None;
         }
 
         // 4. Query StateStore for CC value
-        let cc_channel = midi_spec.channel?;
-        let cc_num = midi_spec.cc?;
-        let cc_entry = self.state.get_known_latest_for_app(
+        let cc_channel = match midi_spec.channel {
+            Some(ch) => ch,
+            None => {
+                debug!("  ❌ CC spec has no channel");
+                return None;
+            }
+        };
+        let cc_num = match midi_spec.cc {
+            Some(num) => num,
+            None => {
+                debug!("  ❌ CC spec has no cc number");
+                return None;
+            }
+        };
+
+        debug!(
+            "  → Querying StateStore: app={:?} CC ch={} cc={}",
+            app, cc_channel, cc_num
+        );
+
+        let cc_entry = match self.state.get_known_latest_for_app(
             *app,
             crate::state::MidiStatus::CC,
             Some(cc_channel),
             Some(cc_num),
-        )?;
+        ) {
+            Some(entry) => {
+                debug!("  ✓ Found CC entry: value={:?}", entry.value);
+                entry
+            }
+            None => {
+                debug!("  ❌ No CC entry found in StateStore");
+                return None;
+            }
+        };
 
         // 5. Transform CC (7-bit) to PB (14-bit)
         // Use TypeScript fast approximation: (v7 << 7) | v7
-        let cc_value = cc_entry.value.as_number()? as u8;
+        let cc_value = match cc_entry.value.as_number() {
+            Some(num) => num as u8,
+            None => {
+                debug!("  ❌ CC value is not a number");
+                return None;
+            }
+        };
         let pb_value = ((cc_value as u16) << 7) | (cc_value as u16);
+
+        debug!(
+            "  ✓ Transform CC {} → PB {} (0x{:04X})",
+            cc_value, pb_value, pb_value
+        );
 
         // 6. Create transformed PB entry
         Some(MidiStateEntry {
@@ -1169,6 +1273,7 @@ impl Router {
 
                 // Priority 2: Try to transform CC to PB (for apps like QLC+)
                 if let Some(transformed_pb) = self.try_cc_to_pb_transform(_page, app, ch) {
+                    debug!("  ✅ Adding CC→PB to plan: ch={} value={:?}", ch, transformed_pb.value);
                     push_pb(&mut pb_plan, ch, transformed_pb, 2);
                     continue;
                 }

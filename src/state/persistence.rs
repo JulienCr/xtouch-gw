@@ -64,7 +64,7 @@ impl StateSnapshot {
             .await
             .context("Failed to write state snapshot to file")?;
 
-        info!("State snapshot saved to: {}", path.display());
+        //info!("State snapshot saved to: {}", path.display());
         Ok(())
     }
 
