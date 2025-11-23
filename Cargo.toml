@@ -13,6 +13,7 @@ categories = ["multimedia", "hardware-support"]
 [dependencies]
 # Async runtime
 tokio = { version = "1.40", features = ["full"] }
+tokio-stream = "0.1"
 async-trait = "0.1"
 
 # MIDI

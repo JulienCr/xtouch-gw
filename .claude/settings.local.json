@@ -5,7 +5,10 @@
       "Bash(git commit:*)",
       "Bash(cargo build:*)",
       "Bash(git add:*)",
-      "Bash(cargo check:*)"
+      "Bash(cargo check:*)",
+      "Bash(cargo doc:*)",
+      "WebSearch",
+      "WebFetch(domain:docs.rs)"
     ],
     "deny": [],
     "ask": []

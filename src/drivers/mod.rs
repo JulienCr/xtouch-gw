@@ -6,6 +6,16 @@ use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+/// Callback type for indicator emission
+///
+/// Drivers call this to emit indicator signals (e.g., "obs.selectedScene", "voicemeeter.mute.1")
+/// that control LED states on the X-Touch surface.
+///
+/// # Arguments
+/// * `signal` - Signal name (e.g., "obs.studioMode", "obs.selectedScene")
+/// * `value` - Signal value (boolean, string, number, etc.)
+pub type IndicatorCallback = Arc<dyn Fn(String, Value) + Send + Sync>;
+
 /// Execution context passed to drivers for accessing router state and config
 #[derive(Clone)]
 pub struct ExecutionContext {
@@ -40,9 +50,19 @@ pub trait Driver: Send + Sync {
     
     /// Sync driver state (called after config reload)
     async fn sync(&self) -> Result<()>;
-    
+
     /// Shutdown the driver gracefully
     async fn shutdown(&self) -> Result<()>;
+
+    /// Subscribe to indicator signals from this driver
+    ///
+    /// The driver calls the provided callback with (signal_name, value) pairs
+    /// whenever indicator state changes (e.g., scene changes, mute state).
+    ///
+    /// Default implementation: no-op (driver doesn't emit indicators)
+    fn subscribe_indicators(&self, _callback: IndicatorCallback) {
+        // Default: do nothing (not all drivers emit indicators)
+    }
 }
 
 pub mod console;
