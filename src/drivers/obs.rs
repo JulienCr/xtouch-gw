@@ -14,11 +14,208 @@ use tokio::sync::RwLock;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::time::sleep;
+use std::time::{Duration, Instant};
+use tokio::time::{sleep, interval, MissedTickBehavior};
 use tracing::{info, debug, warn, trace};
 
 use super::{Driver, ExecutionContext, IndicatorCallback};
+
+// =============================================================================
+// Analog Input Processing
+// =============================================================================
+
+/// Shape analog input with deadzone and gamma curve
+///
+/// Applies deadzone filtering and gamma curve for finer control near center.
+/// Formula:
+/// 1. If |value| < deadzone → return 0
+/// 2. Extract sign and magnitude
+/// 3. Apply gamma curve: shaped = magnitude^gamma
+/// 4. Return sign × shaped
+fn shape_analog(value: f64, deadzone: f64, gamma: f64) -> f64 {
+    // Return 0 if not finite or within deadzone
+    if !value.is_finite() || value.abs() < deadzone {
+        return 0.0;
+    }
+
+    let sign = if value >= 0.0 { 1.0 } else { -1.0 };
+    let magnitude = value.abs().min(1.0).max(0.0);
+
+    // Apply gamma curve for finer control at low values
+    let shaped = magnitude.powf(gamma);
+
+    sign * shaped
+}
+
+// =============================================================================
+// Encoder Acceleration
+// =============================================================================
+
+/// Encoder speed tracking state (per encoder)
+#[derive(Debug, Clone)]
+struct EncoderState {
+    last_ts: Option<Instant>,
+    velocity_ema: f64,
+    last_direction: i8,
+}
+
+/// Encoder speed tracker with adaptive acceleration
+///
+/// Tracks encoder rotation velocity and applies acceleration multipliers
+/// for fast movements. Uses Exponential Moving Average (EMA) for smooth
+/// velocity tracking.
+#[derive(Debug, Clone)]
+struct EncoderSpeedTracker {
+    // EMA smoothing weight (0-1, higher = more responsive)
+    ema_alpha: f64,
+    // Reference velocity in ticks/sec for acceleration calculation
+    accel_vref: f64,
+    // Acceleration coefficient
+    accel_k: f64,
+    // Acceleration curve exponent
+    accel_gamma: f64,
+    // Maximum acceleration multiplier
+    max_multiplier: f64,
+    // Minimum interval between ticks to count (ms)
+    min_interval_ms: u64,
+    // Damping factor on direction change
+    direction_flip_dampen: f64,
+    // Idle time before resetting EMA (ms)
+    idle_reset_ms: u64,
+    // Per-encoder state
+    states: HashMap<String, EncoderState>,
+}
+
+impl EncoderSpeedTracker {
+    /// Create with default parameters (matching TypeScript implementation)
+    fn new() -> Self {
+        Self {
+            ema_alpha: 0.75,
+            accel_vref: 9.0,
+            accel_k: 3.9,
+            accel_gamma: 1.4,
+            max_multiplier: 15.0,
+            min_interval_ms: 4,
+            direction_flip_dampen: 0.5,
+            idle_reset_ms: 700,
+            states: HashMap::new(),
+        }
+    }
+
+    /// Track an encoder event and return acceleration multiplier
+    ///
+    /// Returns the acceleration factor to apply to base_delta.
+    /// Example: track_event("vpot1", 1.0) → 3.5 (multiply base delta by 3.5x)
+    fn track_event(&mut self, encoder_id: &str, base_delta: f64) -> f64 {
+        let direction = base_delta.signum() as i8;
+        let now = Instant::now();
+
+        // Get or create state
+        let state = self.states.entry(encoder_id.to_string()).or_insert(EncoderState {
+            last_ts: None,
+            velocity_ema: 0.0,
+            last_direction: 0,
+        });
+
+        // Calculate instantaneous velocity (ticks per second)
+        if let Some(last_ts) = state.last_ts {
+            if base_delta != 0.0 {
+                let interval_ms = now.duration_since(last_ts).as_millis() as u64;
+
+                if interval_ms >= self.min_interval_ms {
+                    let inst_velocity = 1000.0 / interval_ms.max(1) as f64;
+
+                    // Update EMA (Exponential Moving Average)
+                    let is_bootstrap = state.velocity_ema == 0.0
+                        || interval_ms > self.idle_reset_ms;
+
+                    state.velocity_ema = if is_bootstrap {
+                        inst_velocity
+                    } else {
+                        self.ema_alpha * inst_velocity
+                            + (1.0 - self.ema_alpha) * state.velocity_ema
+                    };
+                }
+            }
+        }
+
+        // Update timestamp if non-zero delta
+        if base_delta != 0.0 {
+            state.last_ts = Some(now);
+        }
+
+        // Calculate acceleration multiplier
+        let v_norm = state.velocity_ema.max(0.0) / self.accel_vref;
+        let mut accel = 1.0 + self.accel_k * v_norm.powf(self.accel_gamma);
+        accel = accel.max(1.0).min(self.max_multiplier);
+
+        // Dampen on direction flip
+        if base_delta != 0.0
+            && state.last_direction != 0
+            && direction != 0
+            && direction != state.last_direction
+        {
+            accel *= self.direction_flip_dampen;
+        }
+
+        // Update direction
+        if base_delta != 0.0 && direction != 0 {
+            state.last_direction = direction;
+        }
+
+        accel
+    }
+}
+
+// =============================================================================
+// OBS Transform Utilities
+// =============================================================================
+
+/// Compute anchor point from OBS alignment flags
+///
+/// OBS alignment bit flags (from libobs):
+/// - LEFT = 1, RIGHT = 2, TOP = 4, BOTTOM = 8
+/// - CENTER = 0 (no flags set)
+///
+/// Returns (anchor_x, anchor_y) where 0.0=left/top, 0.5=center, 1.0=right/bottom
+fn compute_anchor_from_alignment(alignment: u32) -> (f64, f64) {
+    let left = (alignment & 1) != 0;
+    let right = (alignment & 2) != 0;
+    let top = (alignment & 4) != 0;
+    let bottom = (alignment & 8) != 0;
+
+    let anchor_x = if left {
+        0.0
+    } else if right {
+        1.0
+    } else {
+        0.5 // center
+    };
+
+    let anchor_y = if top {
+        0.0
+    } else if bottom {
+        1.0
+    } else {
+        0.5 // center
+    };
+
+    (anchor_x, anchor_y)
+}
+
+// =============================================================================
+// Analog Motion State
+// =============================================================================
+
+/// Velocity state for analog motion (per scene/source)
+#[derive(Debug, Clone, Default)]
+struct AnalogRate {
+    scene: String,
+    source: String,
+    vx: f64,  // pixels per tick (at 60Hz)
+    vy: f64,  // pixels per tick
+    vs: f64,  // scale delta per tick
+}
 
 /// OBS item transformation state
 #[derive(Debug, Clone)]
@@ -31,6 +228,7 @@ struct ObsItemState {
     height: Option<f64>,
     bounds_width: Option<f64>,
     bounds_height: Option<f64>,
+    alignment: u32,  // OBS alignment flags (LEFT=1, RIGHT=2, TOP=4, BOTTOM=8, CENTER=0)
 }
 
 /// OBS Studio WebSocket driver
@@ -39,10 +237,10 @@ pub struct ObsDriver {
     host: String,
     port: u16,
     password: Option<String>,
-    
+
     // OBS client (wrapped for interior mutability)
     client: Arc<RwLock<Option<ObsClient>>>,
-    
+
     // State tracking (using parking_lot for sync access)
     studio_mode: Arc<parking_lot::RwLock<bool>>,
     program_scene: Arc<parking_lot::RwLock<String>>,
@@ -59,6 +257,20 @@ pub struct ObsDriver {
     // Reconnection state
     reconnect_count: Arc<Mutex<usize>>,
     shutdown_flag: Arc<Mutex<bool>>,
+
+    // Gamepad analog configuration
+    analog_pan_gain: Arc<parking_lot::RwLock<f64>>,
+    analog_zoom_gain: Arc<parking_lot::RwLock<f64>>,
+    analog_deadzone: Arc<parking_lot::RwLock<f64>>,
+    analog_gamma: Arc<parking_lot::RwLock<f64>>,
+
+    // Analog motion state (velocity-based for gamepad)
+    analog_rates: Arc<parking_lot::RwLock<HashMap<String, AnalogRate>>>,
+    analog_timer_active: Arc<Mutex<bool>>,
+    last_analog_tick: Arc<Mutex<Instant>>,
+
+    // Encoder acceleration
+    encoder_tracker: Arc<Mutex<EncoderSpeedTracker>>,
 }
 
 impl ObsDriver {
@@ -79,6 +291,17 @@ impl ObsDriver {
             last_selected_sent: Arc::new(parking_lot::RwLock::new(None)),
             reconnect_count: Arc::new(Mutex::new(0)),
             shutdown_flag: Arc::new(Mutex::new(false)),
+            // Analog config (defaults matching config file)
+            analog_pan_gain: Arc::new(parking_lot::RwLock::new(15.0)),
+            analog_zoom_gain: Arc::new(parking_lot::RwLock::new(3.0)),
+            analog_deadzone: Arc::new(parking_lot::RwLock::new(0.02)),
+            analog_gamma: Arc::new(parking_lot::RwLock::new(1.5)),
+            // Analog motion state
+            analog_rates: Arc::new(parking_lot::RwLock::new(HashMap::new())),
+            analog_timer_active: Arc::new(Mutex::new(false)),
+            last_analog_tick: Arc::new(Mutex::new(Instant::now())),
+            // Encoder acceleration
+            encoder_tracker: Arc::new(Mutex::new(EncoderSpeedTracker::new())),
         }
     }
 
@@ -89,6 +312,20 @@ impl ObsDriver {
             config.port,
             config.password.clone(),
         )
+    }
+
+    /// Load analog config from gamepad settings
+    pub fn load_analog_config(&self, gamepad_config: Option<&crate::config::GamepadConfig>) {
+        if let Some(gamepad) = gamepad_config {
+            if let Some(analog) = &gamepad.analog {
+                *self.analog_pan_gain.write() = analog.pan_gain as f64;
+                *self.analog_zoom_gain.write() = analog.zoom_gain as f64;
+                *self.analog_deadzone.write() = analog.deadzone as f64;
+                *self.analog_gamma.write() = analog.gamma as f64;
+                debug!("OBS: analog config loaded (pan_gain={}, zoom_gain={}, deadzone={}, gamma={})",
+                    analog.pan_gain, analog.zoom_gain, analog.deadzone, analog.gamma);
+            }
+        }
     }
 
     /// Connect to OBS WebSocket
@@ -373,6 +610,18 @@ impl ObsDriver {
             .await
             .context("Failed to get scene item transform")?;
 
+        // Convert Alignment enum to u32 bits
+        let alignment_bits = transform.alignment.bits() as u32;
+
+        debug!("OBS read_transform: scene='{}' item={} → pos=({:.1},{:.1}) scale=({:.3},{:.3}) size=({:.0}×{:.0}) bounds=({:.0}×{:.0}) align={:?}",
+            scene_name, item_id,
+            transform.position_x, transform.position_y,
+            transform.scale_x, transform.scale_y,
+            transform.width, transform.height,
+            transform.bounds_width, transform.bounds_height,
+            transform.alignment
+        );
+
         Ok(ObsItemState {
             x: transform.position_x as f64,
             y: transform.position_y as f64,
@@ -382,6 +631,7 @@ impl ObsDriver {
             height: Some(transform.height as f64),
             bounds_width: Some(transform.bounds_width as f64),
             bounds_height: Some(transform.bounds_height as f64),
+            alignment: alignment_bits,
         })
     }
 
@@ -467,9 +717,23 @@ impl ObsDriver {
         };
 
         let current = if let Some(cached) = cached_opt {
-            cached
+            // Check if cached scale looks suspicious (too small)
+            // This can happen if OBS was in a weird state when we first cached it
+            if cached.scale_x < 0.5 || cached.scale_y < 0.5 {
+                warn!("OBS transform cache has suspicious scale ({:.3},{:.3}) for '{}' - invalidating and re-reading from OBS",
+                    cached.scale_x, cached.scale_y, cache_key);
+                // Invalidate cache and re-read
+                self.transform_cache.write().remove(&cache_key);
+                let state = self.read_transform(scene_name, item_id).await?;
+                self.transform_cache.write().insert(cache_key.clone(), state.clone());
+                state
+            } else {
+                debug!("OBS transform cache HIT: '{}' scale=({:.3},{:.3})", cache_key, cached.scale_x, cached.scale_y);
+                cached
+            }
         } else {
             // Not in cache, read from OBS
+            debug!("OBS transform cache MISS: '{}' - reading from OBS", cache_key);
             let state = self.read_transform(scene_name, item_id).await?;
             self.transform_cache.write().insert(cache_key.clone(), state.clone());
             state
@@ -484,13 +748,57 @@ impl ObsDriver {
             new_state.y += dy_val;
         }
         if let Some(ds_val) = ds {
-            // Apply scale delta
-            new_state.scale_x += ds_val;
-            new_state.scale_y += ds_val;
+            // Apply scale delta multiplicatively (matching TypeScript implementation)
+            // Formula: new_scale/bounds = current × (1 + delta)
+            let factor = 1.0 + ds_val;
 
-            // Clamp scale to reasonable range
-            new_state.scale_x = new_state.scale_x.max(0.01).min(10.0);
-            new_state.scale_y = new_state.scale_y.max(0.01).min(10.0);
+            // Compute anchor point from alignment (for position adjustment)
+            let (anchor_x, anchor_y) = compute_anchor_from_alignment(current.alignment);
+
+            // Determine if we should use bounds-based or scale-based transform
+            let use_bounds = if let (Some(bw), Some(bh)) = (current.bounds_width, current.bounds_height) {
+                bw > 0.0 && bh > 0.0
+            } else {
+                false
+            };
+
+            if use_bounds {
+                // PATH 1: Bounds-based scaling (TypeScript transforms.ts lines 27-31)
+                let bounds_w = current.bounds_width.unwrap();
+                let bounds_h = current.bounds_height.unwrap();
+
+                let new_w = (bounds_w * factor).max(1.0).round();
+                let new_h = (bounds_h * factor).max(1.0).round();
+
+                // Adjust position to keep anchor point stable
+                new_state.x = current.x + (0.5 - anchor_x) * (bounds_w - new_w);
+                new_state.y = current.y + (0.5 - anchor_y) * (bounds_h - new_h);
+                new_state.bounds_width = Some(new_w);
+                new_state.bounds_height = Some(new_h);
+
+                debug!("OBS bounds zoom: {:.0}×{:.0} * {:.3} = {:.0}×{:.0} (pos adjusted by {:.1},{:.1})",
+                    bounds_w, bounds_h, factor, new_w, new_h,
+                    new_state.x - current.x, new_state.y - current.y);
+            } else {
+                // PATH 2: Scale-based scaling (TypeScript transforms.ts lines 33-40)
+                new_state.scale_x = (current.scale_x * factor).max(0.01).min(10.0);
+                new_state.scale_y = (current.scale_y * factor).max(0.01).min(10.0);
+
+                // Adjust position if we know base dimensions
+                if let (Some(w_base), Some(h_base)) = (current.width, current.height) {
+                    if w_base > 0.0 && h_base > 0.0 {
+                        let w_old = w_base * current.scale_x;
+                        let h_old = h_base * current.scale_y;
+                        let w_new = w_base * new_state.scale_x;
+                        let h_new = h_base * new_state.scale_y;
+
+                        new_state.x = current.x + (0.5 - anchor_x) * (w_old - w_new);
+                        new_state.y = current.y + (0.5 - anchor_y) * (h_old - h_new);
+                    }
+                }
+
+                debug!("OBS scale zoom: {:.3} * {:.3} = {:.3}", current.scale_x, factor, new_state.scale_x);
+            }
         }
 
         // Send update to OBS
@@ -499,31 +807,219 @@ impl ObsDriver {
             .context("OBS client not connected")?
             .clone();
 
-        client.scene_items()
-            .set_transform(obws::requests::scene_items::SetTransform {
-                scene: scene_name,
-                item_id,
-                transform: obws::requests::scene_items::SceneItemTransform {
-                    position: Some(obws::requests::scene_items::Position {
-                        x: Some(new_state.x as f32),
-                        y: Some(new_state.y as f32),
+        // Build transform conditionally based on what changed
+        let mut transform = obws::requests::scene_items::SceneItemTransform::default();
+
+        // Include position if changed (pan, tilt, or zoom with position adjustment)
+        if dx.is_some() || dy.is_some() || ds.is_some() {
+            transform.position = Some(obws::requests::scene_items::Position {
+                x: Some(new_state.x as f32),
+                y: Some(new_state.y as f32),
+                ..Default::default()
+            });
+        }
+
+        // For scale changes: include EITHER bounds OR scale (not both!)
+        if ds.is_some() {
+            if let (Some(bw), Some(bh)) = (new_state.bounds_width, new_state.bounds_height) {
+                if bw > 0.0 && bh > 0.0 {
+                    // Use bounds-based transform (for camera sources)
+                    transform.bounds = Some(obws::requests::scene_items::Bounds {
+                        width: Some(bw as f32),
+                        height: Some(bh as f32),
                         ..Default::default()
-                    }),
-                    scale: Some(obws::requests::scene_items::Scale {
+                    });
+                    debug!("OBS sending BOUNDS transform: {}×{}", bw, bh);
+                } else {
+                    // Bounds exist but are zero - fall back to scale
+                    transform.scale = Some(obws::requests::scene_items::Scale {
                         x: Some(new_state.scale_x as f32),
                         y: Some(new_state.scale_y as f32),
                         ..Default::default()
-                    }),
+                    });
+                }
+            } else {
+                // No bounds - use scale-based transform (for image sources)
+                transform.scale = Some(obws::requests::scene_items::Scale {
+                    x: Some(new_state.scale_x as f32),
+                    y: Some(new_state.scale_y as f32),
                     ..Default::default()
-                },
-            })
-            .await
-            .context("Failed to set scene item transform")?;
+                });
+                debug!("OBS sending SCALE transform: {:.3}×{:.3}", new_state.scale_x, new_state.scale_y);
+            }
+        }
 
-        // Update cache
-        self.transform_cache.write().insert(cache_key, new_state);
+        let result = client.scene_items()
+            .set_transform(obws::requests::scene_items::SetTransform {
+                scene: scene_name,
+                item_id,
+                transform,
+            })
+            .await;
+
+        match result {
+            Ok(_) => {
+                if let (Some(bw), Some(bh)) = (new_state.bounds_width, new_state.bounds_height) {
+                    if bw > 0.0 && bh > 0.0 {
+                        debug!("OBS set_transform SUCCESS: '{}' pos=({:.1},{:.1}) bounds=({:.0}×{:.0})",
+                            cache_key, new_state.x, new_state.y, bw, bh);
+                    } else {
+                        debug!("OBS set_transform SUCCESS: '{}' pos=({:.1},{:.1}) scale=({:.3},{:.3})",
+                            cache_key, new_state.x, new_state.y, new_state.scale_x, new_state.scale_y);
+                    }
+                } else {
+                    debug!("OBS set_transform SUCCESS: '{}' pos=({:.1},{:.1}) scale=({:.3},{:.3})",
+                        cache_key, new_state.x, new_state.y, new_state.scale_x, new_state.scale_y);
+                }
+                // Update cache
+                self.transform_cache.write().insert(cache_key, new_state);
+                Ok(())
+            },
+            Err(e) => {
+                warn!("OBS set_transform FAILED: '{}' error: {}", cache_key, e);
+                Err(e).context("Failed to set scene item transform")
+            }
+        }?;
 
         Ok(())
+    }
+
+    /// Set analog velocity for a scene/source
+    fn set_analog_rate(&self, scene_name: &str, source_name: &str, vx: f64, vy: f64, vs: f64) {
+        let cache_key = self.cache_key(scene_name, source_name);
+
+        let mut rates = self.analog_rates.write();
+
+        if vx == 0.0 && vy == 0.0 && vs == 0.0 {
+            // Remove entry if all velocities are zero
+            rates.remove(&cache_key);
+        } else {
+            // Update or insert velocity
+            rates.insert(cache_key, AnalogRate {
+                scene: scene_name.to_string(),
+                source: source_name.to_string(),
+                vx,
+                vy,
+                vs,
+            });
+        }
+
+        // Manage timer based on active rates
+        if rates.is_empty() {
+            self.stop_analog_timer();
+        } else {
+            self.ensure_analog_timer();
+        }
+    }
+
+    /// Start analog motion timer at ~60Hz if not already running
+    fn ensure_analog_timer(&self) {
+        let mut active = self.analog_timer_active.lock();
+        if *active {
+            return; // Already running
+        }
+
+        *active = true;
+        *self.last_analog_tick.lock() = Instant::now();
+
+        // Spawn timer task
+        let rates = Arc::clone(&self.analog_rates);
+        let last_tick = Arc::clone(&self.last_analog_tick);
+        let timer_active = Arc::clone(&self.analog_timer_active);
+        let driver_self = Arc::new(self.clone_for_timer());
+
+        tokio::spawn(async move {
+            let mut interval = interval(Duration::from_millis(16)); // ~60Hz
+            interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+            loop {
+                interval.tick().await;
+
+                // Check if timer should stop
+                if !*timer_active.lock() {
+                    debug!("OBS analog timer stopped");
+                    break;
+                }
+
+                // Calculate dt (normalized to 60Hz)
+                let now = Instant::now();
+                let interval_ms = {
+                    let mut last = last_tick.lock();
+                    let elapsed = now.duration_since(*last).as_millis() as f64;
+                    *last = now;
+                    elapsed
+                };
+                let dt = interval_ms / 16.0; // Normalize to 60Hz
+
+                // Process all active rates
+                let rates_snapshot: Vec<AnalogRate> = {
+                    let r = rates.read();
+                    r.values().cloned().collect()
+                };
+
+                for rate in rates_snapshot {
+                    let dx = rate.vx * dt;
+                    let dy = rate.vy * dt;
+                    let ds = rate.vs * dt;
+
+                    if dx != 0.0 || dy != 0.0 || ds != 0.0 {
+                        let dx_opt = if dx != 0.0 { Some(dx) } else { None };
+                        let dy_opt = if dy != 0.0 { Some(dy) } else { None };
+                        let ds_opt = if ds != 0.0 { Some(ds) } else { None };
+
+                        if let Err(e) = driver_self.apply_delta(
+                            &rate.scene,
+                            &rate.source,
+                            dx_opt,
+                            dy_opt,
+                            ds_opt
+                        ).await {
+                            trace!("OBS analog tick error: {}", e);
+                        }
+                    }
+                }
+
+                // Check if all rates are now zero (stop timer)
+                if rates.read().is_empty() {
+                    *timer_active.lock() = false;
+                }
+            }
+        });
+
+        debug!("OBS analog timer started at ~60Hz");
+    }
+
+    /// Stop the analog motion timer
+    fn stop_analog_timer(&self) {
+        *self.analog_timer_active.lock() = false;
+    }
+
+    /// Clone fields needed for the timer task
+    fn clone_for_timer(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            host: self.host.clone(),
+            port: self.port,
+            password: self.password.clone(),
+            client: Arc::clone(&self.client),
+            studio_mode: Arc::clone(&self.studio_mode),
+            program_scene: Arc::clone(&self.program_scene),
+            preview_scene: Arc::clone(&self.preview_scene),
+            transform_cache: Arc::clone(&self.transform_cache),
+            item_id_cache: Arc::clone(&self.item_id_cache),
+            indicator_emitters: Arc::clone(&self.indicator_emitters),
+            last_selected_sent: Arc::clone(&self.last_selected_sent),
+            reconnect_count: Arc::clone(&self.reconnect_count),
+            shutdown_flag: Arc::clone(&self.shutdown_flag),
+            analog_pan_gain: Arc::clone(&self.analog_pan_gain),
+            analog_zoom_gain: Arc::clone(&self.analog_zoom_gain),
+            analog_deadzone: Arc::clone(&self.analog_deadzone),
+            analog_gamma: Arc::clone(&self.analog_gamma),
+            analog_rates: Arc::clone(&self.analog_rates),
+            analog_timer_active: Arc::clone(&self.analog_timer_active),
+            last_analog_tick: Arc::clone(&self.last_analog_tick),
+            encoder_tracker: Arc::clone(&self.encoder_tracker),
+        }
     }
 }
 
@@ -613,32 +1109,63 @@ impl Driver for ObsDriver {
                     .context("Source name required")?;
                 let step = params.get(2).and_then(|v| v.as_f64()).unwrap_or(2.0);
 
-                // Get delta from context value if available (encoder/gamepad input)
-                let delta = if let Some(value) = ctx.value {
-                    match value {
-                        Value::Number(n) if n.is_f64() => {
-                            let v = n.as_f64().unwrap();
+                // Check if input is from gamepad or encoder
+                let is_gamepad = ctx.control_id.as_ref()
+                    .map(|id| id.starts_with("gamepad."))
+                    .unwrap_or(false);
+
+                if is_gamepad {
+                    // Gamepad analog input: velocity-based
+                    if let Some(Value::Number(n)) = ctx.value {
+                        if let Some(v) = n.as_f64() {
                             if v >= -1.0 && v <= 1.0 {
-                                // Analog input (-1 to +1)
-                                v * step
-                            } else if v == 0.0 || v == 64.0 {
-                                0.0
-                            } else if v >= 1.0 && v <= 63.0 {
-                                step
-                            } else if v >= 65.0 && v <= 127.0 {
-                                -step
-                            } else {
-                                0.0
+                                // Shape analog value (deadzone + gamma)
+                                let deadzone = *self.analog_deadzone.read();
+                                let gamma = *self.analog_gamma.read();
+                                let shaped = shape_analog(v, deadzone, gamma);
+
+                                // Calculate velocity (px per 60Hz tick)
+                                let gain = *self.analog_pan_gain.read();
+                                let vx = shaped * step * gain;
+
+                                // Set analog velocity (timer will apply)
+                                self.set_analog_rate(scene_name, source_name, vx, 0.0, 0.0);
                             }
-                        },
-                        _ => 0.0,
+                        }
                     }
                 } else {
-                    step
-                };
+                    // Encoder input: acceleration-based
+                    let delta = if let Some(value) = ctx.value {
+                        match value {
+                            Value::Number(n) if n.is_f64() => {
+                                let v = n.as_f64().unwrap();
+                                if v == 0.0 || v == 64.0 {
+                                    0.0
+                                } else if v >= 1.0 && v <= 63.0 {
+                                    step
+                                } else if v >= 65.0 && v <= 127.0 {
+                                    -step
+                                } else {
+                                    0.0
+                                }
+                            },
+                            _ => 0.0,
+                        }
+                    } else {
+                        step
+                    };
 
-                if delta != 0.0 {
-                    self.apply_delta(scene_name, source_name, Some(delta), None, None).await?;
+                    if delta != 0.0 {
+                        // Apply encoder acceleration
+                        let control_id = ctx.control_id.as_deref().unwrap_or("encoder");
+                        let accel = self.encoder_tracker.lock().track_event(control_id, delta);
+                        let final_delta = delta * accel;
+
+                        debug!("OBS nudgeX encoder: id='{}' delta={} accel={:.2}x final={:.2}",
+                            control_id, delta, accel, final_delta);
+
+                        self.apply_delta(scene_name, source_name, Some(final_delta), None, None).await?;
+                    }
                 }
                 Ok(())
             },
@@ -650,30 +1177,63 @@ impl Driver for ObsDriver {
                     .context("Source name required")?;
                 let step = params.get(2).and_then(|v| v.as_f64()).unwrap_or(2.0);
 
-                let delta = if let Some(value) = ctx.value {
-                    match value {
-                        Value::Number(n) if n.is_f64() => {
-                            let v = n.as_f64().unwrap();
+                // Check if input is from gamepad or encoder
+                let is_gamepad = ctx.control_id.as_ref()
+                    .map(|id| id.starts_with("gamepad."))
+                    .unwrap_or(false);
+
+                if is_gamepad {
+                    // Gamepad analog input: velocity-based
+                    if let Some(Value::Number(n)) = ctx.value {
+                        if let Some(v) = n.as_f64() {
                             if v >= -1.0 && v <= 1.0 {
-                                v * step
-                            } else if v == 0.0 || v == 64.0 {
-                                0.0
-                            } else if v >= 1.0 && v <= 63.0 {
-                                step
-                            } else if v >= 65.0 && v <= 127.0 {
-                                -step
-                            } else {
-                                0.0
+                                // Shape analog value (deadzone + gamma)
+                                let deadzone = *self.analog_deadzone.read();
+                                let gamma = *self.analog_gamma.read();
+                                let shaped = shape_analog(v, deadzone, gamma);
+
+                                // Calculate velocity (px per 60Hz tick)
+                                let gain = *self.analog_pan_gain.read();
+                                let vy = shaped * step * gain;
+
+                                // Set analog velocity (timer will apply)
+                                self.set_analog_rate(scene_name, source_name, 0.0, vy, 0.0);
                             }
-                        },
-                        _ => 0.0,
+                        }
                     }
                 } else {
-                    step
-                };
+                    // Encoder input: acceleration-based
+                    let delta = if let Some(value) = ctx.value {
+                        match value {
+                            Value::Number(n) if n.is_f64() => {
+                                let v = n.as_f64().unwrap();
+                                if v == 0.0 || v == 64.0 {
+                                    0.0
+                                } else if v >= 1.0 && v <= 63.0 {
+                                    step
+                                } else if v >= 65.0 && v <= 127.0 {
+                                    -step
+                                } else {
+                                    0.0
+                                }
+                            },
+                            _ => 0.0,
+                        }
+                    } else {
+                        step
+                    };
 
-                if delta != 0.0 {
-                    self.apply_delta(scene_name, source_name, None, Some(delta), None).await?;
+                    if delta != 0.0 {
+                        // Apply encoder acceleration
+                        let control_id = ctx.control_id.as_deref().unwrap_or("encoder");
+                        let accel = self.encoder_tracker.lock().track_event(control_id, delta);
+                        let final_delta = delta * accel;
+
+                        debug!("OBS nudgeY encoder: id='{}' delta={} accel={:.2}x final={:.2}",
+                            control_id, delta, accel, final_delta);
+
+                        self.apply_delta(scene_name, source_name, None, Some(final_delta), None).await?;
+                    }
                 }
                 Ok(())
             },
@@ -683,32 +1243,65 @@ impl Driver for ObsDriver {
                     .context("Scene name required")?;
                 let source_name = params.get(1).and_then(|v| v.as_str())
                     .context("Source name required")?;
-                let step = params.get(2).and_then(|v| v.as_f64()).unwrap_or(0.02);
+                let base = params.get(2).and_then(|v| v.as_f64()).unwrap_or(0.02);
 
-                let delta = if let Some(value) = ctx.value {
-                    match value {
-                        Value::Number(n) if n.is_f64() => {
-                            let v = n.as_f64().unwrap();
+                // Check if input is from gamepad or encoder
+                let is_gamepad = ctx.control_id.as_ref()
+                    .map(|id| id.starts_with("gamepad."))
+                    .unwrap_or(false);
+
+                if is_gamepad {
+                    // Gamepad analog input: velocity-based
+                    if let Some(Value::Number(n)) = ctx.value {
+                        if let Some(v) = n.as_f64() {
                             if v >= -1.0 && v <= 1.0 {
-                                v * step
-                            } else if v == 0.0 || v == 64.0 {
-                                0.0
-                            } else if v >= 1.0 && v <= 63.0 {
-                                step
-                            } else if v >= 65.0 && v <= 127.0 {
-                                -step
-                            } else {
-                                0.0
+                                // Shape analog value (deadzone + gamma)
+                                let deadzone = *self.analog_deadzone.read();
+                                let gamma = *self.analog_gamma.read();
+                                let shaped = shape_analog(v, deadzone, gamma);
+
+                                // Calculate velocity (scale delta per 60Hz tick)
+                                let gain = *self.analog_zoom_gain.read();
+                                let vs = shaped * base * gain;
+
+                                // Set analog velocity (timer will apply)
+                                self.set_analog_rate(scene_name, source_name, 0.0, 0.0, vs);
                             }
-                        },
-                        _ => 0.0,
+                        }
                     }
                 } else {
-                    step
-                };
+                    // Encoder input: acceleration-based
+                    let delta = if let Some(value) = ctx.value {
+                        match value {
+                            Value::Number(n) if n.is_f64() => {
+                                let v = n.as_f64().unwrap();
+                                if v == 0.0 || v == 64.0 {
+                                    0.0
+                                } else if v >= 1.0 && v <= 63.0 {
+                                    base
+                                } else if v >= 65.0 && v <= 127.0 {
+                                    -base
+                                } else {
+                                    0.0
+                                }
+                            },
+                            _ => 0.0,
+                        }
+                    } else {
+                        base
+                    };
 
-                if delta != 0.0 {
-                    self.apply_delta(scene_name, source_name, None, None, Some(delta)).await?;
+                    if delta != 0.0 {
+                        // Apply encoder acceleration
+                        let control_id = ctx.control_id.as_deref().unwrap_or("encoder");
+                        let accel = self.encoder_tracker.lock().track_event(control_id, delta);
+                        let final_delta = delta * accel;
+
+                        debug!("OBS scaleUniform encoder: id='{}' delta={} accel={:.2}x final={:.2}",
+                            control_id, delta, accel, final_delta);
+
+                        self.apply_delta(scene_name, source_name, None, None, Some(final_delta)).await?;
+                    }
                 }
                 Ok(())
             },

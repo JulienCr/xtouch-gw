@@ -109,6 +109,17 @@ impl Router {
             config: self.config.clone(),
             active_page: Some(self.get_active_page_name().await),
             value: None,
+            control_id: None,
+        }
+    }
+
+    /// Create an execution context with control information
+    async fn create_execution_context_with_control(&self, control_id: String, value: Option<serde_json::Value>) -> ExecutionContext {
+        ExecutionContext {
+            config: self.config.clone(),
+            active_page: Some(self.get_active_page_name().await),
+            value,
+            control_id: Some(control_id),
         }
     }
 
@@ -288,39 +299,48 @@ impl Router {
             .await
             .ok_or_else(|| anyhow!("No active page"))?;
 
-        // Look up the control mapping
+        // Look up the control mapping - check page-specific controls first, then global controls
+        let config = self.config.read().await;
         let mapping = page
             .controls
             .as_ref()
             .and_then(|controls| controls.get(control_id))
+            .or_else(|| {
+                config
+                    .pages_global
+                    .as_ref()
+                    .and_then(|pg| pg.controls.as_ref())
+                    .and_then(|controls| controls.get(control_id))
+            })
             .ok_or_else(|| anyhow!("No mapping for control '{}'", control_id))?;
 
-        let app_name = &mapping.app;
-
+        // Clone data we need before dropping config lock
+        let app_name = mapping.app.clone();
         let action = mapping
             .action
-            .as_ref()
+            .clone()
             .ok_or_else(|| anyhow!("Control '{}' has no action defined", control_id))?;
+        let params = mapping.params.clone().unwrap_or_default();
+
+        // Drop config lock before async operations
+        drop(config);
 
         // Get the driver
         let driver = self
-            .get_driver(app_name)
+            .get_driver(&app_name)
             .await
             .ok_or_else(|| anyhow!("Driver '{}' not registered", app_name))?;
-
-        // Extract params
-        let params = mapping.params.clone().unwrap_or_default();
 
         debug!(
             "Executing {}.{} for control '{}' (value: {:?})",
             app_name, action, control_id, value
         );
 
-        // Create execution context
-        let ctx = self.create_execution_context().await;
+        // Create execution context with control information
+        let ctx = self.create_execution_context_with_control(control_id.to_string(), value).await;
 
         // Execute the driver action
-        driver.execute(action, params, ctx).await?;
+        driver.execute(&action, params, ctx).await?;
 
         Ok(())
     }
@@ -639,6 +659,9 @@ impl Router {
         // Create execution context with parsed MIDI value
         let mut ctx = self.create_execution_context().await;
 
+        // Set control ID so drivers can detect input source (gamepad vs encoder)
+        ctx.control_id = Some(control_id.to_string());
+
         // Parse MIDI message to extract the value/velocity byte
         // This allows drivers to receive a Number instead of raw bytes array
         if raw.len() >= 3 {
@@ -681,8 +704,8 @@ impl Router {
 
         // Execute driver action
         debug!(
-            "→ Routing: {} → app={} action={}",
-            control_id, control_config.app, action
+            "→ Routing: {} → app={} action={} (value={:?})",
+            control_id, control_config.app, action, ctx.value
         );
         if let Err(e) = driver.execute(action, params, ctx).await {
             warn!("Driver execution failed: {}", e);

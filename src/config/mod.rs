@@ -119,11 +119,40 @@ pub struct PagingConfig {
     pub next_note: u8,
 }
 
-/// Gamepad configuration (placeholder for now)
+/// Gamepad configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GamepadConfig {
     pub enabled: bool,
-    // Additional fields will be added as needed
+    #[serde(default = "default_gamepad_provider")]
+    pub provider: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub analog: Option<AnalogConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hid: Option<HidProviderConfig>,
+}
+
+/// Analog stick configuration
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AnalogConfig {
+    #[serde(default = "default_pan_gain")]
+    pub pan_gain: f32,
+    #[serde(default = "default_zoom_gain")]
+    pub zoom_gain: f32,
+    #[serde(default = "default_deadzone")]
+    pub deadzone: f32,
+    #[serde(default = "default_gamma")]
+    pub gamma: f32,
+    #[serde(default)]
+    pub invert: HashMap<String, bool>,
+}
+
+/// HID provider configuration (for gilrs device matching)
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct HidProviderConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub product_match: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mapping_csv: Option<String>,
 }
 
 /// Global page defaults
@@ -464,3 +493,8 @@ fn default_true() -> bool { true }
 fn default_paging_channel() -> u8 { 1 }
 fn default_prev_note() -> u8 { 46 }
 fn default_next_note() -> u8 { 47 }
+fn default_gamepad_provider() -> String { "hid".to_string() }
+fn default_pan_gain() -> f32 { 15.0 }
+fn default_zoom_gain() -> f32 { 3.0 }
+fn default_deadzone() -> f32 { 0.02 }
+fn default_gamma() -> f32 { 1.5 }

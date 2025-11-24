@@ -25,6 +25,8 @@ pub struct ExecutionContext {
     pub active_page: Option<String>,
     /// Control value (for encoder/analog inputs)
     pub value: Option<serde_json::Value>,
+    /// Control ID (e.g., "vpot1_rotate", "gamepad.left_stick_x")
+    pub control_id: Option<String>,
 }
 
 /// Driver trait - all application integrations implement this
