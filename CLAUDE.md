@@ -4,27 +4,7 @@ This file provides guidance to Claude (or any AI assistant) when working with th
 
 ## Project Overview
 
-XTouch GW v3 is a **Rust port** of a TypeScript/Node.js MIDI gateway that bridges a Behringer X-Touch control surface with desktop applications (Voicemeeter, QLC+, OBS Studio). This is a real-time system with strict latency requirements (<20ms end-to-end).
-
-**Current Status**: Active development following an 8-phase migration plan from TypeScript to Rust.
-
-## 🎯 CRITICAL: Reference Implementation
-
-**The TypeScript version in `D:\dev\xtouch-gw-v2\` is the authoritative reference for all behavior and features.**
-
-When implementing any functionality in Rust:
-1. **ALWAYS check the TypeScript implementation first** for correct behavior
-2. **Run the TS version** to verify expected outputs
-3. **Compare MIDI logs** between TS and Rust versions
-4. **Match the exact behavior** including timing, message format, and state management
-
-Key reference files in the TypeScript version:
-- `src/router.ts` - Core routing logic and anti-echo
-- `src/state/` - State management patterns
-- `src/xtouch/` - Hardware communication details
-- `src/drivers/` - Application integration patterns
-- `src/midi/` - MIDI transformations and utilities
-- `config.yaml` - Real-world configuration examples
+XTouch GW v3 is a MIDI gateway that bridges a Behringer X-Touch control surface with desktop applications (Voicemeeter, QLC+, OBS Studio). This is a real-time system with strict latency requirements (<20ms end-to-end).
 
 ## Essential Context
 
@@ -183,7 +163,7 @@ flowchart LR
 
 ## Common Pitfalls
 
-### From TypeScript Port
+### MIDI and Hardware
 1. **Channel confusion**: Fader channel ≠ target CC channel
 2. **Double port opening**: Check passthrough before control MIDI
 3. **Missing feedback**: Drivers must emit or faders won't sync
@@ -212,23 +192,8 @@ flowchart LR
 
 ## Reference Documents
 
-### Primary References (This Project)
-- **[RUST_MIGRATION_SPEC.md](RUST_MIGRATION_SPEC.md)**: Complete migration plan
 - **[TASKS.md](TASKS.md)**: Current development status
 - **[MEMORY.md](MEMORY.md)**: Lessons learned and gotchas
-
-### TypeScript Reference Implementation
-- **Source Code**: `D:\dev\xtouch-gw-v2\src\` - THE source of truth for behavior
-- **Configuration**: `D:\dev\xtouch-gw-v2\config.yaml` - Working config example
-- **Documentation**: `D:\dev\xtouch-gw-v2\docs\` - Architecture and flow diagrams
-- **Tests**: `D:\dev\xtouch-gw-v2\src\**\_tests\` - Expected behavior tests
-
-### How to Use the TS Reference
-1. **For any feature**: First read the corresponding TS file
-2. **For behavior questions**: Run the TS version and observe
-3. **For MIDI formats**: Use TS sniffer (`pnpm sniff:web` in v2 folder)
-4. **For state management**: Study `src/state/` patterns
-5. **For timing/delays**: Check anti-echo windows in `src/router/antiEcho.ts`
 
 ## Interaction Tips for AI Assistants
 
@@ -240,10 +205,4 @@ flowchart LR
 
 ## Current Focus
 
-Check [TASKS.md](TASKS.md) for the current development phase. As of project initialization, we're in **Phase 1: Core Runtime Foundation**.
-
-Priority areas needing attention:
-- [ ] Config loading and validation
-- [ ] Logging infrastructure setup
-- [ ] Basic CLI skeleton
-- [ ] Error handling strategy
+Check [TASKS.md](TASKS.md) for the current development status and priorities.
