@@ -168,42 +168,6 @@ impl EncoderSpeedTracker {
 }
 
 // =============================================================================
-// OBS Transform Utilities
-// =============================================================================
-
-/// Compute anchor point from OBS alignment flags
-///
-/// OBS alignment bit flags (from libobs):
-/// - LEFT = 1, RIGHT = 2, TOP = 4, BOTTOM = 8
-/// - CENTER = 0 (no flags set)
-///
-/// Returns (anchor_x, anchor_y) where 0.0=left/top, 0.5=center, 1.0=right/bottom
-fn compute_anchor_from_alignment(alignment: u32) -> (f64, f64) {
-    let left = (alignment & 1) != 0;
-    let right = (alignment & 2) != 0;
-    let top = (alignment & 4) != 0;
-    let bottom = (alignment & 8) != 0;
-
-    let anchor_x = if left {
-        0.0
-    } else if right {
-        1.0
-    } else {
-        0.5 // center
-    };
-
-    let anchor_y = if top {
-        0.0
-    } else if bottom {
-        1.0
-    } else {
-        0.5 // center
-    };
-
-    (anchor_x, anchor_y)
-}
-
-// =============================================================================
 // Analog Motion State
 // =============================================================================
 
@@ -635,6 +599,23 @@ impl ObsDriver {
         })
     }
 
+    /// Get OBS canvas (base) dimensions
+    async fn get_canvas_dimensions(&self) -> Result<(f64, f64)> {
+        let guard = self.client.read().await;
+        let client = guard.as_ref()
+            .context("OBS client not connected")?
+            .clone();
+
+        let video_settings = client.config().video_settings().await
+            .context("Failed to get OBS video settings")?;
+
+        let width = video_settings.base_width as f64;
+        let height = video_settings.base_height as f64;
+
+        trace!("OBS canvas dimensions: {}×{}", width, height);
+        Ok((width, height))
+    }
+
     /// Emit a signal to all indicator subscribers
     fn emit_signal(&self, signal: &str, value: Value) {
         let emitters = self.indicator_emitters.read();
@@ -752,8 +733,10 @@ impl ObsDriver {
             // Formula: new_scale/bounds = current × (1 + delta)
             let factor = 1.0 + ds_val;
 
-            // Compute anchor point from alignment (for position adjustment)
-            let (anchor_x, anchor_y) = compute_anchor_from_alignment(current.alignment);
+            // Get canvas dimensions to calculate center-based zoom
+            let (canvas_width, canvas_height) = self.get_canvas_dimensions().await?;
+            let canvas_center_x = canvas_width / 2.0;
+            let canvas_center_y = canvas_height / 2.0;
 
             // Determine if we should use bounds-based or scale-based transform
             let use_bounds = if let (Some(bw), Some(bh)) = (current.bounds_width, current.bounds_height) {
@@ -763,41 +746,36 @@ impl ObsDriver {
             };
 
             if use_bounds {
-                // PATH 1: Bounds-based scaling (TypeScript transforms.ts lines 27-31)
+                // PATH 1: Bounds-based scaling
                 let bounds_w = current.bounds_width.unwrap();
                 let bounds_h = current.bounds_height.unwrap();
 
                 let new_w = (bounds_w * factor).max(1.0).round();
                 let new_h = (bounds_h * factor).max(1.0).round();
 
-                // Adjust position to keep anchor point stable
-                new_state.x = current.x + (0.5 - anchor_x) * (bounds_w - new_w);
-                new_state.y = current.y + (0.5 - anchor_y) * (bounds_h - new_h);
+                // Zoom toward/from canvas center
+                // Formula: new_pos = canvas_center + (current_pos - canvas_center) * factor
+                // This makes canvas center the fixed pivot point for zoom
+                new_state.x = canvas_center_x + (current.x - canvas_center_x) * factor;
+                new_state.y = canvas_center_y + (current.y - canvas_center_y) * factor;
                 new_state.bounds_width = Some(new_w);
                 new_state.bounds_height = Some(new_h);
 
-                debug!("OBS bounds zoom: {:.0}×{:.0} * {:.3} = {:.0}×{:.0} (pos adjusted by {:.1},{:.1})",
+                debug!("OBS bounds zoom: {:.0}×{:.0} * {:.3} = {:.0}×{:.0} (canvas-centered pos {:.1},{:.1} → {:.1},{:.1})",
                     bounds_w, bounds_h, factor, new_w, new_h,
-                    new_state.x - current.x, new_state.y - current.y);
+                    current.x, current.y, new_state.x, new_state.y);
             } else {
-                // PATH 2: Scale-based scaling (TypeScript transforms.ts lines 33-40)
+                // PATH 2: Scale-based scaling
                 new_state.scale_x = (current.scale_x * factor).max(0.01).min(10.0);
                 new_state.scale_y = (current.scale_y * factor).max(0.01).min(10.0);
 
-                // Adjust position if we know base dimensions
-                if let (Some(w_base), Some(h_base)) = (current.width, current.height) {
-                    if w_base > 0.0 && h_base > 0.0 {
-                        let w_old = w_base * current.scale_x;
-                        let h_old = h_base * current.scale_y;
-                        let w_new = w_base * new_state.scale_x;
-                        let h_new = h_base * new_state.scale_y;
+                // Zoom toward/from canvas center (same formula as bounds-based)
+                new_state.x = canvas_center_x + (current.x - canvas_center_x) * factor;
+                new_state.y = canvas_center_y + (current.y - canvas_center_y) * factor;
 
-                        new_state.x = current.x + (0.5 - anchor_x) * (w_old - w_new);
-                        new_state.y = current.y + (0.5 - anchor_y) * (h_old - h_new);
-                    }
-                }
-
-                debug!("OBS scale zoom: {:.3} * {:.3} = {:.3}", current.scale_x, factor, new_state.scale_x);
+                debug!("OBS scale zoom: {:.3} * {:.3} = {:.3} (canvas-centered pos {:.1},{:.1} → {:.1},{:.1})",
+                    current.scale_x, factor, new_state.scale_x,
+                    current.x, current.y, new_state.x, new_state.y);
             }
         }
 
@@ -885,22 +863,44 @@ impl ObsDriver {
     }
 
     /// Set analog velocity for a scene/source
-    fn set_analog_rate(&self, scene_name: &str, source_name: &str, vx: f64, vy: f64, vs: f64) {
+    fn set_analog_rate(&self, scene_name: &str, source_name: &str, vx: Option<f64>, vy: Option<f64>, vs: Option<f64>) {
         let cache_key = self.cache_key(scene_name, source_name);
 
         let mut rates = self.analog_rates.write();
 
-        if vx == 0.0 && vy == 0.0 && vs == 0.0 {
+        // Get existing rate or create default
+        let current = rates.get(&cache_key).cloned().unwrap_or_else(|| AnalogRate {
+            scene: scene_name.to_string(),
+            source: source_name.to_string(),
+            vx: 0.0,
+            vy: 0.0,
+            vs: 0.0,
+        });
+
+        // Apply partial updates (only update provided values)
+        let new_vx = vx.unwrap_or(current.vx);
+        let new_vy = vy.unwrap_or(current.vy);
+        let new_vs = vs.unwrap_or(current.vs);
+
+        debug!(
+            "OBS analog rate: {}/{} → vx={:.3} ({}), vy={:.3} ({}), vs={:.3} ({})",
+            scene_name, source_name,
+            new_vx, if vx.is_some() { "new" } else { "keep" },
+            new_vy, if vy.is_some() { "new" } else { "keep" },
+            new_vs, if vs.is_some() { "new" } else { "keep" }
+        );
+
+        if new_vx == 0.0 && new_vy == 0.0 && new_vs == 0.0 {
             // Remove entry if all velocities are zero
             rates.remove(&cache_key);
         } else {
-            // Update or insert velocity
+            // Update or insert velocity with merged values
             rates.insert(cache_key, AnalogRate {
                 scene: scene_name.to_string(),
                 source: source_name.to_string(),
-                vx,
-                vy,
-                vs,
+                vx: new_vx,
+                vy: new_vy,
+                vs: new_vs,
             });
         }
 
@@ -1129,7 +1129,7 @@ impl Driver for ObsDriver {
                                 let vx = shaped * step * gain;
 
                                 // Set analog velocity (timer will apply)
-                                self.set_analog_rate(scene_name, source_name, vx, 0.0, 0.0);
+                                self.set_analog_rate(scene_name, source_name, Some(vx), None, None);
                             }
                         }
                     }
@@ -1197,7 +1197,7 @@ impl Driver for ObsDriver {
                                 let vy = shaped * step * gain;
 
                                 // Set analog velocity (timer will apply)
-                                self.set_analog_rate(scene_name, source_name, 0.0, vy, 0.0);
+                                self.set_analog_rate(scene_name, source_name, None, Some(vy), None);
                             }
                         }
                     }
@@ -1265,7 +1265,7 @@ impl Driver for ObsDriver {
                                 let vs = shaped * base * gain;
 
                                 // Set analog velocity (timer will apply)
-                                self.set_analog_rate(scene_name, source_name, 0.0, 0.0, vs);
+                                self.set_analog_rate(scene_name, source_name, None, None, Some(vs));
                             }
                         }
                     }

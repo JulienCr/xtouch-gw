@@ -9,9 +9,15 @@
       "Bash(cargo doc:*)",
       "WebSearch",
       "WebFetch(domain:docs.rs)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(if [ -d \"D:\\dev\\xtouch-gw-v3\\src\\input\" ])",
+      "Bash(then echo \"exists\")",
+      "Bash(else echo \"not exists\")",
+      "Bash(fi)",
+      "Bash(cargo test:*)"
     ],
     "deny": [],
     "ask": []
-  }
+  },
+  "outputStyle": "default"
 }

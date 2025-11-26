@@ -92,6 +92,7 @@ mod tests {
             config,
             active_page: Some("test".to_string()),
             value: None,
+            control_id: None,
         };
 
         // Test init

@@ -12,6 +12,7 @@ mod cli;
 mod config;
 mod control_mapping;
 mod drivers;
+mod input;
 mod midi;
 mod router;
 mod sniffer;
@@ -354,6 +355,14 @@ async fn run_app(
     }
 
     info!("All drivers registered and initialized");
+
+    // Initialize gamepad if enabled
+    let _gamepad_mapper = if let Some(gamepad_config) = &config.gamepad {
+        input::gamepad::init(gamepad_config, router.clone()).await
+    } else {
+        None
+    };
+
     info!("Ready to process MIDI events!");
 
     // Main event loop
