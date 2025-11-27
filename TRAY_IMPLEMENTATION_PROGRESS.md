@@ -266,10 +266,18 @@ Quit
 - Menu updates only when activity changes
 - CPU impact: ~0.01% per update
 
-**Files Modified**: 3 files
-**Lines Changed**: ~150 lines
-**Tests**: All 4 handler tests passing
+**Critical Menu Fix**:
+- ✅ Added Windows message pump using Win32 APIs
+- ✅ Integrated menu event handling into main loop
+- ✅ Menu now appears correctly on right-click
+- ✅ Calls `PeekMessageW`/`DispatchMessageW` every 50ms
+- ✅ Cross-platform with no-op on non-Windows
+
+**Files Modified**: 4 files (including Cargo.toml)
+**Lines Changed**: ~200 lines
+**Tests**: All 8 tray tests passing
 **Build Status**: ✅ Compiles successfully
+**Menu Status**: ✅ Working on Windows
 
 ---
 
@@ -390,6 +398,7 @@ cargo run -- -c config.yaml
 ### Known Limitations (To Be Addressed)
 - No configuration options in menu yet (Phase 6)
 - Menu updates every 100ms which may cause flicker on some systems (Phase 6 optimization)
+- Tray config not fully utilized yet (Phase 6 will load and apply all settings)
 
 ---
 
@@ -512,8 +521,131 @@ tray:
 ---
 
 **Total Progress**: 5/7 phases (71%)
-**Lines of Code Added**: ~1,005 lines
+**Lines of Code Added**: ~1,205 lines
 **Files Created**: 5 files
-**Files Modified**: 24 files
+**Files Modified**: 28 files
 **Build Status**: ✅ All phases compile cleanly
 **Tests**: All tray tests passing (8 tests total)
+
+---
+
+## Next Steps for Completion
+
+### Phase 6: Configuration & Polish (1-2 hours estimated)
+
+**Primary Goals**:
+1. **Load and apply TrayConfig from config.yaml**
+   - Read `tray.activity_led_duration_ms` (default 200)
+   - Read `tray.status_poll_interval_ms` (default 100)
+   - Read `tray.show_activity_leds` (default true)
+   - Read `tray.show_connection_status` (default true)
+
+2. **Implement configuration toggles**
+   - Conditionally show/hide activity LEDs based on config
+   - Conditionally show/hide connection status based on config
+   - Apply poll interval from config to handler
+
+3. **Add Settings submenu**
+   - "Toggle Activity LEDs"
+   - "Toggle Connection Status"
+   - Settings persist to config file
+
+4. **Add About menu item**
+   - Show version, author, repo link
+
+5. **Polish UX**
+   - Optimize menu rebuild rate (only when needed)
+   - Add tooltips with page names
+   - Improve icon update logic
+
+**Files to Modify**:
+- `src/tray/manager.rs` - Settings menu, conditional display
+- `src/tray/mod.rs` - Add TrayCommand variants for settings
+- `src/main.rs` - Pass full TrayConfig to components
+- `config.yaml` - Document tray configuration options
+
+---
+
+### Phase 7: Robustness & Error Handling (1-2 hours estimated)
+
+**Primary Goals**:
+1. **Tray thread panic handling**
+   - Restart tray thread on panic
+   - Log errors properly
+
+2. **Channel disconnection handling**
+   - Graceful degradation if channels disconnect
+   - Reconnection logic
+
+3. **Rate limiting**
+   - Prevent status update spam
+   - Debounce menu rebuilds
+
+4. **Enhanced features**
+   - Add tooltip showing current page name
+   - Support dynamic driver registration
+   - Add comprehensive logging
+
+5. **Stress testing**
+   - Test with high MIDI traffic
+   - Test with rapid driver reconnections
+   - Test menu responsiveness under load
+
+**Files to Modify**:
+- `src/tray/manager.rs` - Error handling, rate limiting
+- `src/tray/handler.rs` - Debouncing, logging
+- `src/main.rs` - Panic recovery
+
+---
+
+## Quick Start for New Session
+
+```bash
+# Continue from Phase 6
+cd D:\dev\xtouch-gw-v3
+
+# Review current status
+cat TRAY_IMPLEMENTATION_PROGRESS.md
+
+# Check git status
+git status
+
+# Run to test current implementation
+cargo run -- -c config.yaml
+
+# Start Phase 6 implementation
+# Reference: TRAY_IMPLEMENTATION_PROGRESS.md Phase 6 section
+```
+
+---
+
+## Important Notes for Continuation
+
+1. **Menu is working**: Windows message pump fixed in Phase 5
+2. **Activity LEDs are functional**: Real-time visualization working
+3. **All drivers subscribed**: Status updates flowing correctly
+4. **Architecture is solid**: No major refactoring needed
+
+**Focus for Phase 6**:
+- Configuration integration (mostly reading and applying settings)
+- UX polish (settings menu, about dialog)
+- Performance optimization (reduce unnecessary menu rebuilds)
+
+**Focus for Phase 7**:
+- Production readiness (error handling, logging)
+- Stress testing and edge cases
+- Final documentation and cleanup
+
+---
+
+## Configuration Example for Phase 6
+
+Add to your `config.yaml`:
+```yaml
+tray:
+  enabled: true
+  activity_led_duration_ms: 200      # How long LEDs stay lit after activity
+  status_poll_interval_ms: 100       # How often to check activity
+  show_activity_leds: true           # Toggle activity LED display
+  show_connection_status: true       # Toggle driver status display
+```
