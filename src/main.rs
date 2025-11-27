@@ -17,6 +17,7 @@ mod midi;
 mod router;
 mod sniffer;
 mod state;
+mod tray;
 mod xtouch;
 
 use crate::config::{watcher::ConfigWatcher, AppConfig};
@@ -109,9 +110,36 @@ async fn main() -> Result<()> {
     // Create .state directory for persistence
     tokio::fs::create_dir_all(".state").await?;
 
+    // Create tray channels
+    let (tray_update_tx, tray_update_rx) = crossbeam::channel::unbounded::<crate::tray::TrayUpdate>();
+    let (tray_command_tx, tray_command_rx) = crossbeam::channel::unbounded::<crate::tray::TrayCommand>();
+
+    // Create activity tracker for tray UI
+    let activity_tracker = Arc::new(crate::tray::ActivityTracker::new(
+        initial_config.tray.as_ref().map(|t| t.activity_led_duration_ms).unwrap_or(200),
+        Some(tray_update_tx.clone()),
+    ));
+
+    // Spawn tray manager on dedicated OS thread
+    let tray_handle = if initial_config.tray.as_ref().map(|t| t.enabled).unwrap_or(true) {
+        info!("Starting system tray...");
+        let tray_manager = crate::tray::TrayManager::new(tray_update_rx, tray_command_tx);
+
+        Some(std::thread::spawn(move || {
+            if let Err(e) = tray_manager.run() {
+                warn!("Tray manager error: {}", e);
+            }
+        }))
+    } else {
+        info!("System tray disabled in config");
+        None
+    };
+
     // Initialize router
-    let router = Arc::new(Router::new((*initial_config).clone()));
-    info!("Router initialized");
+    let mut router = Router::new((*initial_config).clone());
+    router.set_activity_tracker(Arc::clone(&activity_tracker));
+    let router = Arc::new(router);
+    info!("Router initialized with activity tracking");
 
     // Load state snapshot from disk if it exists
     let snapshot_path = std::path::PathBuf::from(".state/snapshot.json");
@@ -132,8 +160,27 @@ async fn main() -> Result<()> {
         (*initial_config).clone(),
         config_watcher,
         shutdown_signal,
+        activity_tracker,
+        tray_command_rx,
+        tray_update_tx,
     )
     .await?;
+
+    // Wait for tray thread to finish if it exists
+    // Note: tray_update_tx is automatically dropped when run_app returns,
+    // which signals the tray thread to exit via channel disconnection
+    if let Some(handle) = tray_handle {
+        info!("Shutting down tray...");
+
+        // Wait for tray thread to finish
+        let join_result = handle.join();
+
+        if join_result.is_err() {
+            warn!("Tray thread did not exit cleanly");
+        } else {
+            info!("Tray thread exited");
+        }
+    }
 
     info!("XTouch GW shutdown complete");
     Ok(())
@@ -144,10 +191,33 @@ async fn run_app(
     config: AppConfig,
     mut config_watcher: ConfigWatcher,
     shutdown: impl std::future::Future<Output = ()>,
+    activity_tracker: Arc<crate::tray::ActivityTracker>,
+    tray_command_rx: crossbeam::channel::Receiver<crate::tray::TrayCommand>,
+    tray_update_tx: crossbeam::channel::Sender<crate::tray::TrayUpdate>,
 ) -> Result<()> {
     use tracing::{debug, trace, warn};
 
     info!("Starting main application loop...");
+
+    // Create tray message handler for driver status updates
+    let activity_poll_interval = config.tray.as_ref()
+        .map(|t| t.status_poll_interval_ms)
+        .unwrap_or(100);
+
+    let tray_handler = Arc::new(crate::tray::TrayMessageHandler::new(
+        tray_update_tx.clone(),
+        Some(Arc::clone(&activity_tracker)),
+        activity_poll_interval,
+    ));
+
+    // Spawn tray handler task (runs until shutdown)
+    let _handler_task = tokio::spawn({
+        let handler = Arc::clone(&tray_handler);
+        async move {
+            handler.run().await;
+        }
+    });
+    info!("TrayMessageHandler spawned with {}ms activity polling", activity_poll_interval);
 
     // Create and connect X-Touch driver
     let mut xtouch = XTouchDriver::new(&config)?;
@@ -222,6 +292,16 @@ async fn run_app(
     // Create a channel for feedback from apps to X-Touch
     let (feedback_tx, mut feedback_rx) = mpsc::channel::<(String, Vec<u8>)>(1000);
 
+    // Bridge tray commands from crossbeam to tokio channel
+    let (tray_cmd_tx, mut tray_cmd_rx) = mpsc::unbounded_channel::<crate::tray::TrayCommand>();
+    tokio::spawn(async move {
+        while let Ok(cmd) = tray_command_rx.recv() {
+            if tray_cmd_tx.send(cmd).is_err() {
+                break;
+            }
+        }
+    });
+
     // Take the event receiver from XTouch
     let mut xtouch_rx = xtouch
         .take_event_receiver()
@@ -259,6 +339,10 @@ async fn run_app(
                     warn!("Failed to send feedback to channel: {}", e);
                 }
             }));
+
+            // Subscribe to connection status for tray display
+            let status_callback = tray_handler.subscribe_driver(app_config.name.clone());
+            driver.subscribe_connection_status(status_callback);
 
             match router.register_driver(app_config.name.clone(), driver).await {
                 Ok(_) => info!("✅ Registered MIDI bridge driver for: {}", app_config.name),
@@ -333,6 +417,10 @@ async fn run_app(
         obs_driver.subscribe_indicators(indicator_callback);
         info!("✅ Subscribed to OBS indicator signals");
 
+        // Subscribe to connection status for tray display
+        let status_callback = tray_handler.subscribe_driver("OBS".to_string());
+        obs_driver.subscribe_connection_status(status_callback);
+
         match router.register_driver("obs".to_string(), obs_driver).await {
             Ok(_) => info!("✅ Registered OBS driver"),
             Err(e) => warn!("⚠️  Failed to register OBS driver (will continue without it): {}", e),
@@ -346,6 +434,11 @@ async fn run_app(
     // Only register if not already registered (e.g. by MIDI bridge)
     if router.get_driver("qlc").await.is_none() {
         let qlc_driver = Arc::new(QlcDriver::new());
+
+        // Subscribe to connection status for tray display
+        let status_callback = tray_handler.subscribe_driver("QLC+".to_string());
+        qlc_driver.subscribe_connection_status(status_callback);
+
         match router.register_driver("qlc".to_string(), qlc_driver).await {
             Ok(_) => info!("✅ Registered QLC+ driver (stub)"),
             Err(e) => warn!("⚠️  Failed to register QLC+ driver (will continue without it): {}", e),
@@ -457,6 +550,9 @@ async fn run_app(
 
             // Handle feedback from applications → X-Touch
             Some((app_name, feedback_data)) = feedback_rx.recv() => {
+                // Record activity from application
+                activity_tracker.record(&app_name, crate::tray::ActivityDirection::Inbound);
+
                 // ALWAYS update state (even if app not on active page)
                 // This ensures StateStore tracks all app values for page refresh
                 // (matches TypeScript onMidiFromApp behavior)
@@ -484,11 +580,17 @@ async fn run_app(
 
                         if let Err(e) = xtouch.set_fader(channel, value14).await {
                             warn!("Failed to set fader from feedback: {}", e);
+                        } else {
+                            // Record outbound activity to X-Touch
+                            activity_tracker.record("xtouch", crate::tray::ActivityDirection::Outbound);
                         }
                     } else {
                         // For other message types, use send_raw
                         if let Err(e) = xtouch.send_raw(&transformed).await {
                             warn!("Failed to send feedback to X-Touch: {}", e);
+                        } else {
+                            // Record outbound activity to X-Touch
+                            activity_tracker.record("xtouch", crate::tray::ActivityDirection::Outbound);
                         }
                     }
                 }
@@ -513,6 +615,37 @@ async fn run_app(
                 let snapshot_path = std::path::PathBuf::from(".state/snapshot.json");
                 if let Err(e) = router.save_state_snapshot(&snapshot_path).await {
                     warn!("Failed to save state snapshot: {}", e);
+                }
+            }
+
+            // Handle tray commands
+            Some(cmd) = tray_cmd_rx.recv() => {
+                info!("Tray command received: {:?}", cmd);
+                match cmd {
+                    crate::tray::TrayCommand::ConnectObs => {
+                        info!("Attempting to reconnect OBS from tray command...");
+                        if let Some(obs_driver) = router.get_driver("obs").await {
+                            if let Err(e) = obs_driver.sync().await {
+                                warn!("Failed to reconnect OBS: {}", e);
+                            } else {
+                                info!("OBS sync initiated");
+                            }
+                        }
+                    }
+                    crate::tray::TrayCommand::RecheckAll => {
+                        info!("Rechecking all drivers from tray command...");
+                        for driver_name in router.list_drivers().await {
+                            if let Some(driver) = router.get_driver(&driver_name).await {
+                                if let Err(e) = driver.sync().await {
+                                    warn!("Failed to sync driver {}: {}", driver_name, e);
+                                }
+                            }
+                        }
+                    }
+                    crate::tray::TrayCommand::Shutdown => {
+                        info!("Shutdown requested from tray");
+                        break;
+                    }
                 }
             }
 

@@ -24,6 +24,8 @@ pub struct AppConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gamepad: Option<GamepadConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub tray: Option<TrayConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub pages_global: Option<GlobalPageDefaults>,
     pub pages: Vec<PageConfig>,
 }
@@ -153,6 +155,25 @@ pub struct HidProviderConfig {
     pub product_match: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mapping_csv: Option<String>,
+}
+
+/// System tray UI configuration
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TrayConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    #[serde(default = "default_activity_duration")]
+    pub activity_led_duration_ms: u64,
+
+    #[serde(default = "default_poll_interval")]
+    pub status_poll_interval_ms: u64,
+
+    #[serde(default = "default_true")]
+    pub show_activity_leds: bool,
+
+    #[serde(default = "default_true")]
+    pub show_connection_status: bool,
 }
 
 /// Global page defaults
@@ -498,3 +519,5 @@ fn default_pan_gain() -> f32 { 15.0 }
 fn default_zoom_gain() -> f32 { 3.0 }
 fn default_deadzone() -> f32 { 0.02 }
 fn default_gamma() -> f32 { 1.5 }
+fn default_activity_duration() -> u64 { 200 }
+fn default_poll_interval() -> u64 { 100 }

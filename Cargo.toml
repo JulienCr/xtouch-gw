@@ -69,6 +69,14 @@ bytes = "1.7"
 hex = "0.4"
 sha1 = "0.10"
 
+# System tray UI
+tray-icon = "0.14"  # Native Windows tray integration
+muda = "0.13"  # Menu builder
+image = "0.25"  # Icon generation
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.56", features = ["Win32_UI_WindowsAndMessaging", "Win32_Foundation"] }
+
 [dev-dependencies]
 criterion = "0.5"  # Benchmarking
 proptest = "1.5"  # Property-based testing

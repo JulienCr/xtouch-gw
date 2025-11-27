@@ -69,6 +69,8 @@ pub struct Router {
     setpoint_rx: Arc<tokio::sync::Mutex<Option<mpsc::UnboundedReceiver<ApplySetpointCmd>>>>,
     /// Pending MIDI messages to send to X-Touch (e.g., from page refresh)
     pending_midi_messages: Arc<tokio::sync::Mutex<Vec<Vec<u8>>>>,
+    /// Activity tracker for tray UI LED visualization
+    activity_tracker: Option<Arc<crate::tray::ActivityTracker>>,
 }
 
 impl Router {
@@ -87,7 +89,13 @@ impl Router {
             fader_setpoint: Arc::new(fader_setpoint),
             setpoint_rx: Arc::new(tokio::sync::Mutex::new(Some(setpoint_rx))),
             pending_midi_messages: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            activity_tracker: None,
         }
+    }
+
+    /// Set the activity tracker for LED visualization
+    pub fn set_activity_tracker(&mut self, tracker: Arc<crate::tray::ActivityTracker>) {
+        self.activity_tracker = Some(tracker);
     }
 
     /// Check if display needs update after page change and reset flag
@@ -110,6 +118,7 @@ impl Router {
             active_page: Some(self.get_active_page_name().await),
             value: None,
             control_id: None,
+            activity_tracker: self.activity_tracker.clone(),
         }
     }
 
@@ -120,6 +129,7 @@ impl Router {
             active_page: Some(self.get_active_page_name().await),
             value,
             control_id: Some(control_id),
+            activity_tracker: self.activity_tracker.clone(),
         }
     }
 
@@ -355,6 +365,11 @@ impl Router {
 
         if raw.len() < 2 {
             return;
+        }
+
+        // Record activity for tray UI
+        if let Some(ref tracker) = self.activity_tracker {
+            tracker.record("xtouch", crate::tray::ActivityDirection::Inbound);
         }
 
         let status = raw[0];
@@ -1961,6 +1976,7 @@ mod tests {
             gamepad: None,
             pages_global: None,
             pages,
+            tray: None,
         }
     }
 

@@ -50,7 +50,14 @@ pub struct MidiBridgeDriver {
     
     // Feedback callback for routing MIDI from app to X-Touch
     feedback_callback: Arc<Mutex<Option<FeedbackCallback>>>,
-    
+
+    // Connection status tracking
+    status_callbacks: Arc<parking_lot::RwLock<Vec<crate::tray::StatusCallback>>>,
+    current_status: Arc<parking_lot::RwLock<crate::tray::ConnectionStatus>>,
+
+    // Activity tracking
+    activity_tracker: Arc<parking_lot::RwLock<Option<Arc<crate::tray::ActivityTracker>>>>,
+
     // Reconnection state
     reconnect_count_out: Arc<Mutex<usize>>,
     reconnect_count_in: Arc<Mutex<usize>>,
@@ -88,6 +95,9 @@ impl MidiBridgeDriver {
             midi_out: Arc::new(Mutex::new(None)),
             midi_in: Arc::new(Mutex::new(None)),
             feedback_callback: Arc::new(Mutex::new(None)),
+            status_callbacks: Arc::new(parking_lot::RwLock::new(Vec::new())),
+            current_status: Arc::new(parking_lot::RwLock::new(crate::tray::ConnectionStatus::Disconnected)),
+            activity_tracker: Arc::new(parking_lot::RwLock::new(None)),
             reconnect_count_out: Arc::new(Mutex::new(0)),
             reconnect_count_in: Arc::new(Mutex::new(0)),
             shutdown_flag: Arc::new(Mutex::new(false)),
@@ -97,6 +107,41 @@ impl MidiBridgeDriver {
     /// Set the feedback callback for routing MIDI from app to X-Touch
     pub fn set_feedback_callback(&self, callback: FeedbackCallback) {
         *self.feedback_callback.lock() = Some(callback);
+    }
+
+    /// Check current connection status based on port states
+    fn compute_status(&self) -> crate::tray::ConnectionStatus {
+        let out_connected = self.midi_out.lock().is_some();
+        let in_connected = self.midi_in.lock().is_some();
+
+        if out_connected && in_connected {
+            crate::tray::ConnectionStatus::Connected
+        } else {
+            // Check if reconnecting
+            let out_count = *self.reconnect_count_out.lock();
+            let in_count = *self.reconnect_count_in.lock();
+            let max_count = out_count.max(in_count);
+
+            if max_count > 0 {
+                crate::tray::ConnectionStatus::Reconnecting { attempt: max_count }
+            } else {
+                crate::tray::ConnectionStatus::Disconnected
+            }
+        }
+    }
+
+    /// Emit connection status to all subscribers
+    fn emit_status(&self, status: crate::tray::ConnectionStatus) {
+        *self.current_status.write() = status.clone();
+        for callback in self.status_callbacks.read().iter() {
+            callback(status.clone());
+        }
+    }
+
+    /// Update and emit status based on current port states
+    fn update_status(&self) {
+        let status = self.compute_status();
+        self.emit_status(status);
     }
 
     /// Try to open the output port once
@@ -110,7 +155,10 @@ impl MidiBridgeDriver {
         
         *self.midi_out.lock() = Some(connection);
         *self.reconnect_count_out.lock() = 0;
-        
+
+        // Update connection status
+        self.update_status();
+
         info!("✅ MIDI Bridge OUT opened: '{}'", self.to_port);
         Ok(())
     }
@@ -122,12 +170,19 @@ impl MidiBridgeDriver {
         let port = find_port_by_substring(&midi_in, &self.from_port)
             .ok_or_else(|| anyhow!("Input port '{}' not found", self.from_port))?;
 
-        // Clone the callback Arc for use in the MIDI callback
+        // Clone the callback Arc and activity tracker for use in the MIDI callback
         let feedback_callback = self.feedback_callback.clone();
-        
+        let activity_tracker = self.activity_tracker.clone();
+        let driver_name = self.name.clone();
+
         let connection = midi_in.connect(&port, &format!("xtouch-gw-{}", self.from_port), move |_timestamp, data, _| {
             debug!("🔙 Bridge RX <- {} bytes: {:02X?}", data.len(), data);
-            
+
+            // Record inbound activity
+            if let Some(ref tracker) = *activity_tracker.read() {
+                tracker.record(&driver_name, crate::tray::ActivityDirection::Inbound);
+            }
+
             // Call the feedback callback if set
             if let Some(callback) = feedback_callback.lock().as_ref() {
                 callback(data);
@@ -136,7 +191,10 @@ impl MidiBridgeDriver {
         
         *self.midi_in.lock() = Some(connection);
         *self.reconnect_count_in.lock() = 0;
-        
+
+        // Update connection status
+        self.update_status();
+
         info!("✅ MIDI Bridge IN opened: '{}'", self.from_port);
         Ok(())
     }
@@ -159,7 +217,10 @@ impl MidiBridgeDriver {
 
         let delay_ms = std::cmp::min(10_000, 250 * retry_count);
         info!("⏳ MIDI Bridge OUT reconnect #{} for '{}' in {}ms", retry_count, self.to_port, delay_ms);
-        
+
+        // Update reconnecting status
+        self.update_status();
+
         sleep(Duration::from_millis(delay_ms as u64)).await;
         
         // Check shutdown flag again
@@ -200,7 +261,10 @@ impl MidiBridgeDriver {
 
         let delay_ms = std::cmp::min(10_000, 250 * retry_count);
         info!("⏳ MIDI Bridge IN reconnect #{} for '{}' in {}ms", retry_count, self.from_port, delay_ms);
-        
+
+        // Update reconnecting status
+        self.update_status();
+
         sleep(Duration::from_millis(delay_ms as u64)).await;
         
         // Check shutdown flag again
@@ -398,8 +462,13 @@ impl Driver for MidiBridgeDriver {
         &self.name
     }
 
-    async fn init(&self, _ctx: ExecutionContext) -> Result<()> {
+    async fn init(&self, ctx: ExecutionContext) -> Result<()> {
         info!("🌉 Initializing MIDI Bridge: '{}' ⇄ '{}'", self.to_port, self.from_port);
+
+        // Store activity tracker if available
+        if let Some(tracker) = ctx.activity_tracker {
+            *self.activity_tracker.write() = Some(tracker);
+        }
 
         // Try to open output port
         match self.try_open_out() {
@@ -438,6 +507,11 @@ impl Driver for MidiBridgeDriver {
                         if !bytes.is_empty() {
                             debug!("→ Passthrough {} bytes to '{}'", bytes.len(), self.to_port);
                             self.send_message(&bytes)?;
+
+                            // Record outbound activity
+                            if let Some(ref tracker) = ctx.activity_tracker {
+                                tracker.record(&self.name, crate::tray::ActivityDirection::Outbound);
+                            }
                         }
                     }
                 }
@@ -450,6 +524,11 @@ impl Driver for MidiBridgeDriver {
                         .filter_map(|v| v.as_u64().map(|n| n as u8))
                         .collect();
                     self.send_message(&bytes)?;
+
+                    // Record outbound activity
+                    if let Some(ref tracker) = ctx.activity_tracker {
+                        tracker.record(&self.name, crate::tray::ActivityDirection::Outbound);
+                    }
                 }
                 Ok(())
             },
@@ -474,8 +553,26 @@ impl Driver for MidiBridgeDriver {
         *self.midi_out.lock() = None;
         *self.midi_in.lock() = None;
 
+        // Update status to disconnected
+        self.update_status();
+
         info!("✅ MIDI Bridge shutdown complete");
         Ok(())
+    }
+
+    fn connection_status(&self) -> crate::tray::ConnectionStatus {
+        self.current_status.read().clone()
+    }
+
+    fn subscribe_connection_status(&self, callback: crate::tray::StatusCallback) {
+        debug!("MIDI Bridge: new connection status subscription");
+
+        // Emit current status immediately to new subscriber
+        let current = self.current_status.read().clone();
+        callback(current);
+
+        // Add to callbacks list
+        self.status_callbacks.write().push(callback);
     }
 }
 

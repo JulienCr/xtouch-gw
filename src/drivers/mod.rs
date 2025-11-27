@@ -27,6 +27,8 @@ pub struct ExecutionContext {
     pub value: Option<serde_json::Value>,
     /// Control ID (e.g., "vpot1_rotate", "gamepad.left_stick_x")
     pub control_id: Option<String>,
+    /// Activity tracker for tray UI (optional)
+    pub activity_tracker: Option<Arc<crate::tray::ActivityTracker>>,
 }
 
 /// Driver trait - all application integrations implement this
@@ -64,6 +66,24 @@ pub trait Driver: Send + Sync {
     /// Default implementation: no-op (driver doesn't emit indicators)
     fn subscribe_indicators(&self, _callback: IndicatorCallback) {
         // Default: do nothing (not all drivers emit indicators)
+    }
+
+    /// Get current connection status
+    ///
+    /// Returns the current connection state of the driver.
+    /// Default implementation: always connected (for drivers without network connections)
+    fn connection_status(&self) -> crate::tray::ConnectionStatus {
+        crate::tray::ConnectionStatus::Connected
+    }
+
+    /// Subscribe to connection status changes
+    ///
+    /// The driver calls the provided callback whenever connection status changes
+    /// (e.g., connected, disconnected, reconnecting).
+    ///
+    /// Default implementation: no-op (driver doesn't track connection status)
+    fn subscribe_connection_status(&self, _callback: crate::tray::StatusCallback) {
+        // Default: do nothing (not all drivers track connection status)
     }
 }
 

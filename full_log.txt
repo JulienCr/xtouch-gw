@@ -1,0 +1,797 @@
+warning: unused import: `watcher::ConfigWatcher`
+  --> src\config\mod.rs:12:9
+   |
+12 | pub use watcher::ConfigWatcher;
+   |         ^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `debug`
+  --> src\control_mapping.rs:11:21
+   |
+11 | use tracing::{info, debug};
+   |                     ^^^^^
+
+warning: unused import: `error`
+ --> src\input\gamepad\provider.rs:8:34
+  |
+8 | use tracing::{info, warn, debug, error};
+  |                                  ^^^^^
+
+warning: unused import: `warn`
+ --> src\input\gamepad\mapper.rs:5:15
+  |
+5 | use tracing::{warn, debug, error};
+  |               ^^^^
+
+warning: unused imports: `Context` and `Result`
+  --> src\input\gamepad\mod.rs:10:14
+   |
+10 | use anyhow::{Result, Context};
+   |              ^^^^^^  ^^^^^^^
+
+warning: unused import: `GamepadEvent`
+  --> src\input\gamepad\mod.rs:17:35
+   |
+17 | pub use provider::{GilrsProvider, GamepadEvent};
+   |                                   ^^^^^^^^^^^^
+
+warning: unused import: `info`
+  --> src\state\persistence.rs:12:22
+   |
+12 | use tracing::{debug, info};
+   |                      ^^^^
+
+warning: unused import: `MidiValue`
+ --> src\state\store.rs:6:76
+  |
+6 | use super::types::{addr_key, AppKey, MidiAddr, MidiStateEntry, MidiStatus, MidiValue, Origin};
+  |                                                                            ^^^^^^^^^
+
+warning: unused import: `persistence::StateSnapshot`
+  --> src\state.rs:13:9
+   |
+13 | pub use persistence::StateSnapshot;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `addr_key`
+  --> src\state.rs:15:17
+   |
+15 | pub use types::{addr_key, AppKey, MidiAddr, MidiStateEntry, MidiStatus, MidiValue, Origin};
+   |                 ^^^^^^^^
+
+warning: unnecessary parentheses around assigned value
+   --> src\main.rs:559:39
+    |
+559 |                         let channel = (transformed[0] & 0x0F);
+    |                                       ^                     ^
+    |
+    = note: `#[warn(unused_parens)]` (part of `#[warn(unused)]`) on by default
+help: remove these parentheses
+    |
+559 -                         let channel = (transformed[0] & 0x0F);
+559 +                         let channel = transformed[0] & 0x0F;
+    |
+
+warning: variable does not need to be mutable
+   --> src\drivers\obs.rs:356:21
+    |
+356 |                 let mut events = {
+    |                     ----^^^^^^
+    |                     |
+    |                     help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: irrefutable `if let` pattern
+   --> src\tray\manager.rs:111:24
+    |
+111 |                     if let Ok(icon_bytes) = generate_icon_bytes(icon_color).try_into() {
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this pattern will always match, so the `if let` is useless
+    = help: consider replacing the `if let` with a `let`
+    = note: `#[warn(irrefutable_let_patterns)]` on by default
+
+warning: function `run_repl` is never used
+ --> src\cli.rs:6:14
+  |
+6 | pub async fn run_repl() -> Result<()> {
+  |              ^^^^^^^^
+  |
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `save` is never used
+   --> src\config\mod.rs:357:18
+    |
+340 | impl AppConfig {
+    | -------------- method in this implementation
+...
+357 |     pub async fn save(&self, path: &str) -> Result<()> {
+    |                  ^^^^
+
+warning: methods `get_fader_controls`, `get_strip_buttons`, and `get_encoder_controls` are never used
+   --> src\control_mapping.rs:204:12
+    |
+107 | impl ControlMappingDB {
+    | --------------------- methods in this implementation
+...
+204 |     pub fn get_fader_controls(&self) -> Vec<&str> {
+    |            ^^^^^^^^^^^^^^^^^^
+...
+219 |     pub fn get_strip_buttons(&self, strip_num: u8) -> Vec<&str> {
+    |            ^^^^^^^^^^^^^^^^^
+...
+231 |     pub fn get_encoder_controls(&self, encoder_num: u8) -> Vec<&str> {
+    |            ^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `FileCache` is never constructed
+   --> src\control_mapping.rs:253:8
+    |
+253 | struct FileCache {
+    |        ^^^^^^^^^
+
+warning: static `FILE_DB` is never used
+   --> src\control_mapping.rs:259:8
+    |
+259 | static FILE_DB: OnceLock<Mutex<Option<FileCache>>> = OnceLock::new();
+    |        ^^^^^^^
+
+warning: function `load_mappings_from_path` is never used
+   --> src\control_mapping.rs:280:14
+    |
+280 | pub async fn load_mappings_from_path(path: impl AsRef<Path>) -> Result<ControlMappingDB> {
+    |              ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: fields `config` and `active_page` are never read
+  --> src\drivers\mod.rs:23:9
+   |
+21 | pub struct ExecutionContext {
+   |            ---------------- fields in this struct
+22 |     /// Application configuration
+23 |     pub config: Arc<RwLock<crate::config::AppConfig>>,
+   |         ^^^^^^
+24 |     /// Active page name
+25 |     pub active_page: Option<String>,
+   |         ^^^^^^^^^^^
+   |
+   = note: `ExecutionContext` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: methods `name` and `connection_status` are never used
+  --> src\drivers\mod.rs:41:8
+   |
+39 | pub trait Driver: Send + Sync {
+   |           ------ methods in this trait
+40 |     /// Get the driver name (e.g., "console", "obs", "voicemeeter")
+41 |     fn name(&self) -> &str;
+   |        ^^^^
+...
+75 |     fn connection_status(&self) -> crate::tray::ConnectionStatus {
+   |        ^^^^^^^^^^^^^^^^^
+
+warning: struct `ConsoleDriver` is never constructed
+  --> src\drivers\console.rs:18:12
+   |
+18 | pub struct ConsoleDriver {
+   |            ^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+  --> src\drivers\console.rs:28:12
+   |
+26 | impl ConsoleDriver {
+   | ------------------ associated function in this implementation
+27 |     /// Create a new ConsoleDriver with a given name
+28 |     pub fn new(name: impl Into<String>) -> Self {
+   |            ^^^
+
+warning: field `name` is never read
+  --> src\drivers\qlc.rs:19:5
+   |
+18 | pub struct QlcDriver {
+   |            --------- field in this struct
+19 |     name: String,
+   |     ^^^^
+
+warning: methods `schedule_out_reconnect` and `schedule_in_reconnect` are never used
+   --> src\drivers\midibridge.rs:203:14
+    |
+ 72 | impl MidiBridgeDriver {
+    | --------------------- methods in this implementation
+...
+203 |     async fn schedule_out_reconnect(&self) {
+    |              ^^^^^^^^^^^^^^^^^^^^^^
+...
+247 |     async fn schedule_in_reconnect(&self) {
+    |              ^^^^^^^^^^^^^^^^^^^^^
+
+warning: fields `width`, `height`, and `alignment` are never read
+   --> src\drivers\obs.rs:191:5
+    |
+186 | struct ObsItemState {
+    |        ------------ fields in this struct
+...
+191 |     width: Option<f64>,
+    |     ^^^^^
+192 |     height: Option<f64>,
+    |     ^^^^^^
+...
+195 |     alignment: u32,  // OBS alignment flags (LEFT=1, RIGHT=2, TOP=4, BOTTOM=8, CENTER=0)
+    |     ^^^^^^^^^
+    |
+    = note: `ObsItemState` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: associated items `from_config`, `load_analog_config`, `schedule_reconnect`, and `schedule_selected_scene_emit` are never used
+   --> src\drivers\obs.rs:283:12
+    |
+247 | impl ObsDriver {
+    | -------------- associated items in this implementation
+...
+283 |     pub fn from_config(config: &crate::config::ObsConfig) -> Self {
+    |            ^^^^^^^^^^^
+...
+292 |     pub fn load_analog_config(&self, gamepad_config: Option<&crate::config::GamepadConfig>) {
+    |            ^^^^^^^^^^^^^^^^^^
+...
+521 |     async fn schedule_reconnect(&self) {
+    |              ^^^^^^^^^^^^^^^^^^
+...
+683 |     fn schedule_selected_scene_emit(&self) {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `to_midi_cc` is never used
+  --> src\input\gamepad\analog.rs:52:8
+   |
+52 | pub fn to_midi_cc(value: f32) -> u8 {
+   |        ^^^^^^^^^^
+
+warning: function `to_midi_pb` is never used
+  --> src\input\gamepad\analog.rs:59:8
+   |
+59 | pub fn to_midi_pb(value: f32) -> u16 {
+   |        ^^^^^^^^^^
+
+warning: function `button_to_midi` is never used
+  --> src\input\gamepad\analog.rs:66:8
+   |
+66 | pub fn button_to_midi(pressed: bool) -> u8 {
+   |        ^^^^^^^^^^^^^^
+
+warning: method `shutdown` is never used
+   --> src\input\gamepad\provider.rs:306:18
+    |
+ 29 | impl GilrsProvider {
+    | ------------------ method in this implementation
+...
+306 |     pub async fn shutdown(&mut self) -> Result<()> {
+    |                  ^^^^^^^^
+
+warning: fields `router` and `analog_config` are never read
+  --> src\input\gamepad\mapper.rs:16:5
+   |
+14 | pub struct GamepadMapper {
+   |            ------------- fields in this struct
+15 |     _provider: Arc<GilrsProvider>,
+16 |     router: Arc<Router>,
+   |     ^^^^^^
+17 |     analog_config: Option<AnalogConfig>,
+   |     ^^^^^^^^^^^^^
+
+warning: method `shutdown` is never used
+   --> src\input\gamepad\mapper.rs:159:18
+    |
+ 20 | impl GamepadMapper {
+    | ------------------ method in this implementation
+...
+159 |     pub async fn shutdown(&self) -> Result<()> {
+    |                  ^^^^^^^^
+
+warning: methods `is_channel_message` and `is_system_message` are never used
+   --> src\midi.rs:255:12
+    |
+ 65 | impl MidiMessage {
+    | ---------------- methods in this implementation
+...
+255 |     pub fn is_channel_message(&self) -> bool {
+    |            ^^^^^^^^^^^^^^^^^^
+...
+260 |     pub fn is_system_message(&self) -> bool {
+    |            ^^^^^^^^^^^^^^^^^
+
+warning: function `pb14_to_bytes` is never used
+   --> src\midi.rs:366:8
+    |
+366 | pub fn pb14_to_bytes(value: u16) -> (u8, u8) {
+    |        ^^^^^^^^^^^^^
+
+warning: function `format_sniffer` is never used
+   --> src\midi.rs:381:8
+    |
+381 | pub fn format_sniffer(timestamp_ms: u64, direction: &str, port: &str, data: &[u8]) -> String {
+    |        ^^^^^^^^^^^^^^
+
+warning: methods `controller` and `value` are never used
+   --> src\midi.rs:435:12
+    |
+409 | impl MidiMessage {
+    | ---------------- methods in this implementation
+...
+435 |     pub fn controller(&self) -> Option<u8> {
+    |            ^^^^^^^^^^
+...
+443 |     pub fn value(&self) -> Option<u8> {
+    |            ^^^^^
+
+warning: function `to_7bit` is never used
+   --> src\midi.rs:301:12
+    |
+301 |     pub fn to_7bit(value_14bit: u16) -> u8 {
+    |            ^^^^^^^
+
+warning: function `to_8bit_from_14bit` is never used
+   --> src\midi.rs:314:12
+    |
+314 |     pub fn to_8bit_from_14bit(value_14bit: u16) -> u8 {
+    |            ^^^^^^^^^^^^^^^^^^
+
+warning: function `to_14bit` is never used
+   --> src\midi.rs:320:12
+    |
+320 |     pub fn to_14bit(value_7bit: u8) -> u16 {
+    |            ^^^^^^^^
+
+warning: function `to_8bit` is never used
+   --> src\midi.rs:345:12
+    |
+345 |     pub fn to_8bit(value_14bit: u16) -> u8 {
+    |            ^^^^^^^
+
+warning: function `from_8bit` is never used
+   --> src\midi.rs:350:12
+    |
+350 |     pub fn from_8bit(value_8bit: u8) -> u16 {
+    |            ^^^^^^^^^
+
+warning: constant `ANTI_ECHO_WINDOWS` is never used
+  --> src\router.rs:23:7
+   |
+23 | const ANTI_ECHO_WINDOWS: &[(MidiStatus, u64)] = &[
+   |       ^^^^^^^^^^^^^^^^^
+
+warning: constant `LWW_GRACE_PERIOD_PB` is never used
+  --> src\router.rs:31:7
+   |
+31 | const LWW_GRACE_PERIOD_PB: u64 = 300;
+   |       ^^^^^^^^^^^^^^^^^^^
+
+warning: constant `LWW_GRACE_PERIOD_CC` is never used
+  --> src\router.rs:32:7
+   |
+32 | const LWW_GRACE_PERIOD_CC: u64 = 50;
+   |       ^^^^^^^^^^^^^^^^^^^
+
+warning: fields `value` and `ts` are never read
+  --> src\router.rs:37:5
+   |
+36 | struct ShadowEntry {
+   |        ----------- fields in this struct
+37 |     value: u16,
+   |     ^^^^^
+38 |     ts: u64,
+   |     ^^
+   |
+   = note: `ShadowEntry` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: associated items `list_pages`, `get_anti_echo_window`, `should_suppress_anti_echo`, and `should_suppress_lww` are never used
+    --> src\router.rs:228:18
+     |
+  76 | impl Router {
+     | ----------- associated items in this implementation
+...
+ 228 |     pub async fn list_pages(&self) -> Vec<String> {
+     |                  ^^^^^^^^^^
+...
+1566 |     fn get_anti_echo_window(status: MidiStatus) -> u64 {
+     |        ^^^^^^^^^^^^^^^^^^^^
+...
+1642 |     fn should_suppress_anti_echo(&self, app_key: &str, entry: &MidiStateEntry) -> bool {
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1700 |     fn should_suppress_lww(&self, entry: &MidiStateEntry) -> bool {
+     |        ^^^^^^^^^^^^^^^^^^^
+
+warning: variants `Output` and `Bidirectional` are never constructed
+  --> src\sniffer.rs:25:5
+   |
+23 | pub enum Direction {
+   |          --------- variants in this enum
+24 |     Input,
+25 |     Output,
+   |     ^^^^^^
+26 |     Bidirectional,
+   |     ^^^^^^^^^^^^^
+   |
+   = note: `Direction` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: methods `get_state_for_app`, `list_states_for_apps`, `subscribe`, `clear_states_for_app`, and `clear_all_states` are never used
+   --> src\state\store.rs:63:12
+    |
+ 22 | impl StateStore {
+    | --------------- methods in this implementation
+...
+ 63 |     pub fn get_state_for_app(&self, app: AppKey, addr: &MidiAddr) -> Option<MidiStateEntry> {
+    |            ^^^^^^^^^^^^^^^^^
+...
+ 83 |     pub fn list_states_for_apps(&self, apps: &[AppKey]) -> HashMap<AppKey, Vec<MidiStateEntry>> {
+    |            ^^^^^^^^^^^^^^^^^^^^
+...
+ 94 |     pub fn subscribe<F>(&self, listener: F) -> usize
+    |            ^^^^^^^^^
+...
+172 |     pub fn clear_states_for_app(&self, app: AppKey) {
+    |            ^^^^^^^^^^^^^^^^^^^^
+...
+180 |     pub fn clear_all_states(&self) {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: method `as_binary` is never used
+  --> src\state\types.rs:68:12
+   |
+58 | impl MidiValue {
+   | -------------- method in this implementation
+...
+68 |     pub fn as_binary(&self) -> Option<&[u8]> {
+   |            ^^^^^^^^^
+
+warning: function `addr_key_without_port` is never used
+   --> src\state\types.rs:169:8
+    |
+169 | pub fn addr_key_without_port(addr: &MidiAddr) -> String {
+    |        ^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `last_activity`, `clear`, `len`, and `is_empty` are never used
+   --> src\tray\activity.rs:89:12
+    |
+ 27 | impl ActivityTracker {
+    | -------------------- methods in this implementation
+...
+ 89 |     pub fn last_activity(&self, driver: &str, direction: ActivityDirection) -> Option<Instant> {
+    |            ^^^^^^^^^^^^^
+...
+ 97 |     pub fn clear(&self) {
+    |            ^^^^^
+...
+102 |     pub fn len(&self) -> usize {
+    |            ^^^
+...
+107 |     pub fn is_empty(&self) -> bool {
+    |            ^^^^^^^^
+
+warning: methods `get_all_statuses` and `send_initial_status` are never used
+  --> src\tray\handler.rs:82:12
+   |
+35 | impl TrayMessageHandler {
+   | ----------------------- methods in this implementation
+...
+82 |     pub fn get_all_statuses(&self) -> HashMap<String, ConnectionStatus> {
+   |            ^^^^^^^^^^^^^^^^
+...
+87 |     pub fn send_initial_status(&self, driver_name: String, status: ConnectionStatus) {
+   |            ^^^^^^^^^^^^^^^^^^^
+
+warning: fields `timestamp` and `message` are never read
+  --> src\xtouch.rs:23:9
+   |
+22 | pub struct XTouchEvent {
+   |            ----------- fields in this struct
+23 |     pub timestamp: Instant,
+   |         ^^^^^^^^^
+24 |     pub message: MidiMessage,
+   |         ^^^^^^^
+   |
+   = note: `XTouchEvent` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: associated items `list_input_ports`, `list_output_ports`, `is_connected`, `send_raw_sync`, `set_encoder_led`, and `send_lcd_strip_lower_text` are never used
+   --> src\xtouch.rs:79:12
+    |
+ 55 | impl XTouchDriver {
+    | ----------------- associated items in this implementation
+...
+ 79 |     pub fn list_input_ports() -> Result<Vec<String>> {
+    |            ^^^^^^^^^^^^^^^^
+...
+ 93 |     pub fn list_output_ports() -> Result<Vec<String>> {
+    |            ^^^^^^^^^^^^^^^^^
+...
+246 |     pub fn is_connected(&self) -> bool {
+    |            ^^^^^^^^^^^^
+...
+271 |     pub fn send_raw_sync(&self, data: &[u8]) -> Result<()> {
+    |            ^^^^^^^^^^^^^
+...
+387 |     pub async fn set_encoder_led(&self, encoder: u8, value: u8) -> Result<()> {
+    |                  ^^^^^^^^^^^^^^^
+...
+470 |     pub async fn send_lcd_strip_lower_text(&self, strip_index: u8, lower: &str) -> Result<()> {
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `get_epoch` is never used
+   --> src\xtouch\fader_setpoint.rs:151:12
+    |
+ 52 | impl FaderSetpoint {
+    | ------------------ method in this implementation
+...
+151 |     pub fn get_epoch(&self, channel: u8) -> Option<u32> {
+    |            ^^^^^^^^^
+
+warning: call to `.clone()` on a reference in this situation does nothing
+   --> src\drivers\obs.rs:494:50
+    |
+494 |               .context("OBS client not connected")?
+    |  __________________________________________________^
+495 | |             .clone();
+    | |____________________^
+    |
+    = note: the type `obws::Client` does not implement `Clone`, so calling `clone` on `&obws::Client` copies the reference, which does not do anything and can be removed
+    = note: `#[warn(noop_method_call)]` on by default
+help: remove this redundant call
+    |
+494 -             .context("OBS client not connected")?
+495 -             .clone();
+494 +             .context("OBS client not connected")?;
+    |
+help: if you meant to clone `obws::Client`, implement `Clone` for it
+   --> C:\Users\julie\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\obws-0.11.5\src\client\mod.rs:81:1
+    |
+ 81 + #[derive(Clone)]
+ 82 | pub struct Client {
+    |
+
+warning: call to `.clone()` on a reference in this situation does nothing
+   --> src\drivers\obs.rs:576:50
+    |
+576 |               .context("OBS client not connected")?
+    |  __________________________________________________^
+577 | |             .clone();
+    | |____________________^
+    |
+    = note: the type `obws::Client` does not implement `Clone`, so calling `clone` on `&obws::Client` copies the reference, which does not do anything and can be removed
+help: remove this redundant call
+    |
+576 -             .context("OBS client not connected")?
+577 -             .clone();
+576 +             .context("OBS client not connected")?;
+    |
+help: if you meant to clone `obws::Client`, implement `Clone` for it
+   --> C:\Users\julie\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\obws-0.11.5\src\client\mod.rs:81:1
+    |
+ 81 + #[derive(Clone)]
+ 82 | pub struct Client {
+    |
+
+warning: call to `.clone()` on a reference in this situation does nothing
+   --> src\drivers\obs.rs:601:50
+    |
+601 |               .context("OBS client not connected")?
+    |  __________________________________________________^
+602 | |             .clone();
+    | |____________________^
+    |
+    = note: the type `obws::Client` does not implement `Clone`, so calling `clone` on `&obws::Client` copies the reference, which does not do anything and can be removed
+help: remove this redundant call
+    |
+601 -             .context("OBS client not connected")?
+602 -             .clone();
+601 +             .context("OBS client not connected")?;
+    |
+help: if you meant to clone `obws::Client`, implement `Clone` for it
+   --> C:\Users\julie\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\obws-0.11.5\src\client\mod.rs:81:1
+    |
+ 81 + #[derive(Clone)]
+ 82 | pub struct Client {
+    |
+
+warning: call to `.clone()` on a reference in this situation does nothing
+   --> src\drivers\obs.rs:638:50
+    |
+638 |               .context("OBS client not connected")?
+    |  __________________________________________________^
+639 | |             .clone();
+    | |____________________^
+    |
+    = note: the type `obws::Client` does not implement `Clone`, so calling `clone` on `&obws::Client` copies the reference, which does not do anything and can be removed
+help: remove this redundant call
+    |
+638 -             .context("OBS client not connected")?
+639 -             .clone();
+638 +             .context("OBS client not connected")?;
+    |
+help: if you meant to clone `obws::Client`, implement `Clone` for it
+   --> C:\Users\julie\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\obws-0.11.5\src\client\mod.rs:81:1
+    |
+ 81 + #[derive(Clone)]
+ 82 | pub struct Client {
+    |
+
+warning: call to `.clone()` on a reference in this situation does nothing
+   --> src\drivers\obs.rs:817:50
+    |
+817 |               .context("OBS client not connected")?
+    |  __________________________________________________^
+818 | |             .clone();
+    | |____________________^
+    |
+    = note: the type `obws::Client` does not implement `Clone`, so calling `clone` on `&obws::Client` copies the reference, which does not do anything and can be removed
+help: remove this redundant call
+    |
+817 -             .context("OBS client not connected")?
+818 -             .clone();
+817 +             .context("OBS client not connected")?;
+    |
+help: if you meant to clone `obws::Client`, implement `Clone` for it
+   --> C:\Users\julie\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\obws-0.11.5\src\client\mod.rs:81:1
+    |
+ 81 + #[derive(Clone)]
+ 82 | pub struct Client {
+    |
+
+warning: call to `.clone()` on a reference in this situation does nothing
+    --> src\drivers\obs.rs:1099:51
+     |
+1099 |                       .context("OBS not connected")?
+     |  ___________________________________________________^
+1100 | |                     .clone();
+     | |____________________________^
+     |
+     = note: the type `obws::Client` does not implement `Clone`, so calling `clone` on `&obws::Client` copies the reference, which does not do anything and can be removed
+help: remove this redundant call
+     |
+1099 -                     .context("OBS not connected")?
+1100 -                     .clone();
+1099 +                     .context("OBS not connected")?;
+     |
+help: if you meant to clone `obws::Client`, implement `Clone` for it
+    -->  C:\Users\julie\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\obws-0.11.5\src\client\mod.rs:81:1
+     |
+  81 + #[derive(Clone)]
+  82 | pub struct Client {
+     |
+
+warning: call to `.clone()` on a reference in this situation does nothing
+    --> src\drivers\obs.rs:1119:51
+     |
+1119 |                       .context("OBS not connected")?
+     |  ___________________________________________________^
+1120 | |                     .clone();
+     | |____________________________^
+     |
+     = note: the type `obws::Client` does not implement `Clone`, so calling `clone` on `&obws::Client` copies the reference, which does not do anything and can be removed
+help: remove this redundant call
+     |
+1119 -                     .context("OBS not connected")?
+1120 -                     .clone();
+1119 +                     .context("OBS not connected")?;
+     |
+help: if you meant to clone `obws::Client`, implement `Clone` for it
+    -->  C:\Users\julie\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\obws-0.11.5\src\client\mod.rs:81:1
+     |
+  81 + #[derive(Clone)]
+  82 | pub struct Client {
+     |
+
+warning: call to `.clone()` on a reference in this situation does nothing
+    --> src\drivers\obs.rs:1144:51
+     |
+1144 |                       .context("OBS not connected")?
+     |  ___________________________________________________^
+1145 | |                     .clone();
+     | |____________________________^
+     |
+     = note: the type `obws::Client` does not implement `Clone`, so calling `clone` on `&obws::Client` copies the reference, which does not do anything and can be removed
+help: remove this redundant call
+     |
+1144 -                     .context("OBS not connected")?
+1145 -                     .clone();
+1144 +                     .context("OBS not connected")?;
+     |
+help: if you meant to clone `obws::Client`, implement `Clone` for it
+    -->  C:\Users\julie\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\obws-0.11.5\src\client\mod.rs:81:1
+     |
+  81 + #[derive(Clone)]
+  82 | pub struct Client {
+     |
+
+warning: unused `std::result::Result` that must be used
+   --> src\xtouch.rs:359:9
+    |
+359 |         self.send(&message).await;
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+    = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+    |
+359 |         let _ = self.send(&message).await;
+    |         +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src\xtouch.rs:668:13
+    |
+668 |             self.send(&message).await;
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+668 |             let _ = self.send(&message).await;
+    |             +++++++
+
+warning: `xtouch-gw` (bin "xtouch-gw") generated 66 warnings (run `cargo fix --bin "xtouch-gw"` to apply 20 suggestions)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 0.24s
+     Running `target\debug\xtouch-gw.exe -c config.yaml`
+[2m2025-11-27T12:09:23.525260Z[0m [32m INFO[0m Starting XTouch GW v3...
+[2m2025-11-27T12:09:23.525308Z[0m [32m INFO[0m Configuration file: config.yaml
+[2m2025-11-27T12:09:23.525466Z[0m [32m INFO[0m Loaded 129 control mappings in 11 groups
+[2m2025-11-27T12:09:23.526668Z[0m [32m INFO[0m Config file watcher started for: config.yaml
+[2m2025-11-27T12:09:23.526685Z[0m [32m INFO[0m Configuration loaded successfully with hot-reload enabled
+[2m2025-11-27T12:09:23.526873Z[0m [32m INFO[0m Starting system tray...
+[2m2025-11-27T12:09:23.526959Z[0m [32m INFO[0m Starting system tray manager...
+[2m2025-11-27T12:09:23.526965Z[0m [32m INFO[0m Router initialized with activity tracking
+[2m2025-11-27T12:09:23.527205Z[0m [32m INFO[0m Ô£à State snapshot loaded from disk
+[2m2025-11-27T12:09:23.527233Z[0m [32m INFO[0m Starting main application loop...
+[2m2025-11-27T12:09:23.527263Z[0m [32m INFO[0m TrayMessageHandler spawned with 100ms activity polling
+[2m2025-11-27T12:09:23.527271Z[0m [32m INFO[0m X-Touch driver created
+[2m2025-11-27T12:09:23.527277Z[0m [32m INFO[0m X-Touch disconnected
+[2m2025-11-27T12:09:23.527276Z[0m [32m INFO[0m TrayMessageHandler started
+[2m2025-11-27T12:09:23.527282Z[0m [32m INFO[0m Activity polling enabled (100ms interval)
+[2m2025-11-27T12:09:23.527281Z[0m [32m INFO[0m Connecting to X-Touch - Input: 'UM-One', Output: 'UM-One'
+[2m2025-11-27T12:09:23.540464Z[0m [32m INFO[0m Ô£à System tray icon created
+[2m2025-11-27T12:09:23.541225Z[0m [32m INFO[0m Tray manager ready, processing updates...
+[2m2025-11-27T12:09:23.580968Z[0m [32m INFO[0m Connecting to input port: 2- UM-ONE
+[2m2025-11-27T12:09:23.582034Z[0m [32m INFO[0m Connecting to output port: 2- UM-ONE
+[2m2025-11-27T12:09:23.582263Z[0m [32m INFO[0m X-Touch connected successfully in Mcu mode
+[2m2025-11-27T12:09:23.582270Z[0m [32m INFO[0m Initializing MCU mode
+[2m2025-11-27T12:09:23.584586Z[0m [32m INFO[0m X-Touch connected successfully
+[2m2025-11-27T12:09:23.584595Z[0m [32m INFO[0m Initializing X-Touch display...
+[2m2025-11-27T12:09:23.586871Z[0m [32m INFO[0m Ô£à X-Touch display initialized
+[2m2025-11-27T12:09:23.586882Z[0m [32m INFO[0m Applying loaded state to X-Touch...
+[2m2025-11-27T12:09:23.587776Z[0m [32m INFO[0m Page refresh completed: Voicemeeter+QLC (sending 585 MIDI messages)
+[2m2025-11-27T12:09:23.587799Z[0m [32m INFO[0m Ô£à Initial state applied to X-Touch
+[2m2025-11-27T12:09:23.587817Z[0m [32m INFO[0m FaderSetpoint receiver initialized
+[2m2025-11-27T12:09:23.587853Z[0m [32m INFO[0m Registering driver 'qlc'...
+[2m2025-11-27T12:09:23.587868Z[0m [32m INFO[0m ­ƒîë Initializing MIDI Bridge: 'qlc-in' Ôçä 'qlc-out'
+[2m2025-11-27T12:09:23.588583Z[0m [32m INFO[0m Ô£à MIDI Bridge OUT opened: 'qlc-in'
+[2m2025-11-27T12:09:23.589246Z[0m [32m INFO[0m Ô£à MIDI Bridge IN opened: 'qlc-out'
+[2m2025-11-27T12:09:23.589257Z[0m [32m INFO[0m Ô£à MIDI Bridge active: 'qlc-in' Ôçä 'qlc-out'
+[2m2025-11-27T12:09:23.589264Z[0m [32m INFO[0m Ô£à Driver 'qlc' registered and initialized
+[2m2025-11-27T12:09:23.589268Z[0m [32m INFO[0m Ô£à Registered MIDI bridge driver for: qlc
+[2m2025-11-27T12:09:23.589272Z[0m [32m INFO[0m Registering driver 'voicemeeter'...
+[2m2025-11-27T12:09:23.589282Z[0m [32m INFO[0m ­ƒîë Initializing MIDI Bridge: 'xtouch-gw' Ôçä 'xtouch-gw-feedback'
+[2m2025-11-27T12:09:23.589845Z[0m [32m INFO[0m Ô£à MIDI Bridge OUT opened: 'xtouch-gw'
+[2m2025-11-27T12:09:23.590465Z[0m [32m INFO[0m Ô£à MIDI Bridge IN opened: 'xtouch-gw-feedback'
+[2m2025-11-27T12:09:23.590470Z[0m [32m INFO[0m Ô£à MIDI Bridge active: 'xtouch-gw' Ôçä 'xtouch-gw-feedback'
+[2m2025-11-27T12:09:23.590473Z[0m [32m INFO[0m Ô£à Driver 'voicemeeter' registered and initialized
+[2m2025-11-27T12:09:23.590475Z[0m [32m INFO[0m Ô£à Registered MIDI bridge driver for: voicemeeter
+[2m2025-11-27T12:09:23.590721Z[0m [32m INFO[0m Loaded 129 control mappings in 11 groups
+[2m2025-11-27T12:09:23.590730Z[0m [32m INFO[0m Ô£à Loaded control database (129 controls)
+[2m2025-11-27T12:09:23.590924Z[0m [32m INFO[0m Ô£à Subscribed to OBS indicator signals
+[2m2025-11-27T12:09:23.590937Z[0m [32m INFO[0m Registering driver 'obs'...
+[2m2025-11-27T12:09:23.590948Z[0m [32m INFO[0m ­ƒÄ¼ Initializing OBS WebSocket driver
+[2m2025-11-27T12:09:23.590952Z[0m [32m INFO[0m ­ƒÄ¼ Connecting to OBS at 127.0.0.1:4455
+[2m2025-11-27T12:09:23.594799Z[0m [32m INFO[0m Ô£à OBS WebSocket connected
+[2m2025-11-27T12:09:23.594813Z[0m [32m INFO[0m Ô£à Driver 'obs' registered and initialized
+[2m2025-11-27T12:09:23.594816Z[0m [32m INFO[0m Ô£à Registered OBS driver
+[2m2025-11-27T12:09:23.594818Z[0m [32m INFO[0m Skipping QLC+ stub driver registration (MIDI bridge 'qlc' already active)
+[2m2025-11-27T12:09:23.594822Z[0m [32m INFO[0m All drivers registered and initialized
+[2m2025-11-27T12:09:23.594824Z[0m [32m INFO[0m Initializing gamepad input...
+[2m2025-11-27T12:09:23.594859Z[0m [32m INFO[0m Ô£à Gamepad input initialized
+[2m2025-11-27T12:09:23.594865Z[0m [32m INFO[0m Ready to process MIDI events!
+[2m2025-11-27T12:09:23.595059Z[0m [32m INFO[0m ­ƒô║ Updating display after page change...
+[2m2025-11-27T12:09:23.598302Z[0m [32m INFO[0m GilRs initialized
+[2m2025-11-27T12:09:23.598321Z[0m [32m INFO[0m Scanning for gamepads...
+[2m2025-11-27T12:09:23.598347Z[0m [33m WARN[0m ÔÜá´©Å  No gamepads detected at all
+[2m2025-11-27T12:09:23.598356Z[0m [33m WARN[0m ÔÜá´©Å  No gamepad matching pattern "Faceoff Pro Nintendo Switch Controller" found
+[2m2025-11-27T12:09:23.598361Z[0m [33m WARN[0m     Available gamepad names: []
+[2m2025-11-27T12:09:23.621476Z[0m [32m INFO[0m Ô£à Display updated for page: Voicemeeter+QLC
+[2m2025-11-27T12:09:25.599303Z[0m [32m INFO[0m Ô£à Gamepad connected: Faceoff Pro Nintendo Switch Controller (ID: GamepadId(0))
+[2m2025-11-27T12:09:34.059297Z[0m [32m INFO[0m Shutdown signal received
+[2m2025-11-27T12:09:34.059322Z[0m [32m INFO[0m Shutdown signal received, stopping event loop

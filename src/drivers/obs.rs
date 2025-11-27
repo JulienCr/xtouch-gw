@@ -218,6 +218,13 @@ pub struct ObsDriver {
     indicator_emitters: Arc<parking_lot::RwLock<Vec<IndicatorCallback>>>,
     last_selected_sent: Arc<parking_lot::RwLock<Option<String>>>,
 
+    // Connection status tracking
+    status_callbacks: Arc<parking_lot::RwLock<Vec<crate::tray::StatusCallback>>>,
+    current_status: Arc<parking_lot::RwLock<crate::tray::ConnectionStatus>>,
+
+    // Activity tracking
+    activity_tracker: Arc<parking_lot::RwLock<Option<Arc<crate::tray::ActivityTracker>>>>,
+
     // Reconnection state
     reconnect_count: Arc<Mutex<usize>>,
     shutdown_flag: Arc<Mutex<bool>>,
@@ -253,6 +260,9 @@ impl ObsDriver {
             item_id_cache: Arc::new(parking_lot::RwLock::new(HashMap::new())),
             indicator_emitters: Arc::new(parking_lot::RwLock::new(Vec::new())),
             last_selected_sent: Arc::new(parking_lot::RwLock::new(None)),
+            status_callbacks: Arc::new(parking_lot::RwLock::new(Vec::new())),
+            current_status: Arc::new(parking_lot::RwLock::new(crate::tray::ConnectionStatus::Disconnected)),
+            activity_tracker: Arc::new(parking_lot::RwLock::new(None)),
             reconnect_count: Arc::new(Mutex::new(0)),
             shutdown_flag: Arc::new(Mutex::new(false)),
             // Analog config (defaults matching config file)
@@ -292,6 +302,14 @@ impl ObsDriver {
         }
     }
 
+    /// Emit connection status to all subscribers
+    fn emit_status(&self, status: crate::tray::ConnectionStatus) {
+        *self.current_status.write() = status.clone();
+        for callback in self.status_callbacks.read().iter() {
+            callback(status.clone());
+        }
+    }
+
     /// Connect to OBS WebSocket
     async fn connect(&self) -> Result<()> {
         info!("🎬 Connecting to OBS at {}:{}", self.host, self.port);
@@ -309,6 +327,9 @@ impl ObsDriver {
         // Start event listener
         self.spawn_event_listener();
 
+        // Emit connection status
+        self.emit_status(crate::tray::ConnectionStatus::Connected);
+
         info!("✅ OBS WebSocket connected");
         Ok(())
     }
@@ -322,6 +343,7 @@ impl ObsDriver {
         let emitters = Arc::clone(&self.indicator_emitters);
         let last_selected = Arc::clone(&self.last_selected_sent);
         let shutdown_flag = Arc::clone(&self.shutdown_flag);
+        let activity_tracker = Arc::clone(&self.activity_tracker);
 
         tokio::spawn(async move {
             loop {
@@ -358,6 +380,11 @@ impl ObsDriver {
                 while let Some(event) = events.next().await {
                     if *shutdown_flag.lock() {
                         break;
+                    }
+
+                    // Record inbound activity from OBS
+                    if let Some(ref tracker) = *activity_tracker.read() {
+                        tracker.record("obs", crate::tray::ActivityDirection::Inbound);
                     }
 
                     match event {
@@ -504,6 +531,11 @@ impl ObsDriver {
 
         let delay_ms = std::cmp::min(30_000, 1000 * retry_count);
         info!("⏳ OBS reconnect #{} in {}ms", retry_count, delay_ms);
+
+        // Emit reconnecting status
+        self.emit_status(crate::tray::ConnectionStatus::Reconnecting {
+            attempt: retry_count,
+        });
 
         sleep(Duration::from_millis(delay_ms as u64)).await;
 
@@ -1009,6 +1041,9 @@ impl ObsDriver {
             item_id_cache: Arc::clone(&self.item_id_cache),
             indicator_emitters: Arc::clone(&self.indicator_emitters),
             last_selected_sent: Arc::clone(&self.last_selected_sent),
+            status_callbacks: Arc::clone(&self.status_callbacks),
+            current_status: Arc::clone(&self.current_status),
+            activity_tracker: Arc::clone(&self.activity_tracker),
             reconnect_count: Arc::clone(&self.reconnect_count),
             shutdown_flag: Arc::clone(&self.shutdown_flag),
             analog_pan_gain: Arc::clone(&self.analog_pan_gain),
@@ -1029,8 +1064,14 @@ impl Driver for ObsDriver {
         &self.name
     }
 
-    async fn init(&self, _ctx: ExecutionContext) -> Result<()> {
+    async fn init(&self, ctx: ExecutionContext) -> Result<()> {
         info!("🎬 Initializing OBS WebSocket driver");
+
+        // Store activity tracker if available
+        if let Some(tracker) = ctx.activity_tracker {
+            *self.activity_tracker.write() = Some(tracker);
+        }
+
         self.connect().await?;
         Ok(())
     }
@@ -1040,6 +1081,11 @@ impl Driver for ObsDriver {
         if self.client.read().await.is_none() {
             warn!("OBS client disconnected, attempting to reconnect...");
             self.connect().await?;
+        }
+
+        // Record outbound activity
+        if let Some(ref tracker) = ctx.activity_tracker {
+            tracker.record("obs", crate::tray::ActivityDirection::Outbound);
         }
 
         match action {
@@ -1350,6 +1396,21 @@ impl Driver for ObsDriver {
             let selected = if studio_mode { preview_scene } else { program_scene };
             emit("obs.selectedScene".to_string(), Value::String(selected));
         }
+    }
+
+    fn connection_status(&self) -> crate::tray::ConnectionStatus {
+        self.current_status.read().clone()
+    }
+
+    fn subscribe_connection_status(&self, callback: crate::tray::StatusCallback) {
+        debug!("OBS driver: new connection status subscription");
+
+        // Emit current status immediately to new subscriber
+        let current = self.current_status.read().clone();
+        callback(current);
+
+        // Add to callbacks list
+        self.status_callbacks.write().push(callback);
     }
 }
 

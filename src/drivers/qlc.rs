@@ -87,12 +87,14 @@ mod tests {
             gamepad: None,
             pages_global: None,
             pages: vec![],
+            tray: None,
         }));
         let ctx = ExecutionContext {
             config,
             active_page: Some("test".to_string()),
             value: None,
             control_id: None,
+            activity_tracker: None,
         };
 
         // Test init

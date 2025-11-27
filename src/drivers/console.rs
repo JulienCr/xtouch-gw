@@ -151,6 +151,7 @@ mod tests {
             gamepad: None,
             pages_global: None,
             pages: vec![],
+            tray: None,
         };
 
         ExecutionContext {
@@ -158,6 +159,7 @@ mod tests {
             active_page: Some("TestPage".to_string()),
             value: None,
             control_id: None,
+            activity_tracker: None,
         }
     }
 
