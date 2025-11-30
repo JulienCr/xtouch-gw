@@ -7,6 +7,7 @@ use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 use super::{ActivityDirection, ConnectionStatus, TrayCommand, TrayUpdate};
+use crate::config::TrayConfig;
 use crate::tray::icons::{generate_icon_bytes, IconColor};
 
 /// Tray manager running on dedicated OS thread
@@ -15,10 +16,14 @@ pub struct TrayManager {
     update_rx: crossbeam::channel::Receiver<TrayUpdate>,
     /// Send commands to Tokio runtime
     command_tx: crossbeam::channel::Sender<TrayCommand>,
+    /// Configuration settings
+    config: TrayConfig,
     /// Current status of all drivers
     driver_statuses: HashMap<String, ConnectionStatus>,
     /// Current activity states for all drivers (driver, direction) -> is_active
     driver_activities: HashMap<(String, ActivityDirection), bool>,
+    /// Hash of last menu content to avoid unnecessary rebuilds
+    last_menu_hash: u64,
 }
 
 impl TrayManager {
@@ -26,12 +31,15 @@ impl TrayManager {
     pub fn new(
         update_rx: crossbeam::channel::Receiver<TrayUpdate>,
         command_tx: crossbeam::channel::Sender<TrayCommand>,
+        config: TrayConfig,
     ) -> Self {
         Self {
             update_rx,
             command_tx,
+            config,
             driver_statuses: HashMap::new(),
             driver_activities: HashMap::new(),
+            last_menu_hash: 0,
         }
     }
 
@@ -40,6 +48,11 @@ impl TrayManager {
     /// This runs the Win32 message loop on the current thread.
     pub fn run(mut self) -> anyhow::Result<()> {
         info!("Starting system tray manager...");
+        info!("Configuration: activity_leds={}, connection_status={}, led_duration={}ms, poll_interval={}ms",
+              self.config.show_activity_leds,
+              self.config.show_connection_status,
+              self.config.activity_led_duration_ms,
+              self.config.status_poll_interval_ms);
 
         // Generate initial icon (gray - not connected yet)
         let icon_bytes = generate_icon_bytes(IconColor::Gray);
@@ -50,7 +63,7 @@ impl TrayManager {
 
         let tray_icon = tray_icon::TrayIconBuilder::new()
             .with_icon(icon)
-            .with_tooltip("XTouch GW")
+            .with_tooltip("XTouch GW v3.0.0 - Initializing...")
             .build()
             .map_err(|e| anyhow::anyhow!("Failed to create tray icon: {}", e))?;
 
@@ -99,6 +112,33 @@ impl TrayManager {
                         debug!("Recheck all selected");
                         let _ = self.command_tx.try_send(TrayCommand::RecheckAll);
                     }
+                    "toggle_activity_leds" => {
+                        debug!("Toggle activity LEDs");
+                        self.config.show_activity_leds = !self.config.show_activity_leds;
+                        info!("Activity LEDs {}", if self.config.show_activity_leds { "enabled" } else { "disabled" });
+
+                        // Rebuild menu to reflect new setting
+                        if let Ok(new_menu) = self.build_menu_with_all_statuses() {
+                            tray_icon.set_menu(Some(Box::new(new_menu.clone())));
+                            *menu_clone.lock() = new_menu;
+                        }
+                    }
+                    "toggle_connection_status" => {
+                        debug!("Toggle connection status");
+                        self.config.show_connection_status = !self.config.show_connection_status;
+                        info!("Connection status {}", if self.config.show_connection_status { "enabled" } else { "disabled" });
+
+                        // Rebuild menu to reflect new setting
+                        if let Ok(new_menu) = self.build_menu_with_all_statuses() {
+                            tray_icon.set_menu(Some(Box::new(new_menu.clone())));
+                            *menu_clone.lock() = new_menu;
+                        }
+                    }
+                    "about" => {
+                        info!("About selected");
+                        // Note: In a real implementation, this would show a dialog
+                        // For now, we just log it
+                    }
                     _ => {
                         debug!("Unknown menu item: {:?}", event.id);
                     }
@@ -113,24 +153,33 @@ impl TrayManager {
             };
             match update {
                 TrayUpdate::DriverStatus { name, status } => {
-                    debug!("Tray: driver {} status changed to {:?}", name, status);
+                    info!("Tray: driver {} status changed to {:?}", name, status);
 
                     // Update our tracking
                     self.driver_statuses.insert(name.clone(), status.clone());
 
                     // Determine overall icon color (worst status wins)
                     let icon_color = self.calculate_overall_icon_color();
+                    debug!("Overall icon color: {:?}", icon_color);
 
                     if let Ok(icon_bytes) = generate_icon_bytes(icon_color).try_into() {
                         if let Ok(new_icon) = tray_icon::Icon::from_rgba(icon_bytes, 16, 16) {
                             let _ = tray_icon.set_icon(Some(new_icon));
+                            debug!("Tray icon updated");
                         }
                     }
 
+                    // Update tooltip with current status summary
+                    let tooltip = self.build_tooltip();
+                    let _ = tray_icon.set_tooltip(Some(&tooltip));
+                    debug!("Tooltip updated: {}", tooltip);
+
                     // Rebuild menu to show all driver statuses
                     if let Ok(new_menu) = self.build_menu_with_all_statuses() {
+                        let item_count = new_menu.items().len();
                         tray_icon.set_menu(Some(Box::new(new_menu.clone())));
                         *menu_clone.lock() = new_menu;
+                        debug!("Menu rebuilt with {} items", item_count);
                     }
                 }
                 TrayUpdate::Activity { driver, direction } => {
@@ -141,10 +190,17 @@ impl TrayManager {
                     // Update activity states
                     self.driver_activities = activities;
 
-                    // Rebuild menu to show updated LEDs
-                    if let Ok(new_menu) = self.build_menu_with_all_statuses() {
-                        tray_icon.set_menu(Some(Box::new(new_menu.clone())));
-                        *menu_clone.lock() = new_menu;
+                    // Calculate hash of current menu content
+                    let new_hash = self.calculate_menu_hash();
+
+                    // Only rebuild menu if content actually changed
+                    if new_hash != self.last_menu_hash {
+                        if let Ok(new_menu) = self.build_menu_with_all_statuses() {
+                            tray_icon.set_menu(Some(Box::new(new_menu.clone())));
+                            *menu_clone.lock() = new_menu;
+                            self.last_menu_hash = new_hash;
+                            debug!("Menu rebuilt (hash changed: {} -> {})", self.last_menu_hash, new_hash);
+                        }
                     }
                 }
             }
@@ -208,57 +264,59 @@ impl TrayManager {
         let menu = muda::Menu::new();
 
         // Title
-        let title = muda::MenuItem::new("XTouch GW", false, None);
+        let title = muda::MenuItem::new("XTouch GW v3.0.0", false, None);
         menu.append(&title)?;
         menu.append(&muda::PredefinedMenuItem::separator())?;
 
-        // Driver statuses (sorted by name for consistent ordering)
-        if self.driver_statuses.is_empty() {
-            let status_item = muda::MenuItem::new("⏳ Initializing...", false, None);
-            menu.append(&status_item)?;
-        } else {
-            let mut drivers: Vec<_> = self.driver_statuses.iter().collect();
-            drivers.sort_by_key(|(name, _)| *name);
-
-            for (driver_name, status) in drivers {
-                // Main status line
-                let status_text = match status {
-                    ConnectionStatus::Connected => {
-                        format!("✓ {}: Connected", driver_name)
-                    }
-                    ConnectionStatus::Disconnected => {
-                        format!("✗ {}: Disconnected", driver_name)
-                    }
-                    ConnectionStatus::Reconnecting { attempt } => {
-                        format!("⏳ {}: Reconnecting ({})", driver_name, attempt)
-                    }
-                };
-
-                let status_item = muda::MenuItem::new(&status_text, false, None);
+        // Driver statuses (only show if enabled in config)
+        if self.config.show_connection_status {
+            if self.driver_statuses.is_empty() {
+                let status_item = muda::MenuItem::new("⏳ Initializing...", false, None);
                 menu.append(&status_item)?;
+            } else {
+                let mut drivers: Vec<_> = self.driver_statuses.iter().collect();
+                drivers.sort_by_key(|(name, _)| *name);
 
-                // Activity LEDs (only show for connected drivers)
-                if matches!(status, ConnectionStatus::Connected) {
-                    let inbound_active = self.driver_activities
-                        .get(&(driver_name.to_string(), ActivityDirection::Inbound))
-                        .copied()
-                        .unwrap_or(false);
-                    let outbound_active = self.driver_activities
-                        .get(&(driver_name.to_string(), ActivityDirection::Outbound))
-                        .copied()
-                        .unwrap_or(false);
+                for (driver_name, status) in drivers {
+                    // Main status line
+                    let status_text = match status {
+                        ConnectionStatus::Connected => {
+                            format!("✓ {}: Connected", driver_name)
+                        }
+                        ConnectionStatus::Disconnected => {
+                            format!("✗ {}: Disconnected", driver_name)
+                        }
+                        ConnectionStatus::Reconnecting { attempt } => {
+                            format!("⏳ {}: Reconnecting ({})", driver_name, attempt)
+                        }
+                    };
 
-                    let in_led = if inbound_active { "🟢" } else { "⚪" };
-                    let out_led = if outbound_active { "🟢" } else { "⚪" };
+                    let status_item = muda::MenuItem::new(&status_text, false, None);
+                    menu.append(&status_item)?;
 
-                    let activity_text = format!("  In: {}  Out: {}", in_led, out_led);
-                    let activity_item = muda::MenuItem::new(&activity_text, false, None);
-                    menu.append(&activity_item)?;
+                    // Activity LEDs (only show for connected drivers and if enabled)
+                    if self.config.show_activity_leds && matches!(status, ConnectionStatus::Connected) {
+                        let inbound_active = self.driver_activities
+                            .get(&(driver_name.to_string(), ActivityDirection::Inbound))
+                            .copied()
+                            .unwrap_or(false);
+                        let outbound_active = self.driver_activities
+                            .get(&(driver_name.to_string(), ActivityDirection::Outbound))
+                            .copied()
+                            .unwrap_or(false);
+
+                        let in_led = if inbound_active { "🟢" } else { "⚪" };
+                        let out_led = if outbound_active { "🟢" } else { "⚪" };
+
+                        let activity_text = format!("  In: {}  Out: {}", in_led, out_led);
+                        let activity_item = muda::MenuItem::new(&activity_text, false, None);
+                        menu.append(&activity_item)?;
+                    }
                 }
             }
-        }
 
-        menu.append(&muda::PredefinedMenuItem::separator())?;
+            menu.append(&muda::PredefinedMenuItem::separator())?;
+        }
 
         // Actions
         let connect_obs = muda::MenuItem::with_id("connect_obs", "Connect OBS", true, None);
@@ -266,6 +324,35 @@ impl TrayManager {
 
         let recheck = muda::MenuItem::with_id("recheck_all", "Recheck All", true, None);
         menu.append(&recheck)?;
+
+        menu.append(&muda::PredefinedMenuItem::separator())?;
+
+        // Settings submenu
+        let settings_menu = muda::Submenu::new("Settings", true);
+
+        let led_check = if self.config.show_activity_leds { "✓ " } else { "" };
+        let toggle_leds = muda::MenuItem::with_id(
+            "toggle_activity_leds",
+            &format!("{}Show Activity LEDs", led_check),
+            true,
+            None,
+        );
+        settings_menu.append(&toggle_leds)?;
+
+        let status_check = if self.config.show_connection_status { "✓ " } else { "" };
+        let toggle_status = muda::MenuItem::with_id(
+            "toggle_connection_status",
+            &format!("{}Show Connection Status", status_check),
+            true,
+            None,
+        );
+        settings_menu.append(&toggle_status)?;
+
+        menu.append(&settings_menu)?;
+
+        // About
+        let about = muda::MenuItem::with_id("about", "About XTouch GW", true, None);
+        menu.append(&about)?;
 
         menu.append(&muda::PredefinedMenuItem::separator())?;
 
@@ -329,5 +416,78 @@ impl TrayManager {
     #[cfg(not(target_os = "windows"))]
     fn pump_windows_messages(&self) {
         // No-op on non-Windows
+    }
+
+    /// Build a tooltip showing current status summary
+    fn build_tooltip(&self) -> String {
+        if self.driver_statuses.is_empty() {
+            return "XTouch GW v3.0.0 - Initializing...".to_string();
+        }
+
+        let mut connected = 0;
+        let mut disconnected = 0;
+        let mut reconnecting = 0;
+
+        for status in self.driver_statuses.values() {
+            match status {
+                ConnectionStatus::Connected => connected += 1,
+                ConnectionStatus::Disconnected => disconnected += 1,
+                ConnectionStatus::Reconnecting { .. } => reconnecting += 1,
+            }
+        }
+
+        let total = self.driver_statuses.len();
+
+        if disconnected > 0 || reconnecting > 0 {
+            format!(
+                "XTouch GW v3.0.0 - {} connected, {} disconnected, {} reconnecting",
+                connected, disconnected, reconnecting
+            )
+        } else {
+            format!("XTouch GW v3.0.0 - All {} drivers connected", total)
+        }
+    }
+
+    /// Calculate a hash of menu content to detect changes
+    ///
+    /// This allows us to avoid rebuilding the menu when nothing changed.
+    fn calculate_menu_hash(&self) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+
+        // Hash config flags
+        self.config.show_activity_leds.hash(&mut hasher);
+        self.config.show_connection_status.hash(&mut hasher);
+
+        // Hash driver statuses (sorted for consistency)
+        let mut drivers: Vec<_> = self.driver_statuses.iter().collect();
+        drivers.sort_by_key(|(name, _)| *name);
+        for (name, status) in drivers {
+            name.hash(&mut hasher);
+            match status {
+                ConnectionStatus::Connected => 1u8.hash(&mut hasher),
+                ConnectionStatus::Disconnected => 2u8.hash(&mut hasher),
+                ConnectionStatus::Reconnecting { attempt } => {
+                    3u8.hash(&mut hasher);
+                    attempt.hash(&mut hasher);
+                }
+            }
+        }
+
+        // Hash activity states (sorted for consistency)
+        let mut activities: Vec<_> = self.driver_activities.iter().collect();
+        activities.sort_by(|a, b| a.0.cmp(b.0));
+        for ((driver, direction), active) in activities {
+            driver.hash(&mut hasher);
+            match direction {
+                ActivityDirection::Inbound => 1u8.hash(&mut hasher),
+                ActivityDirection::Outbound => 2u8.hash(&mut hasher),
+            }
+            active.hash(&mut hasher);
+        }
+
+        hasher.finish()
     }
 }

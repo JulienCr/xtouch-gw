@@ -61,7 +61,7 @@ pub enum ConnectionStatus {
 }
 
 /// Direction of message activity
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ActivityDirection {
     /// Message received from application/hardware
     Inbound,

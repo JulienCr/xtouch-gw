@@ -123,7 +123,15 @@ async fn main() -> Result<()> {
     // Spawn tray manager on dedicated OS thread
     let tray_handle = if initial_config.tray.as_ref().map(|t| t.enabled).unwrap_or(true) {
         info!("Starting system tray...");
-        let tray_manager = crate::tray::TrayManager::new(tray_update_rx, tray_command_tx);
+        let tray_config = initial_config.tray.clone().unwrap_or_else(|| crate::config::TrayConfig {
+            enabled: true,
+            activity_led_duration_ms: 200,
+            status_poll_interval_ms: 100,
+            show_activity_leds: true,
+            show_connection_status: true,
+        });
+
+        let tray_manager = crate::tray::TrayManager::new(tray_update_rx, tray_command_tx, tray_config);
 
         Some(std::thread::spawn(move || {
             if let Err(e) = tray_manager.run() {

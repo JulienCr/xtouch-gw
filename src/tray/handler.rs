@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 use parking_lot::RwLock;
 use tracing::{debug, info, warn};
 
@@ -18,6 +19,7 @@ use super::{ActivityDirection, ActivityTracker, ConnectionStatus, TrayUpdate};
 /// - Polls activity tracker periodically for LED updates
 /// - Forwards status changes to the tray UI via crossbeam channel
 /// - Sends initial status snapshot when drivers register
+/// - Rate limits updates to prevent spam
 pub struct TrayMessageHandler {
     /// Sender for updates to the tray UI (crossbeam for cross-thread communication)
     tray_tx: crossbeam::channel::Sender<TrayUpdate>,
@@ -30,6 +32,12 @@ pub struct TrayMessageHandler {
 
     /// Activity poll interval in milliseconds
     activity_poll_interval_ms: u64,
+
+    /// Last update time per driver for rate limiting (driver_name -> timestamp)
+    last_update_times: Arc<RwLock<HashMap<String, Instant>>>,
+
+    /// Minimum time between status updates for the same driver (ms)
+    rate_limit_ms: u64,
 }
 
 impl TrayMessageHandler {
@@ -44,6 +52,8 @@ impl TrayMessageHandler {
             driver_statuses: Arc::new(RwLock::new(HashMap::new())),
             activity_tracker,
             activity_poll_interval_ms,
+            last_update_times: Arc::new(RwLock::new(HashMap::new())),
+            rate_limit_ms: 50, // Minimum 50ms between updates for same driver
         }
     }
 
@@ -51,14 +61,48 @@ impl TrayMessageHandler {
     ///
     /// Returns a callback that should be registered with the driver.
     /// When the driver's status changes, it will call this callback,
-    /// which forwards the update to the tray UI.
+    /// which forwards the update to the tray UI with rate limiting.
     pub fn subscribe_driver(&self, driver_name: String) -> Arc<dyn Fn(ConnectionStatus) + Send + Sync> {
         let tray_tx = self.tray_tx.clone();
         let driver_statuses = Arc::clone(&self.driver_statuses);
+        let last_update_times = Arc::clone(&self.last_update_times);
+        let rate_limit_ms = self.rate_limit_ms;
         let name = driver_name.clone();
 
         Arc::new(move |status: ConnectionStatus| {
             debug!("TrayHandler: {} status changed to {:?}", name, status);
+
+            // Check if status actually changed (always send if different from previous)
+            let status_changed = {
+                let statuses = driver_statuses.read();
+                statuses.get(&name) != Some(&status)
+            };
+
+            // Check rate limit (but always allow status changes)
+            let should_send = if status_changed {
+                // Status changed - always send, update rate limit timer
+                let mut times = last_update_times.write();
+                times.insert(name.clone(), Instant::now());
+                true
+            } else {
+                // Same status - apply rate limiting
+                let mut times = last_update_times.write();
+                let now = Instant::now();
+
+                if let Some(last_time) = times.get(&name) {
+                    let elapsed = now.duration_since(*last_time).as_millis() as u64;
+                    if elapsed < rate_limit_ms {
+                        debug!("Rate limiting duplicate status update for {} ({}ms elapsed)", name, elapsed);
+                        false
+                    } else {
+                        times.insert(name.clone(), now);
+                        true
+                    }
+                } else {
+                    times.insert(name.clone(), now);
+                    true
+                }
+            };
 
             // Update our internal tracking (parking_lot RwLock is synchronous)
             {
@@ -66,14 +110,20 @@ impl TrayMessageHandler {
                 statuses.insert(name.clone(), status.clone());
             }
 
-            // Forward to tray UI (non-blocking)
-            let update = TrayUpdate::DriverStatus {
-                name: name.clone(),
-                status: status.clone(),
-            };
+            // Forward to tray UI if not rate limited (non-blocking)
+            if should_send {
+                let update = TrayUpdate::DriverStatus {
+                    name: name.clone(),
+                    status: status.clone(),
+                };
 
-            if let Err(e) = tray_tx.try_send(update) {
-                warn!("Failed to send status update to tray: {}", e);
+                if let Err(e) = tray_tx.try_send(update) {
+                    if matches!(e, crossbeam::channel::TrySendError::Disconnected(_)) {
+                        warn!("Tray channel disconnected, cannot send status update for {}", name);
+                    } else {
+                        warn!("Failed to send status update to tray: {}", e);
+                    }
+                }
             }
         })
     }
@@ -108,8 +158,10 @@ impl TrayMessageHandler {
     ///
     /// Continuously polls the ActivityTracker at the configured interval
     /// and sends activity snapshots to the tray UI for LED visualization.
+    /// Handles channel disconnection gracefully.
     pub async fn run(self: Arc<Self>) {
-        info!("TrayMessageHandler started");
+        info!("TrayMessageHandler started (poll interval: {}ms, rate limit: {}ms)",
+              self.activity_poll_interval_ms, self.rate_limit_ms);
 
         if self.activity_tracker.is_none() {
             info!("Activity tracking disabled, handler running in minimal mode");
@@ -124,8 +176,11 @@ impl TrayMessageHandler {
 
         info!("Activity polling enabled ({}ms interval)", self.activity_poll_interval_ms);
 
+        let mut iteration_count = 0u64;
+
         loop {
             tokio::time::sleep(poll_interval).await;
+            iteration_count += 1;
 
             // Build activity snapshot for all registered drivers
             let driver_names: Vec<String> = {
@@ -134,27 +189,54 @@ impl TrayMessageHandler {
             };
 
             if driver_names.is_empty() {
+                if iteration_count % 100 == 0 {
+                    debug!("No drivers registered yet (iteration {})", iteration_count);
+                }
                 continue;
             }
 
             let mut activities = HashMap::new();
+            let mut active_count = 0;
 
             for driver_name in &driver_names {
                 // Check inbound activity
                 let inbound_active = activity_tracker.is_active(driver_name, ActivityDirection::Inbound);
+                if inbound_active {
+                    active_count += 1;
+                }
                 activities.insert((driver_name.clone(), ActivityDirection::Inbound), inbound_active);
 
                 // Check outbound activity
                 let outbound_active = activity_tracker.is_active(driver_name, ActivityDirection::Outbound);
+                if outbound_active {
+                    active_count += 1;
+                }
                 activities.insert((driver_name.clone(), ActivityDirection::Outbound), outbound_active);
             }
 
             // Send snapshot to tray UI
             let update = TrayUpdate::ActivitySnapshot { activities };
             if let Err(e) = self.tray_tx.try_send(update) {
-                warn!("Failed to send activity snapshot to tray: {}", e);
+                if matches!(e, crossbeam::channel::TrySendError::Disconnected(_)) {
+                    warn!("Tray channel disconnected, stopping handler");
+                    break;
+                } else {
+                    warn!("Failed to send activity snapshot to tray: {}", e);
+                }
+            }
+
+            // Log periodic stats
+            if iteration_count % 100 == 0 {
+                debug!(
+                    "TrayHandler stats: {} drivers, {} active directions (iteration {})",
+                    driver_names.len(),
+                    active_count,
+                    iteration_count
+                );
             }
         }
+
+        info!("TrayMessageHandler stopped");
     }
 }
 
