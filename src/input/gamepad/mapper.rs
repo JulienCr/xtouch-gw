@@ -2,7 +2,7 @@
 
 use anyhow::{Result, anyhow};
 use std::sync::Arc;
-use tracing::{warn, debug, error};
+use tracing::{debug, error};
 use serde_json::Value;
 
 use crate::config::{GamepadConfig, AnalogConfig};
@@ -36,15 +36,14 @@ impl GamepadMapper {
 
         // Subscribe to provider events
         let router_clone = router.clone();
-        let analog_clone = analog_config.clone();
 
         let callback: EventCallback = Arc::new(move |event| {
             let router = router_clone.clone();
-            let analog = analog_clone.clone();
 
             // Spawn async task to handle event
+            // Note: analog_config is now embedded in Axis events
             tokio::spawn(async move {
-                if let Err(e) = Self::handle_event(event, &router, &analog).await {
+                if let Err(e) = Self::handle_event(event, &router).await {
                     error!("Error handling gamepad event: {}", e);
                 }
             });
@@ -63,14 +62,13 @@ impl GamepadMapper {
     async fn handle_event(
         event: GamepadEvent,
         router: &Arc<Router>,
-        analog_config: &Option<AnalogConfig>,
     ) -> Result<()> {
         match event {
-            GamepadEvent::Button { id, pressed } => {
-                Self::handle_button(id, pressed, router).await?;
+            GamepadEvent::Button { control_id, pressed } => {
+                Self::handle_button(control_id, pressed, router).await?;
             }
-            GamepadEvent::Axis { id, value } => {
-                Self::handle_axis(id, value, router, analog_config).await?;
+            GamepadEvent::Axis { control_id, value, analog_config } => {
+                Self::handle_axis(control_id, value, router, &analog_config).await?;
             }
         }
 
@@ -110,9 +108,10 @@ impl GamepadMapper {
         router: &Arc<Router>,
         analog_config: &Option<AnalogConfig>,
     ) -> Result<()> {
-        // Extract axis name (e.g., "lx" from "gamepad.axis.lx")
+        // Extract axis name (e.g., "lx" from "gamepad1.axis.lx" or "gamepad.axis.lx")
         let axis_name = control_id
-            .strip_prefix("gamepad.axis.")
+            .rsplit_once(".axis.")
+            .and_then(|(_, name)| Some(name))
             .ok_or_else(|| anyhow!("Invalid axis control ID: {}", control_id))?;
 
         // Get analog config

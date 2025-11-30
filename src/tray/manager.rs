@@ -162,11 +162,10 @@ impl TrayManager {
                     let icon_color = self.calculate_overall_icon_color();
                     debug!("Overall icon color: {:?}", icon_color);
 
-                    if let Ok(icon_bytes) = generate_icon_bytes(icon_color).try_into() {
-                        if let Ok(new_icon) = tray_icon::Icon::from_rgba(icon_bytes, 16, 16) {
-                            let _ = tray_icon.set_icon(Some(new_icon));
-                            debug!("Tray icon updated");
-                        }
+                    let icon_bytes = generate_icon_bytes(icon_color);
+                    if let Ok(new_icon) = tray_icon::Icon::from_rgba(icon_bytes, 16, 16) {
+                        let _ = tray_icon.set_icon(Some(new_icon));
+                        debug!("Tray icon updated");
                     }
 
                     // Update tooltip with current status summary

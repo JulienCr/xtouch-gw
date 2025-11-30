@@ -1,20 +1,29 @@
 //! GilRs gamepad provider with hot-plug support
 
 use anyhow::Result;
-use gilrs::{Gilrs, Gamepad, Event, EventType, Button, Axis};
+use gilrs::{Gilrs, Event, EventType, Button, Axis};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc;
-use tracing::{info, warn, debug, error};
+use tracing::{info, warn, debug};
 use std::time::Duration;
+use crate::config::AnalogConfig;
+use super::slot::SlotManager;
 
 /// Standardized gamepad event
 #[derive(Debug, Clone)]
 pub enum GamepadEvent {
     /// Button press/release
-    Button { id: String, pressed: bool },
+    Button {
+        control_id: String,  // Full ID: "gamepad1.btn.a"
+        pressed: bool
+    },
     /// Analog axis movement
-    Axis { id: String, value: f32 },
+    Axis {
+        control_id: String,  // Full ID: "gamepad1.axis.lx"
+        value: f32,
+        analog_config: Option<AnalogConfig>,  // Per-slot config
+    },
 }
 
 /// Callback type for gamepad events
@@ -30,11 +39,11 @@ impl GilrsProvider {
     /// Create and start a new gamepad provider
     ///
     /// # Arguments
-    /// * `product_match` - Optional substring to match against gamepad name
+    /// * `slot_configs` - Vector of (product_match, analog_config) tuples for each slot
     ///
     /// # Returns
     /// Running provider instance
-    pub async fn start(product_match: Option<String>) -> Result<Self> {
+    pub async fn start(slot_configs: Vec<(String, Option<AnalogConfig>)>) -> Result<Self> {
         let event_listeners = Arc::new(RwLock::new(Vec::<EventCallback>::new()));
         let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>(1);
 
@@ -43,7 +52,7 @@ impl GilrsProvider {
 
         // Spawn blocking event loop in a dedicated thread
         std::thread::spawn(move || {
-            Self::event_loop_blocking(product_match, event_tx, shutdown_rx);
+            Self::event_loop_blocking(slot_configs, event_tx, shutdown_rx);
         });
 
         // Spawn async task to forward events to listeners
@@ -71,7 +80,7 @@ impl GilrsProvider {
 
     /// Main event loop (runs in dedicated blocking thread)
     fn event_loop_blocking(
-        product_match: Option<String>,
+        slot_configs: Vec<(String, Option<AnalogConfig>)>,
         event_tx: mpsc::UnboundedSender<GamepadEvent>,
         mut shutdown_rx: mpsc::Receiver<()>,
     ) {
@@ -87,12 +96,38 @@ impl GilrsProvider {
             }
         };
 
-        let mut connected_gamepad_id = None;
+        // Create slot manager (or use legacy mode if empty)
+        let mut slot_manager = if slot_configs.is_empty() {
+            None
+        } else {
+            Some(SlotManager::new(slot_configs))
+        };
+
         let mut last_reconnect_check = std::time::Instant::now();
         let reconnect_interval = Duration::from_secs(2);
 
-        // Log all detected gamepads for debugging
+        // Wait for gamepads to initialize (Windows Bluetooth controllers need time)
         info!("Scanning for gamepads...");
+        info!("⏳ Waiting for gamepad enumeration (3 seconds)...");
+
+        let scan_start = std::time::Instant::now();
+        let scan_duration = Duration::from_secs(3);
+
+        // Poll events during initial scan to trigger connection detection
+        while scan_start.elapsed() < scan_duration {
+            // Process events to allow gilrs to detect gamepads
+            while let Some(Event { id, event, .. }) = gilrs.next_event() {
+                match event {
+                    EventType::Connected => {
+                        debug!("Gamepad connected during initial scan: {:?}", id);
+                    }
+                    _ => {}
+                }
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+
+        // Now scan for connected gamepads
         let all_gamepads: Vec<_> = gilrs.gamepads()
             .filter(|(_, gp)| gp.is_connected())
             .map(|(id, gp)| (id, gp.name().to_string()))
@@ -107,17 +142,11 @@ impl GilrsProvider {
             }
         }
 
-        // Check for initial gamepad
-        if let Some((id, gp)) = Self::find_gamepad(&gilrs, &product_match) {
-            info!("✅ Gamepad connected: {} (ID: {:?})", gp.name(), id);
-            connected_gamepad_id = Some(id);
-        } else {
-            if let Some(pattern) = &product_match {
-                warn!("⚠️  No gamepad matching pattern \"{}\" found", pattern);
-                warn!("    Available gamepad names: {:?}",
-                    all_gamepads.iter().map(|(_, name)| name.as_str()).collect::<Vec<_>>());
-            } else {
-                warn!("⚠️  No matching gamepad found at startup");
+        // Initial gamepad slot assignment
+        if let Some(ref mut manager) = slot_manager {
+            for (id, gamepad) in gilrs.gamepads().filter(|(_, gp)| gp.is_connected()) {
+                let name = gamepad.name();
+                manager.try_connect(id, name);
             }
         }
 
@@ -135,35 +164,37 @@ impl GilrsProvider {
             if last_reconnect_check.elapsed() >= reconnect_interval {
                 last_reconnect_check = std::time::Instant::now();
 
-                // Check if current gamepad is still connected
-                if let Some(gp_id) = connected_gamepad_id {
-                    if gilrs.connected_gamepad(gp_id).is_none() {
-                        warn!("🔌 Gamepad disconnected");
-                        connected_gamepad_id = None;
-                    }
-                }
+                if let Some(ref mut manager) = slot_manager {
+                    // Check for disconnections
+                    manager.check_disconnections(&gilrs);
 
-                // Try to find/reconnect to gamepad
-                if connected_gamepad_id.is_none() {
-                    if let Some((id, gp)) = Self::find_gamepad(&gilrs, &product_match) {
-                        info!("✅ Gamepad connected: {} (ID: {:?})", gp.name(), id);
-                        connected_gamepad_id = Some(id);
+                    // Try to reconnect empty slots
+                    for (id, gamepad) in gilrs.gamepads().filter(|(_, gp)| gp.is_connected()) {
+                        let name = gamepad.name();
+                        manager.try_connect(id, name);
                     }
                 }
             }
 
-            // Process all available events
+            // Process gilrs events
             while let Some(Event { id, event, .. }) = gilrs.next_event() {
-                // Only process events from our connected gamepad
-                if Some(id) != connected_gamepad_id {
-                    continue;
-                }
+                // Find which slot this event belongs to
+                let (slot_prefix, analog_config) = if let Some(ref manager) = slot_manager {
+                    if let Some(slot) = manager.get_slot_by_id(id) {
+                        (slot.control_id_prefix(), slot.analog_config.clone())
+                    } else {
+                        // Event from unregistered gamepad, ignore
+                        continue;
+                    }
+                } else {
+                    // Legacy mode: no slot manager, use "gamepad" prefix
+                    ("gamepad".to_string(), None)
+                };
 
-                // Convert gilrs event to our standardized event
-                if let Some(gamepad_event) = Self::convert_event(event) {
+                // Convert event with slot prefix
+                if let Some(gamepad_event) = Self::convert_event(event, &slot_prefix, analog_config) {
                     debug!("Gamepad event: {:?}", gamepad_event);
 
-                    // Send event to async handler via channel
                     if event_tx.send(gamepad_event).is_err() {
                         warn!("Event receiver dropped, shutting down gamepad loop");
                         break;
@@ -176,53 +207,23 @@ impl GilrsProvider {
         }
     }
 
-    /// Find a matching gamepad
-    fn find_gamepad<'a>(gilrs: &'a Gilrs, product_match: &Option<String>) -> Option<(gilrs::GamepadId, Gamepad<'a>)> {
-        let mut first_gamepad = None;
-
-        for (id, gamepad) in gilrs.gamepads() {
-            if !gamepad.is_connected() {
-                continue;
-            }
-
-            // Store first gamepad as fallback
-            if first_gamepad.is_none() {
-                first_gamepad = Some((id, gamepad.clone()));
-            }
-
-            let name = gamepad.name();
-
-            // If product_match is specified, check substring match (case-insensitive)
-            if let Some(pattern) = product_match {
-                if name.to_lowercase().contains(&pattern.to_lowercase()) {
-                    debug!("Gamepad name \"{}\" matches pattern \"{}\"", name, pattern);
-                    return Some((id, gamepad));
-                } else {
-                    debug!("Gamepad name \"{}\" does NOT match pattern \"{}\"", name, pattern);
-                }
-            } else {
-                // No filter - return first connected gamepad
-                return Some((id, gamepad));
-            }
-        }
-
-        // If no match found but product_match was specified, return None
-        // (don't use first_gamepad as fallback when user specified a pattern)
-        None
-    }
 
     /// Convert GilRs event to standardized gamepad event
-    fn convert_event(event: EventType) -> Option<GamepadEvent> {
+    fn convert_event(
+        event: EventType,
+        prefix: &str,
+        analog_config: Option<AnalogConfig>
+    ) -> Option<GamepadEvent> {
         match event {
             EventType::ButtonPressed(button, _) => {
                 Some(GamepadEvent::Button {
-                    id: Self::button_to_id(button),
+                    control_id: Self::button_to_id(button, prefix),
                     pressed: true,
                 })
             }
             EventType::ButtonReleased(button, _) => {
                 Some(GamepadEvent::Button {
-                    id: Self::button_to_id(button),
+                    control_id: Self::button_to_id(button, prefix),
                     pressed: false,
                 })
             }
@@ -237,8 +238,9 @@ impl GilrsProvider {
                 };
 
                 Some(GamepadEvent::Axis {
-                    id: Self::axis_to_id(axis),
+                    control_id: Self::axis_to_id(axis, prefix),
                     value: normalized_value,
+                    analog_config,
                 })
             }
             EventType::Connected => {
@@ -254,7 +256,7 @@ impl GilrsProvider {
     }
 
     /// Map GilRs button to standardized control ID
-    fn button_to_id(button: Button) -> String {
+    fn button_to_id(button: Button, prefix: &str) -> String {
         let name = match button {
             Button::South => "a",
             Button::East => "b",
@@ -269,10 +271,10 @@ impl GilrsProvider {
             Button::Mode => "home",
             Button::LeftThumb => "l3",
             Button::RightThumb => "r3",
-            Button::DPadUp => return "gamepad.dpad.up".to_string(),
-            Button::DPadDown => return "gamepad.dpad.down".to_string(),
-            Button::DPadLeft => return "gamepad.dpad.left".to_string(),
-            Button::DPadRight => return "gamepad.dpad.right".to_string(),
+            Button::DPadUp => return format!("{}.dpad.up", prefix),
+            Button::DPadDown => return format!("{}.dpad.down", prefix),
+            Button::DPadLeft => return format!("{}.dpad.left", prefix),
+            Button::DPadRight => return format!("{}.dpad.right", prefix),
             Button::C => "c",
             Button::Z => "capture",
             _ => {
@@ -281,11 +283,11 @@ impl GilrsProvider {
             }
         };
 
-        format!("gamepad.btn.{}", name)
+        format!("{}.btn.{}", prefix, name)
     }
 
     /// Map GilRs axis to standardized control ID
-    fn axis_to_id(axis: Axis) -> String {
+    fn axis_to_id(axis: Axis, prefix: &str) -> String {
         let name = match axis {
             Axis::LeftStickX => "lx",
             Axis::LeftStickY => "ly",
@@ -299,7 +301,7 @@ impl GilrsProvider {
             }
         };
 
-        format!("gamepad.axis.{}", name)
+        format!("{}.axis.{}", prefix, name)
     }
 
     /// Shutdown the provider

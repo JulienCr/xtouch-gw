@@ -14,7 +14,10 @@
       "Bash(then echo \"exists\")",
       "Bash(else echo \"not exists\")",
       "Bash(fi)",
-      "Bash(cargo test:*)"
+      "Bash(cargo test:*)",
+      "Bash(taskkill:*)",
+      "Bash(cargo run:*)",
+      "Bash(git checkout:*)"
     ],
     "deny": [],
     "ask": []

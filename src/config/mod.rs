@@ -127,10 +127,16 @@ pub struct GamepadConfig {
     pub enabled: bool,
     #[serde(default = "default_gamepad_provider")]
     pub provider: String,
+
+    // Legacy single-gamepad config (for backward compatibility)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub analog: Option<AnalogConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hid: Option<HidProviderConfig>,
+
+    // NEW: Multi-gamepad support
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gamepads: Option<Vec<GamepadSlotConfig>>,
 }
 
 /// Analog stick configuration
@@ -155,6 +161,17 @@ pub struct HidProviderConfig {
     pub product_match: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mapping_csv: Option<String>,
+}
+
+/// Configuration for a single gamepad slot (multi-gamepad mode)
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct GamepadSlotConfig {
+    /// Product name pattern to match (substring, case-insensitive)
+    pub product_match: String,
+
+    /// Per-gamepad analog configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub analog: Option<AnalogConfig>,
 }
 
 /// System tray UI configuration

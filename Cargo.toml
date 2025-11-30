@@ -34,7 +34,7 @@ csv = "1.3"
 notify = "6.1"
 
 # Gamepad support
-gilrs = "0.10"
+gilrs = "0.11"
 
 # Logging and tracing
 tracing = "0.1"
