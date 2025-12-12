@@ -10,6 +10,5 @@ mod store;
 mod types;
 
 pub use builders::build_entry_from_raw;
-pub use persistence::StateSnapshot;
 pub use store::StateStore;
-pub use types::{addr_key, AppKey, MidiAddr, MidiStateEntry, MidiStatus, MidiValue, Origin};
+pub use types::{AppKey, MidiAddr, MidiStateEntry, MidiStatus, MidiValue, Origin};

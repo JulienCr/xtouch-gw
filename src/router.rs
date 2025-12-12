@@ -1357,7 +1357,9 @@ impl Router {
             if !apps_on_page.contains(app.as_str()) {
                 continue;
             }
-            // PB plan (priority: Known PB = 3 > Mapped CC→PB = 2 > Fader Setpoint = 2 > Zero = 1)
+            // PB plan (priority: Known PB = 3 > Mapped CC→PB = 2)
+            // Note: Fader setpoint and zero fallbacks are handled AFTER all apps,
+            // so apps don't overwrite each other's values
             for &ch in &channels {
                 // Priority 3: Try to get known PB value
                 if let Some(latest_pb) =
@@ -1375,42 +1377,7 @@ impl Router {
                     continue;
                 }
 
-                // Priority 2: Try to get from fader setpoint (motor position)
-                if let Some(desired14) = self.fader_setpoint.get_desired(ch) {
-                    let setpoint_pb = MidiStateEntry {
-                        addr: MidiAddr {
-                            port_id: app.as_str().to_string(),
-                            status: MidiStatus::PB,
-                            channel: Some(ch),
-                            data1: Some(0),
-                        },
-                        value: MidiValue::Number(desired14),
-                        ts: Self::now_ms(),
-                        origin: Origin::XTouch,
-                        known: false,
-                        stale: false,
-                        hash: None,
-                    };
-                    push_pb(&mut pb_plan, ch, setpoint_pb, 2);
-                    continue;
-                }
-
-                // Fallback: send zero
-                let zero_pb = MidiStateEntry {
-                    addr: MidiAddr {
-                        port_id: app.as_str().to_string(),
-                        status: MidiStatus::PB,
-                        channel: Some(ch),
-                        data1: Some(0),
-                    },
-                    value: MidiValue::Number(0),
-                    ts: Self::now_ms(),
-                    origin: Origin::XTouch,
-                    known: false,
-                    stale: false,
-                    hash: None,
-                };
-                push_pb(&mut pb_plan, ch, zero_pb, 1);
+                // Don't fall back to setpoint or zero here - let other apps try first
             }
 
             // Notes: 0-31 - Always send Note Off to clear previous page buttons
@@ -1455,6 +1422,52 @@ impl Router {
                     push_cc(&mut cc_plan, zero, 1);
                 }
             }
+        }
+
+        // After all apps have been processed, fill in any missing fader channels
+        // with fader setpoint (if available) or zero as fallback
+        for &ch in &channels {
+            // Skip if this channel already has an entry from an app
+            if pb_plan.contains_key(&ch) {
+                continue;
+            }
+
+            // Priority 2: Try to get from fader setpoint (motor position)
+            if let Some(desired14) = self.fader_setpoint.get_desired(ch) {
+                let setpoint_pb = MidiStateEntry {
+                    addr: MidiAddr {
+                        port_id: "xtouch".to_string(),
+                        status: MidiStatus::PB,
+                        channel: Some(ch),
+                        data1: Some(0),
+                    },
+                    value: MidiValue::Number(desired14),
+                    ts: Self::now_ms(),
+                    origin: Origin::XTouch,
+                    known: false,
+                    stale: false,
+                    hash: None,
+                };
+                push_pb(&mut pb_plan, ch, setpoint_pb, 2);
+                continue;
+            }
+
+            // Fallback: send zero
+            let zero_pb = MidiStateEntry {
+                addr: MidiAddr {
+                    port_id: "xtouch".to_string(),
+                    status: MidiStatus::PB,
+                    channel: Some(ch),
+                    data1: Some(0),
+                },
+                value: MidiValue::Number(0),
+                ts: Self::now_ms(),
+                origin: Origin::XTouch,
+                known: false,
+                stale: false,
+                hash: None,
+            };
+            push_pb(&mut pb_plan, ch, zero_pb, 1);
         }
 
         // Materialize plans into ordered list: Notes → CC → PB
