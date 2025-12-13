@@ -17,7 +17,13 @@
       "Bash(cargo test:*)",
       "Bash(taskkill:*)",
       "Bash(cargo run:*)",
-      "Bash(git checkout:*)"
+      "Bash(git checkout:*)",
+      "Bash(targetreleasextouch-gw.exe --gamepad-diagnostics)",
+      "Bash(.\\target\\release\\xtouch-gw.exe:*)",
+      "Bash(./xtouch-gw.exe:*)",
+      "Bash(RUST_LOG=debug cargo run:*)",
+      "Bash(cargo clean:*)",
+      "Bash(cat:*)"
     ],
     "deny": [],
     "ask": []
