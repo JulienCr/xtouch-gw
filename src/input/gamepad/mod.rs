@@ -1,13 +1,17 @@
-//! Gamepad input support using GilRs
+//! Gamepad input support using hybrid XInput and gilrs (WGI) backends
 //!
 //! Provides gamepad input integration with hot-plug support, analog processing,
-//! and router integration.
+//! and router integration. Supports both XInput controllers (Xbox) and non-XInput
+//! controllers (FaceOff, etc.) simultaneously.
 
 pub mod analog;
-pub mod provider;
+pub mod hybrid_id;
+pub mod hybrid_provider;
 pub mod mapper;
 pub mod diagnostics;
+pub mod provider;  // Legacy provider (for reference)
 pub mod slot;
+pub mod xinput_convert;
 
 // use anyhow::{Result, Context};
 use std::sync::Arc;
@@ -16,7 +20,7 @@ use tracing::{info, warn};
 use crate::config::GamepadConfig;
 use crate::router::Router;
 
-pub use provider::GilrsProvider;
+pub use hybrid_provider::HybridGamepadProvider;
 pub use mapper::GamepadMapper;
 pub use diagnostics::print_gamepad_diagnostics;
 
@@ -55,11 +59,11 @@ pub async fn init(config: &GamepadConfig, router: Arc<Router>) -> Option<Gamepad
         vec![]
     };
 
-    // Start provider with slot configs
-    let provider = match GilrsProvider::start(slot_configs).await {
+    // Start hybrid provider with slot configs
+    let provider = match HybridGamepadProvider::start(slot_configs).await {
         Ok(p) => Arc::new(p),
         Err(e) => {
-            warn!("Failed to initialize gamepad provider: {}. Continuing without gamepad.", e);
+            warn!("Failed to initialize hybrid gamepad provider: {}. Continuing without gamepad.", e);
             return None;
         }
     };

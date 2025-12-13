@@ -146,7 +146,9 @@ impl GilrsProvider {
         if let Some(ref mut manager) = slot_manager {
             for (id, gamepad) in gilrs.gamepads().filter(|(_, gp)| gp.is_connected()) {
                 let name = gamepad.name();
-                manager.try_connect(id, name);
+                use super::hybrid_id::HybridControllerId;
+                let hybrid_id = HybridControllerId::from_gilrs(id);
+                manager.try_connect(hybrid_id, name);
             }
         }
 
@@ -166,21 +168,26 @@ impl GilrsProvider {
 
                 if let Some(ref mut manager) = slot_manager {
                     // Check for disconnections
-                    manager.check_disconnections(&gilrs);
+                    manager.check_gilrs_disconnections(&gilrs);
 
                     // Try to reconnect empty slots
                     for (id, gamepad) in gilrs.gamepads().filter(|(_, gp)| gp.is_connected()) {
                         let name = gamepad.name();
-                        manager.try_connect(id, name);
+                        use super::hybrid_id::HybridControllerId;
+                        let hybrid_id = HybridControllerId::from_gilrs(id);
+                        manager.try_connect(hybrid_id, name);
                     }
                 }
             }
 
             // Process gilrs events
             while let Some(Event { id, event, .. }) = gilrs.next_event() {
+                use super::hybrid_id::HybridControllerId;
+
                 // Find which slot this event belongs to
                 let (slot_prefix, analog_config) = if let Some(ref manager) = slot_manager {
-                    if let Some(slot) = manager.get_slot_by_id(id) {
+                    let hybrid_id = HybridControllerId::from_gilrs(id);
+                    if let Some(slot) = manager.get_slot_by_id(hybrid_id) {
                         (slot.control_id_prefix(), slot.analog_config.clone())
                     } else {
                         // Event from unregistered gamepad, ignore

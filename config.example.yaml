@@ -27,34 +27,48 @@ paging:
   prev_note: 46
   next_note: 47
 
-# Entrée manette (HID)
+# Gamepad input (Hybrid XInput + WGI support)
 gamepad:
   enabled: true
-  provider: hid
-  analog:
-    # Vitesse de pan (pixels par tick à v=1, step=1) — à 60Hz → 15*60 = 900 px/sec
-    pan_gain: 15
 
-    # Vitesse de zoom (multiplicateur d'échelle) — avec base=0.015 → 0.015*1.5*60 = 1.35 scale/sec
-    zoom_gain: 3
+  # Multi-gamepad configuration (supports both XInput and WGI backends)
+  # - XInput: Direct polling for Xbox controllers (works without focused window)
+  # - WGI: Windows.Gaming.Input for non-XInput controllers (FaceOff, etc.)
+  gamepads:
+    # Slot 1: Xbox controller (via XInput backend)
+    # XInput controllers appear with generic names: "XInput Controller 1", "XInput Controller 2", etc.
+    - product_match: "XInput"  # Matches all XInput controllers
+      analog:
+        deadzone: 0.02          # Dead zone (ignore movements < 2%)
+        gamma: 1.5              # Response curve (>1 = better center precision)
+        invert:
+          ly: true              # Invert left stick Y (up=up, down=down, FPS style)
+          ry: true              # Invert right stick Y
 
-    # Zone morte analogique (ignore petits mouvements < 2%) — évite le drift
-    deadzone: 0.02
+    # Slot 2: FaceOff controller (via WGI backend)
+    - product_match: "Faceoff"  # Case-insensitive substring match
+      analog:
+        deadzone: 0.02
+        gamma: 1.5
+        invert:
+          ly: true
+          ry: true
 
-    # Courbe de réponse (>1 = meilleure précision au centre)
-    gamma: 1.5
-
-    # Inversion des axes (facultatif)
-    invert:
-      lx: true   # Stick gauche X (gauche=gauche, droite=droite)
-      ly: true    # Stick gauche Y inversé (haut=monter, bas=descendre, style FPS)
-      rx: false   # Stick droit X
-      ry: true   # Stick droit Y
-      zl: false   # Gâchette gauche
-      zr: false   # Gâchette droite
-  hid:
-    product_match: "Faceoff Wired Pro Controller"
-    mapping_csv: ./docs/gamepad-hid-mapping.csv
+  # Legacy single-gamepad mode (deprecated, use gamepads array above)
+  # analog:
+  #   pan_gain: 15     # Pan speed (pixels per tick at v=1)
+  #   zoom_gain: 3     # Zoom speed multiplier
+  #   deadzone: 0.02
+  #   gamma: 1.5
+  #   invert:
+  #     lx: false
+  #     ly: true
+  #     rx: false
+  #     ry: true
+  #     zl: false
+  #     zr: false
+  # hid:
+  #   product_match: "Faceoff Pro Nintendo Switch Controller"
 
 pages_global:
   controls:
@@ -63,7 +77,7 @@ pages_global:
     vpot3_rotate: { app: "obs", action: "scaleUniform", params: ["--- CAM Jardin", "--- CAM Jardin", 0.02] }
     vpot6_rotate: { app: "obs", action: "nudgeX", params: ["--- CAM Main 2", "--- CAM Main", 1] }
     vpot7_rotate: { app: "obs", action: "nudgeY", params: ["--- CAM Main 2", "--- CAM Main", 1] }
-    vpot8_rotate: { app: "obs", action: "scaleUniform", params: ["--- CAM Main 2", "--- CAM Main", 0.02] }
+    vpot8_rotate: { app: "obs", action: "scaleUniform", params: ["--- CAM Main 2", "--- CAM Main", 0.005] }
 
     # Gamepad: contrôle caméra OBS (stick gauche = pan, stick droit Y = zoom)
     gamepad.axis.lx: { app: "obs", action: "nudgeX", params: ["--- CAM Main 2", "--- CAM Main", 1] }
@@ -96,6 +110,11 @@ pages_global:
       params: ["--- CAM Jardin"]
 
     gamepad.btn.capture:
+      app: "obs"
+      action: "toggleStudioMode"
+      params: []
+    
+    gamepad.btn.unknown:
       app: "obs"
       action: "toggleStudioMode"
       params: []
@@ -205,7 +224,7 @@ pages:
         app: "voicemeeter"
         midi: {type: "passthrough"}
       fader8:
-        app: "qlc "
+        app: "qlc"
         midi: {type: "cc", channel: 1, cc: 77}
         overlay:
           mode: "8bit"
@@ -368,8 +387,8 @@ pages:
       fader4:
         app: "qlc"
         midi: { type: "cc", channel: 1, cc: 52 }
-      fader5:
-        app: "qlc"
+      # fader5:
+      #   app: "qlc"
       fader8:
         app: "qlc"
         midi: { type: "cc", channel: 1, cc: 77 }

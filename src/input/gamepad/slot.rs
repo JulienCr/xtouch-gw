@@ -6,10 +6,11 @@
 //! - Connection state (current gamepad ID or None)
 //! - Per-slot analog configuration
 
-use gilrs::GamepadId;
+use gilrs::Gilrs;
 use std::time::Instant;
 use crate::config::AnalogConfig;
 use tracing::{debug, info, warn};
+use super::hybrid_id::HybridControllerId;
 
 /// Represents a configured gamepad slot
 #[derive(Debug, Clone)]
@@ -21,7 +22,8 @@ pub struct GamepadSlot {
     pub product_match: String,
 
     /// Currently connected gamepad ID (None if disconnected)
-    pub connected_id: Option<GamepadId>,
+    /// Uses HybridControllerId to support both gilrs and XInput backends
+    pub connected_id: Option<HybridControllerId>,
 
     /// Product name of currently connected gamepad
     pub connected_name: Option<String>,
@@ -57,7 +59,7 @@ impl GamepadSlot {
     }
 
     /// Connect a gamepad to this slot
-    pub fn connect(&mut self, id: GamepadId, name: String) {
+    pub fn connect(&mut self, id: HybridControllerId, name: String) {
         self.connected_id = Some(id);
         self.connected_name = Some(name);
         self.last_change = Instant::now();
@@ -103,10 +105,10 @@ impl SlotManager {
     /// # Returns
     /// * `Some((slot_index, is_already_connected))` if a matching slot is found
     /// * `None` if no matching slot exists
-    pub fn find_slot_for_gamepad(&self, id: GamepadId, name: &str) -> Option<(usize, bool)> {
+    pub fn find_slot_for_gamepad(&self, id: HybridControllerId, name: &str) -> Option<(usize, bool)> {
         // Check if already connected to a slot (shouldn't happen, but handle it)
         if let Some(idx) = self.slots.iter().position(|s| s.connected_id == Some(id)) {
-            debug!("Gamepad {:?} already connected to slot {}", id, idx);
+            debug!("Gamepad {} already connected to slot {}", id.to_string(), idx);
             return Some((idx, true));
         }
 
@@ -123,7 +125,7 @@ impl SlotManager {
     }
 
     /// Get slot by gamepad ID
-    pub fn get_slot_by_id(&self, id: GamepadId) -> Option<&GamepadSlot> {
+    pub fn get_slot_by_id(&self, id: HybridControllerId) -> Option<&GamepadSlot> {
         self.slots.iter().find(|s| s.connected_id == Some(id))
     }
 
@@ -137,16 +139,42 @@ impl SlotManager {
         &self.slots
     }
 
-    /// Check if connected gamepads are still present and update slots
+    /// Check if gilrs-managed gamepads are still present and update slots
     ///
     /// # Returns
     /// Vector of (slot_index, gamepad_name) for disconnected gamepads
-    pub fn check_disconnections(&mut self, gilrs: &gilrs::Gilrs) -> Vec<(usize, String)> {
+    pub fn check_gilrs_disconnections(&mut self, gilrs: &Gilrs) -> Vec<(usize, String)> {
         let mut disconnected = Vec::new();
 
         for slot in &mut self.slots {
-            if let Some(id) = slot.connected_id {
+            // Only check gilrs-managed controllers
+            if let Some(HybridControllerId::Gilrs(id)) = slot.connected_id {
                 if gilrs.connected_gamepad(id).is_none() {
+                    let name = slot.connected_name.clone().unwrap_or_else(|| "Unknown".to_string());
+                    warn!("🔌 Gamepad {} disconnected: {}", slot.control_id_prefix(), name);
+                    slot.disconnect();
+                    disconnected.push((slot.slot_index, name));
+                }
+            }
+        }
+
+        disconnected
+    }
+
+    /// Check if XInput-managed gamepads are still present and update slots
+    ///
+    /// # Arguments
+    /// * `active_indices` - List of currently connected XInput user indices (0-3)
+    ///
+    /// # Returns
+    /// Vector of (slot_index, gamepad_name) for disconnected gamepads
+    pub fn check_xinput_disconnections(&mut self, active_indices: &[usize]) -> Vec<(usize, String)> {
+        let mut disconnected = Vec::new();
+
+        for slot in &mut self.slots {
+            // Only check XInput-managed controllers
+            if let Some(HybridControllerId::XInput(idx)) = slot.connected_id {
+                if !active_indices.contains(&idx) {
                     let name = slot.connected_name.clone().unwrap_or_else(|| "Unknown".to_string());
                     warn!("🔌 Gamepad {} disconnected: {}", slot.control_id_prefix(), name);
                     slot.disconnect();
@@ -162,16 +190,16 @@ impl SlotManager {
     ///
     /// # Returns
     /// `Some(slot_index)` if successfully connected, `None` otherwise
-    pub fn try_connect(&mut self, id: GamepadId, name: &str) -> Option<usize> {
+    pub fn try_connect(&mut self, id: HybridControllerId, name: &str) -> Option<usize> {
         if let Some((slot_idx, is_reconnect)) = self.find_slot_for_gamepad(id, name) {
             if let Some(slot) = self.get_slot_mut(slot_idx) {
                 if !slot.is_connected() {
                     slot.connect(id, name.to_string());
-                    info!("✅ Gamepad {} {}connected: {} (ID: {:?})",
+                    info!("✅ Gamepad {} {}connected: {} (ID: {})",
                         slot.control_id_prefix(),
                         if is_reconnect { "re" } else { "" },
                         name,
-                        id
+                        id.to_string()
                     );
                     return Some(slot_idx);
                 } else if slot.connected_id == Some(id) {
@@ -203,6 +231,7 @@ impl SlotManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gilrs::GamepadId;
 
     #[test]
     fn test_slot_matching() {
@@ -229,15 +258,15 @@ mod tests {
             ("Nintendo".to_string(), None),
         ]);
 
-        // Simulate gamepad IDs
-        let xbox_id = GamepadId::from(0);
-        let switch_id = GamepadId::from(1);
-        let ps_id = GamepadId::from(2);
+        // Simulate hybrid gamepad IDs
+        let xbox_id = HybridControllerId::from_xinput(0);
+        let switch_id = HybridControllerId::from_gilrs(GamepadId::from(0));
+        let ps_id = HybridControllerId::from_gilrs(GamepadId::from(1));
 
         // Xbox should match slot 0
-        let (slot_idx, _) = manager.find_slot_for_gamepad(xbox_id, "Xbox Controller").unwrap();
+        let (slot_idx, _) = manager.find_slot_for_gamepad(xbox_id, "XInput Controller 1").unwrap();
         assert_eq!(slot_idx, 0);
-        manager.get_slot_mut(slot_idx).unwrap().connect(xbox_id, "Xbox Controller".to_string());
+        manager.get_slot_mut(slot_idx).unwrap().connect(xbox_id, "XInput Controller 1".to_string());
 
         // Switch should match slot 1
         let (slot_idx, _) = manager.find_slot_for_gamepad(switch_id, "Nintendo Switch Pro").unwrap();
@@ -250,14 +279,14 @@ mod tests {
     #[test]
     fn test_slot_preservation() {
         let mut manager = SlotManager::new(vec![
-            ("Xbox".to_string(), None),
+            ("XInput".to_string(), None),
         ]);
 
-        let id = GamepadId::from(0);
+        let id = HybridControllerId::from_xinput(0);
 
         // Connect
-        let (idx, _) = manager.find_slot_for_gamepad(id, "Xbox").unwrap();
-        manager.get_slot_mut(idx).unwrap().connect(id, "Xbox".to_string());
+        let (idx, _) = manager.find_slot_for_gamepad(id, "XInput Controller 1").unwrap();
+        manager.get_slot_mut(idx).unwrap().connect(id, "XInput Controller 1".to_string());
         assert!(manager.get_slot_by_id(id).unwrap().is_connected());
 
         // Disconnect
@@ -265,7 +294,7 @@ mod tests {
         assert!(!manager.get_slot_mut(idx).unwrap().is_connected());
 
         // Reconnect to same slot
-        let (new_idx, _) = manager.find_slot_for_gamepad(id, "Xbox").unwrap();
+        let (new_idx, _) = manager.find_slot_for_gamepad(id, "XInput Controller 1").unwrap();
         assert_eq!(idx, new_idx);
     }
 }

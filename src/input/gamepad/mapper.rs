@@ -7,12 +7,13 @@ use serde_json::Value;
 
 use crate::config::{GamepadConfig, AnalogConfig};
 use crate::router::Router;
-use super::provider::{GamepadEvent, GilrsProvider, EventCallback};
+use super::provider::GamepadEvent;
+use super::hybrid_provider::{HybridGamepadProvider, EventCallback};
 use super::analog::{process_axis, apply_inversion};
 
 /// Gamepad mapper - connects provider events to router
 pub struct GamepadMapper {
-    _provider: Arc<GilrsProvider>,
+    _provider: Arc<HybridGamepadProvider>,
     router: Arc<Router>,
     analog_config: Option<AnalogConfig>,
 }
@@ -21,14 +22,14 @@ impl GamepadMapper {
     /// Create and attach a gamepad mapper
     ///
     /// # Arguments
-    /// * `provider` - Gamepad provider instance
+    /// * `provider` - Hybrid gamepad provider instance
     /// * `router` - Router instance
     /// * `config` - Gamepad configuration
     ///
     /// # Returns
     /// Configured mapper instance
     pub async fn attach(
-        provider: Arc<GilrsProvider>,
+        provider: Arc<HybridGamepadProvider>,
         router: Arc<Router>,
         config: &GamepadConfig,
     ) -> Result<Self> {

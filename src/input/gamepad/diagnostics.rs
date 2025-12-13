@@ -1,6 +1,7 @@
 //! Gamepad diagnostics tool for troubleshooting detection issues
 
 use gilrs::{Gilrs, Button, Axis, Event, EventType};
+use rusty_xinput::XInputHandle;
 use tracing::info;
 use std::thread;
 use std::time::Duration;
@@ -10,8 +11,58 @@ use std::time::Duration;
 /// This is useful for troubleshooting gamepad detection issues,
 /// especially for Bluetooth controllers that may have non-obvious names.
 pub fn print_gamepad_diagnostics() {
-    info!("=== Gamepad Diagnostics ===");
+    info!("=== Hybrid Gamepad Diagnostics ===");
     info!("Platform: {}", std::env::consts::OS);
+    info!("");
+
+    // Check XInput backend
+    info!("--- XInput Backend ---");
+    match XInputHandle::load_default() {
+        Ok(handle) => {
+            info!("✅ XInput library loaded successfully");
+            info!("");
+
+            let mut xinput_count = 0;
+            for user_index in 0..4 {
+                match handle.get_state(user_index) {
+                    Ok(state) => {
+                        xinput_count += 1;
+                        info!("📋 XInput User Index {}: CONNECTED", user_index);
+                        info!("   Product name: \"XInput Controller {}\"", user_index + 1);
+                        info!("   Packet number: {}", state.raw.dwPacketNumber);
+                        info!("   Buttons: 0x{:04X}", state.raw.Gamepad.wButtons);
+                        info!("   Left stick: ({}, {})", state.raw.Gamepad.sThumbLX, state.raw.Gamepad.sThumbLY);
+                        info!("   Right stick: ({}, {})", state.raw.Gamepad.sThumbRX, state.raw.Gamepad.sThumbRY);
+                        info!("   Triggers: (L={}, R={})", state.left_trigger(), state.right_trigger());
+                        info!("");
+                        info!("   📌 Config pattern suggestion:");
+                        info!("      product_match: \"XInput\"  # Matches all XInput controllers");
+                        info!("");
+                    }
+                    Err(rusty_xinput::XInputUsageError::DeviceNotConnected) => {
+                        // Not an error, just not connected
+                    }
+                    Err(e) => {
+                        info!("   XInput slot {}: Error - {:?}", user_index, e);
+                    }
+                }
+            }
+
+            if xinput_count == 0 {
+                info!("⚠️  No XInput controllers detected");
+            } else {
+                info!("✅ Found {} XInput controller(s)", xinput_count);
+            }
+        }
+        Err(e) => {
+            info!("❌ XInput library not available: {:?}", e);
+            info!("   This is normal if XInput DLLs are not installed.");
+            info!("   Non-XInput controllers will still work via WGI backend.");
+        }
+    }
+
+    info!("");
+    info!("--- gilrs Backend (WGI) ---");
     info!("Initializing gilrs...");
 
     let mut gilrs = match Gilrs::new() {
@@ -145,5 +196,7 @@ pub fn print_gamepad_diagnostics() {
     info!("   - Use the 'Name' field value in your config's product_match");
     info!("   - Product matching is case-insensitive substring matching");
     info!("   - For multi-gamepad mode, add each device to the gamepads array");
+    info!("   - XInput controllers appear with generic names: 'XInput Controller 1', etc.");
+    info!("   - If an Xbox controller appears in BOTH backends, XInput will be preferred");
     info!("");
 }
