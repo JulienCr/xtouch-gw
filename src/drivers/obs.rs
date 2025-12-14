@@ -168,6 +168,42 @@ impl EncoderSpeedTracker {
 }
 
 // =============================================================================
+// OBS Transform Utilities
+// =============================================================================
+
+/// Compute anchor point from OBS alignment flags
+///
+/// OBS alignment bit flags (from libobs):
+/// - LEFT = 1, RIGHT = 2, TOP = 4, BOTTOM = 8
+/// - CENTER = 0 (no flags set)
+///
+/// Returns (anchor_x, anchor_y) where 0.0=left/top, 0.5=center, 1.0=right/bottom
+fn compute_anchor_from_alignment(alignment: u32) -> (f64, f64) {
+    let left = (alignment & 1) != 0;
+    let right = (alignment & 2) != 0;
+    let top = (alignment & 4) != 0;
+    let bottom = (alignment & 8) != 0;
+
+    let anchor_x = if left {
+        0.0
+    } else if right {
+        1.0
+    } else {
+        0.5 // center
+    };
+
+    let anchor_y = if top {
+        0.0
+    } else if bottom {
+        1.0
+    } else {
+        0.5 // center
+    };
+
+    (anchor_x, anchor_y)
+}
+
+// =============================================================================
 // Analog Motion State
 // =============================================================================
 
@@ -240,6 +276,9 @@ pub struct ObsDriver {
     analog_timer_active: Arc<Mutex<bool>>,
     last_analog_tick: Arc<Mutex<Instant>>,
 
+    // Error tracking to prevent infinite retry loops
+    analog_error_count: Arc<parking_lot::RwLock<HashMap<String, usize>>>,
+
     // Encoder acceleration
     encoder_tracker: Arc<Mutex<EncoderSpeedTracker>>,
 }
@@ -274,6 +313,8 @@ impl ObsDriver {
             analog_rates: Arc::new(parking_lot::RwLock::new(HashMap::new())),
             analog_timer_active: Arc::new(Mutex::new(false)),
             last_analog_tick: Arc::new(Mutex::new(Instant::now())),
+            // Error tracking
+            analog_error_count: Arc::new(parking_lot::RwLock::new(HashMap::new())),
             // Encoder acceleration
             encoder_tracker: Arc::new(Mutex::new(EncoderSpeedTracker::new())),
         }
@@ -730,9 +771,9 @@ impl ObsDriver {
         };
 
         let current = if let Some(cached) = cached_opt {
-            // Check if cached scale looks suspicious (too small)
-            // This can happen if OBS was in a weird state when we first cached it
-            if cached.scale_x < 0.5 || cached.scale_y < 0.5 {
+            // Check if cached scale looks suspicious (extremely small, likely corrupted)
+            // Only invalidate if scale is below 1% - normal zoom out can go much lower than 50%
+            if cached.scale_x < 0.01 || cached.scale_y < 0.01 {
                 warn!("OBS transform cache has suspicious scale ({:.3},{:.3}) for '{}' - invalidating and re-reading from OBS",
                     cached.scale_x, cached.scale_y, cache_key);
                 // Invalidate cache and re-read
@@ -741,7 +782,7 @@ impl ObsDriver {
                 self.transform_cache.write().insert(cache_key.clone(), state.clone());
                 state
             } else {
-                debug!("OBS transform cache HIT: '{}' scale=({:.3},{:.3})", cache_key, cached.scale_x, cached.scale_y);
+                trace!("OBS transform cache HIT: '{}' scale=({:.3},{:.3})", cache_key, cached.scale_x, cached.scale_y);
                 cached
             }
         } else {
@@ -777,6 +818,9 @@ impl ObsDriver {
                 false
             };
 
+            // Compute anchor point from alignment (needed for position calculations)
+            let (anchor_x, anchor_y) = compute_anchor_from_alignment(current.alignment);
+
             if use_bounds {
                 // PATH 1: Bounds-based scaling
                 let bounds_w = current.bounds_width.unwrap();
@@ -785,29 +829,96 @@ impl ObsDriver {
                 let new_w = (bounds_w * factor).max(1.0).round();
                 let new_h = (bounds_h * factor).max(1.0).round();
 
-                // Zoom toward/from canvas center
-                // Formula: new_pos = canvas_center + (current_pos - canvas_center) * factor
-                // This makes canvas center the fixed pivot point for zoom
-                new_state.x = canvas_center_x + (current.x - canvas_center_x) * factor;
-                new_state.y = canvas_center_y + (current.y - canvas_center_y) * factor;
+                // Calculate effective factor (may be limited by bounds constraints)
+                // If bounds hit a limit (min 1.0), the effective factor is smaller than requested
+                let effective_factor_x = new_w / bounds_w;
+                let effective_factor_y = new_h / bounds_h;
+                let effective_factor = effective_factor_x.min(effective_factor_y);
+
+                // Step 1: Calculate object's visual center (accounting for alignment)
+                // The position (current.x, current.y) refers to the anchor point (determined by alignment)
+                // We need to convert this to the object's center
+                let object_center_x = current.x + (0.5 - anchor_x) * bounds_w;
+                let object_center_y = current.y + (0.5 - anchor_y) * bounds_h;
+
+                // Step 2: Zoom the object's center toward/from canvas center
+                // IMPORTANT: Use effective_factor, not factor, to avoid decentering when bounds are capped
+                let new_object_center_x = canvas_center_x + (object_center_x - canvas_center_x) * effective_factor;
+                let new_object_center_y = canvas_center_y + (object_center_y - canvas_center_y) * effective_factor;
+
+                // Step 3: Calculate new anchor position (convert from center back to anchor)
+                new_state.x = new_object_center_x - (0.5 - anchor_x) * new_w;
+                new_state.y = new_object_center_y - (0.5 - anchor_y) * new_h;
                 new_state.bounds_width = Some(new_w);
                 new_state.bounds_height = Some(new_h);
 
-                debug!("OBS bounds zoom: {:.0}×{:.0} * {:.3} = {:.0}×{:.0} (canvas-centered pos {:.1},{:.1} → {:.1},{:.1})",
-                    bounds_w, bounds_h, factor, new_w, new_h,
+                debug!("OBS bounds zoom: {:.0}×{:.0} * {:.3} (eff={:.3}) = {:.0}×{:.0} align=({:.1},{:.1}) center {:.1},{:.1} → {:.1},{:.1} anchor {:.1},{:.1} → {:.1},{:.1}",
+                    bounds_w, bounds_h, factor, effective_factor, new_w, new_h,
+                    anchor_x, anchor_y,
+                    object_center_x, object_center_y, new_object_center_x, new_object_center_y,
                     current.x, current.y, new_state.x, new_state.y);
             } else {
                 // PATH 2: Scale-based scaling
                 new_state.scale_x = (current.scale_x * factor).max(0.01).min(10.0);
                 new_state.scale_y = (current.scale_y * factor).max(0.01).min(10.0);
 
-                // Zoom toward/from canvas center (same formula as bounds-based)
-                new_state.x = canvas_center_x + (current.x - canvas_center_x) * factor;
-                new_state.y = canvas_center_y + (current.y - canvas_center_y) * factor;
+                // Calculate effective factor (may be capped by scale limits)
+                // If scale hits a limit (min 0.01 or max 10.0), the effective factor differs from requested
+                let effective_factor_x = new_state.scale_x / current.scale_x;
+                let effective_factor_y = new_state.scale_y / current.scale_y;
+                let effective_factor = effective_factor_x.min(effective_factor_y);
 
-                debug!("OBS scale zoom: {:.3} * {:.3} = {:.3} (canvas-centered pos {:.1},{:.1} → {:.1},{:.1})",
-                    current.scale_x, factor, new_state.scale_x,
-                    current.x, current.y, new_state.x, new_state.y);
+                // Step 1: Calculate object's visual center (accounting for alignment)
+                // For scale-based, we need the base dimensions
+                if let (Some(w_base), Some(h_base)) = (current.width, current.height) {
+                    if w_base > 0.0 && h_base > 0.0 {
+                        let object_width = w_base * current.scale_x;
+                        let object_height = h_base * current.scale_y;
+
+                        let object_center_x = current.x + (0.5 - anchor_x) * object_width;
+                        let object_center_y = current.y + (0.5 - anchor_y) * object_height;
+
+                        // Step 2: Zoom the object's center toward/from canvas center
+                        // IMPORTANT: Use effective_factor, not factor, to avoid decentering when scale is capped
+                        let new_object_center_x = canvas_center_x + (object_center_x - canvas_center_x) * effective_factor;
+                        let new_object_center_y = canvas_center_y + (object_center_y - canvas_center_y) * effective_factor;
+
+                        // Step 3: Calculate new anchor position
+                        let new_object_width = w_base * new_state.scale_x;
+                        let new_object_height = h_base * new_state.scale_y;
+
+                        new_state.x = new_object_center_x - (0.5 - anchor_x) * new_object_width;
+                        new_state.y = new_object_center_y - (0.5 - anchor_y) * new_object_height;
+
+                        debug!("OBS scale zoom: {:.3} * {:.3} (eff={:.3}) = {:.3} align=({:.1},{:.1}) center {:.1},{:.1} → {:.1},{:.1} anchor {:.1},{:.1} → {:.1},{:.1}",
+                            current.scale_x, factor, effective_factor, new_state.scale_x,
+                            anchor_x, anchor_y,
+                            object_center_x, object_center_y, new_object_center_x, new_object_center_y,
+                            current.x, current.y, new_state.x, new_state.y);
+                    } else {
+                        // Fallback: if we don't have dimensions, just scale position directly
+                        // Use effective_factor to avoid decentering when scale is capped
+                        new_state.x = canvas_center_x + (current.x - canvas_center_x) * effective_factor;
+                        new_state.y = canvas_center_y + (current.y - canvas_center_y) * effective_factor;
+
+                        debug!("OBS scale zoom (fallback): {:.3} * {:.3} (eff={:.3}) = {:.3} pos {:.1},{:.1} → {:.1},{:.1}",
+                            current.scale_x, factor, effective_factor, new_state.scale_x,
+                            current.x, current.y, new_state.x, new_state.y);
+                    }
+                } else {
+                    // No dimensions available, use fallback
+                    // Use effective_factor to avoid decentering when scale is capped
+                    let effective_factor_x = new_state.scale_x / current.scale_x;
+                    let effective_factor_y = new_state.scale_y / current.scale_y;
+                    let effective_factor = effective_factor_x.min(effective_factor_y);
+
+                    new_state.x = canvas_center_x + (current.x - canvas_center_x) * effective_factor;
+                    new_state.y = canvas_center_y + (current.y - canvas_center_y) * effective_factor;
+
+                    debug!("OBS scale zoom (no dims): {:.3} * {:.3} (eff={:.3}) = {:.3} pos {:.1},{:.1} → {:.1},{:.1}",
+                        current.scale_x, factor, effective_factor, new_state.scale_x,
+                        current.x, current.y, new_state.x, new_state.y);
+                }
             }
         }
 
@@ -925,15 +1036,19 @@ impl ObsDriver {
         if new_vx == 0.0 && new_vy == 0.0 && new_vs == 0.0 {
             // Remove entry if all velocities are zero
             rates.remove(&cache_key);
+            // Clear error count when rate is removed
+            self.analog_error_count.write().remove(&cache_key);
         } else {
             // Update or insert velocity with merged values
-            rates.insert(cache_key, AnalogRate {
+            rates.insert(cache_key.clone(), AnalogRate {
                 scene: scene_name.to_string(),
                 source: source_name.to_string(),
                 vx: new_vx,
                 vy: new_vy,
                 vs: new_vs,
             });
+            // Clear error count when rate is updated (fresh start)
+            self.analog_error_count.write().remove(&cache_key);
         }
 
         // Manage timer based on active rates
@@ -999,14 +1114,37 @@ impl ObsDriver {
                         let dy_opt = if dy != 0.0 { Some(dy) } else { None };
                         let ds_opt = if ds != 0.0 { Some(ds) } else { None };
 
-                        if let Err(e) = driver_self.apply_delta(
+                        let cache_key = driver_self.cache_key(&rate.scene, &rate.source);
+
+                        match driver_self.apply_delta(
                             &rate.scene,
                             &rate.source,
                             dx_opt,
                             dy_opt,
                             ds_opt
                         ).await {
-                            trace!("OBS analog tick error: {}", e);
+                            Ok(_) => {
+                                // Success - clear error count
+                                driver_self.analog_error_count.write().remove(&cache_key);
+                            }
+                            Err(e) => {
+                                // Increment error count
+                                let mut error_counts = driver_self.analog_error_count.write();
+                                let count = error_counts.entry(cache_key.clone()).or_insert(0);
+                                *count += 1;
+
+                                const MAX_RETRIES: usize = 3;
+                                if *count >= MAX_RETRIES {
+                                    // Remove the failing rate to prevent infinite loop
+                                    drop(error_counts); // Release lock before modifying rates
+                                    driver_self.analog_rates.write().remove(&cache_key);
+                                    warn!("OBS analog tick: removed failing rate '{}' after {} attempts. Last error: {}",
+                                        cache_key, MAX_RETRIES, e);
+                                } else {
+                                    // Only trace on early attempts
+                                    trace!("OBS analog tick error (attempt {}): {}", count, e);
+                                }
+                            }
                         }
                     }
                 }
@@ -1053,6 +1191,7 @@ impl ObsDriver {
             analog_rates: Arc::clone(&self.analog_rates),
             analog_timer_active: Arc::clone(&self.analog_timer_active),
             last_analog_tick: Arc::clone(&self.last_analog_tick),
+            analog_error_count: Arc::clone(&self.analog_error_count),
             encoder_tracker: Arc::clone(&self.encoder_tracker),
         }
     }
