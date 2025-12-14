@@ -7,7 +7,7 @@
 use anyhow::Result;
 use gilrs::{Gilrs, Event, EventType};
 use rusty_xinput::{XInputHandle, XInputUsageError};
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
@@ -156,6 +156,8 @@ struct HybridProviderState {
     last_xinput_state: [Option<CachedXInputState>; 4],
     xinput_connected: [bool; 4],
     last_reconnect_check: Instant,
+    /// Track last gilrs axis values to detect return-to-zero
+    last_gilrs_axis_values: HashMap<(gilrs::GamepadId, gilrs::Axis), f32>,
 }
 
 impl HybridProviderState {
@@ -200,6 +202,7 @@ impl HybridProviderState {
             last_xinput_state: [None, None, None, None],
             xinput_connected: [false; 4],
             last_reconnect_check: Instant::now(),
+            last_gilrs_axis_values: HashMap::new(),
         })
     }
 
@@ -418,8 +421,8 @@ impl HybridProviderState {
                 ("gamepad".to_string(), None)
             };
 
-            // Convert event with slot prefix (using existing provider logic)
-            if let Some(gamepad_event) = self.convert_gilrs_event(event, &prefix, analog_config) {
+            // Convert event with slot prefix (with zero-detection)
+            if let Some(gamepad_event) = self.convert_gilrs_event(id, event, &prefix, analog_config) {
                 debug!("gilrs event: {:?}", gamepad_event);
 
                 if event_tx.send(gamepad_event).is_err() {
@@ -430,9 +433,10 @@ impl HybridProviderState {
         }
     }
 
-    /// Convert gilrs event to GamepadEvent (same as provider.rs logic)
+    /// Convert gilrs event to GamepadEvent with axis return-to-zero detection
     fn convert_gilrs_event(
-        &self,
+        &mut self,
+        id: gilrs::GamepadId,
         event: EventType,
         prefix: &str,
         analog_config: Option<AnalogConfig>
@@ -459,11 +463,42 @@ impl HybridProviderState {
                     _ => value,
                 };
 
-                Some(GamepadEvent::Axis {
-                    control_id: Self::axis_to_id(axis, prefix),
-                    value: normalized_value,
-                    analog_config,
-                })
+                // Track axis value for zero-detection
+                let key = (id, axis);
+                let last_value = self.last_gilrs_axis_values.get(&key).copied();
+
+                // Check if axis is returning to zero (within threshold)
+                const ZERO_THRESHOLD: f32 = 0.05;
+                let is_near_zero = normalized_value.abs() < ZERO_THRESHOLD;
+                let was_non_zero = last_value.map_or(false, |v| v.abs() >= ZERO_THRESHOLD);
+
+                // If axis is returning to center from non-zero position, emit explicit 0.0
+                if is_near_zero {
+                    if was_non_zero {
+                        debug!("gilrs axis {} returning to zero (was {:.3}, now {:.3})",
+                               Self::axis_to_id(axis, prefix),
+                               last_value.unwrap_or(0.0),
+                               normalized_value);
+                        // Remove from tracking (axis is now at rest)
+                        self.last_gilrs_axis_values.remove(&key);
+                        // Emit explicit 0.0 event
+                        return Some(GamepadEvent::Axis {
+                            control_id: Self::axis_to_id(axis, prefix),
+                            value: 0.0,
+                            analog_config,
+                        });
+                    }
+                    // Already at zero, no event needed
+                    return None;
+                } else {
+                    // Non-zero value, track it
+                    self.last_gilrs_axis_values.insert(key, normalized_value);
+                    Some(GamepadEvent::Axis {
+                        control_id: Self::axis_to_id(axis, prefix),
+                        value: normalized_value,
+                        analog_config,
+                    })
+                }
             }
             EventType::Connected => {
                 debug!("gilrs gamepad connected event");
@@ -471,6 +506,8 @@ impl HybridProviderState {
             }
             EventType::Disconnected => {
                 debug!("gilrs gamepad disconnected event");
+                // Clean up axis tracking for disconnected gamepad
+                self.last_gilrs_axis_values.retain(|(gp_id, _), _| *gp_id != id);
                 None
             }
             _ => None,

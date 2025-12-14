@@ -23,7 +23,8 @@
       "Bash(./xtouch-gw.exe:*)",
       "Bash(RUST_LOG=debug cargo run:*)",
       "Bash(cargo clean:*)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Bash(git log:*)"
     ],
     "deny": [],
     "ask": []
