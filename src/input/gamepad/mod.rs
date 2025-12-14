@@ -12,6 +12,8 @@ pub mod diagnostics;
 pub mod provider;  // Legacy provider (for reference)
 pub mod slot;
 pub mod xinput_convert;
+pub mod visualizer;
+pub mod visualizer_state;
 
 // use anyhow::{Result, Context};
 use std::sync::Arc;
@@ -23,6 +25,7 @@ use crate::router::Router;
 pub use hybrid_provider::HybridGamepadProvider;
 pub use mapper::GamepadMapper;
 pub use diagnostics::print_gamepad_diagnostics;
+pub use visualizer::run_visualizer;
 
 /// Initialize and attach gamepad input to router
 ///

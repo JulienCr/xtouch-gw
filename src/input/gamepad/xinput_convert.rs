@@ -138,11 +138,9 @@ pub fn convert_xinput_axes(
         ("zr", rt, old_state.map(|s| (s.right_trigger as f32 / 255.0) * 2.0 - 1.0)),
     ];
 
-    const CHANGE_THRESHOLD: f32 = 0.01;
-
     for (axis_name, new_value, old_value) in axes {
-        // Only emit if changed by more than threshold (avoid noise)
-        if old_value.map_or(true, |old| (new_value - old).abs() > CHANGE_THRESHOLD) {
+        // Emit if changed from previous value (mapper will handle redundant event filtering)
+        if old_value.map_or(true, |old| new_value != old) {
             events.push(GamepadEvent::Axis {
                 control_id: format!("{}.axis.{}", prefix, axis_name),
                 value: new_value,
@@ -156,23 +154,36 @@ pub fn convert_xinput_axes(
 
 /// Normalize XInput stick value (i16) to -1.0 to 1.0
 ///
-/// Applies XInput's recommended deadzone (7849 out of 32768) at the hardware level.
+/// Applies XInput's recommended deadzone (7849 out of 32768) at the hardware level,
+/// then rescales to use the full -1.0 to 1.0 range for the remaining motion.
 fn normalize_stick(value: i16) -> f32 {
     // XInput API spec recommends deadzone of 7849 for sticks
     const DEADZONE: i16 = 7849;
 
-    // Use wrapping_abs to avoid overflow panic when value is i16::MIN (-32768)
-    if value.wrapping_abs() < DEADZONE {
+    // Use i32 for absolute value to correctly handle i16::MIN (-32768)
+    // wrapping_abs() would return -32768 for i16::MIN, causing full left/down to return 0
+    let abs_value = (value as i32).abs();
+
+    if abs_value < DEADZONE as i32 {
         return 0.0;
     }
 
-    // Normalize to -1.0..1.0 range
-    // XInput range: -32768 to 32767 (asymmetric)
-    if value < 0 {
-        value as f32 / 32768.0
+    // Rescale to -1.0..1.0 accounting for asymmetric range and deadzone
+    // Negative: -32768 to -deadzone = 32768 - deadzone values
+    // Positive: +deadzone to +32767 = 32767 - deadzone values
+    let available_range = if value < 0 {
+        32768.0 - DEADZONE as f32
     } else {
-        value as f32 / 32767.0
-    }
+        32767.0 - DEADZONE as f32
+    };
+
+    let adjusted_value = if value < 0 {
+        value + DEADZONE
+    } else {
+        value - DEADZONE
+    };
+
+    adjusted_value as f32 / available_range
 }
 
 /// Poll XInput controller and return current state if available

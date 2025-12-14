@@ -98,7 +98,7 @@ async fn main() -> Result<()> {
 
     // Handle gamepad diagnostics
     if args.gamepad_diagnostics {
-        input::gamepad::print_gamepad_diagnostics();
+        input::gamepad::run_visualizer();
         return Ok(());
     }
 
