@@ -24,17 +24,17 @@ use super::{Driver, ExecutionContext, IndicatorCallback};
 // Analog Input Processing
 // =============================================================================
 
-/// Shape analog input with deadzone and gamma curve
+/// Shape analog input with gamma curve
 ///
-/// Applies deadzone filtering and gamma curve for finer control near center.
+/// Applies gamma curve for finer control near center.
+/// Note: Deadzone is already applied upstream by the gamepad mapper.
 /// Formula:
-/// 1. If |value| < deadzone → return 0
-/// 2. Extract sign and magnitude
-/// 3. Apply gamma curve: shaped = magnitude^gamma
-/// 4. Return sign × shaped
-fn shape_analog(value: f64, deadzone: f64, gamma: f64) -> f64 {
-    // Return 0 if not finite or within deadzone
-    if !value.is_finite() || value.abs() < deadzone {
+/// 1. Extract sign and magnitude
+/// 2. Apply gamma curve: shaped = magnitude^gamma
+/// 3. Return sign × shaped
+fn shape_analog(value: f64, gamma: f64) -> f64 {
+    // Return 0 if not finite
+    if !value.is_finite() {
         return 0.0;
     }
 
@@ -1157,26 +1157,27 @@ impl Driver for ObsDriver {
 
                 // Check if input is from gamepad or encoder
                 let is_gamepad = ctx.control_id.as_ref()
-                    .map(|id| id.starts_with("gamepad."))
+                    .map(|id| id.starts_with("gamepad"))
                     .unwrap_or(false);
 
                 if is_gamepad {
                     // Gamepad analog input: velocity-based
                     if let Some(Value::Number(n)) = ctx.value {
                         if let Some(v) = n.as_f64() {
-                            if v >= -1.0 && v <= 1.0 {
-                                // Shape analog value (deadzone + gamma)
-                                let deadzone = *self.analog_deadzone.read();
-                                let gamma = *self.analog_gamma.read();
-                                let shaped = shape_analog(v, deadzone, gamma);
+                            // Accept values slightly outside [-1.0, 1.0] due to floating point precision
+                            // Clamp to valid range to avoid issues downstream
+                            let clamped = v.clamp(-1.0, 1.0);
 
-                                // Calculate velocity (px per 60Hz tick)
-                                let gain = *self.analog_pan_gain.read();
-                                let vx = shaped * step * gain;
+                            // Shape analog value (gamma curve only, deadzone already applied upstream)
+                            let gamma = *self.analog_gamma.read();
+                            let shaped = shape_analog(clamped, gamma);
 
-                                // Set analog velocity (timer will apply)
-                                self.set_analog_rate(scene_name, source_name, Some(vx), None, None);
-                            }
+                            // Calculate velocity (px per 60Hz tick)
+                            let gain = *self.analog_pan_gain.read();
+                            let vx = shaped * step * gain;
+
+                            // Set analog velocity (timer will apply)
+                            self.set_analog_rate(scene_name, source_name, Some(vx), None, None);
                         }
                     }
                 } else {
@@ -1225,26 +1226,27 @@ impl Driver for ObsDriver {
 
                 // Check if input is from gamepad or encoder
                 let is_gamepad = ctx.control_id.as_ref()
-                    .map(|id| id.starts_with("gamepad."))
+                    .map(|id| id.starts_with("gamepad"))
                     .unwrap_or(false);
 
                 if is_gamepad {
                     // Gamepad analog input: velocity-based
                     if let Some(Value::Number(n)) = ctx.value {
                         if let Some(v) = n.as_f64() {
-                            if v >= -1.0 && v <= 1.0 {
-                                // Shape analog value (deadzone + gamma)
-                                let deadzone = *self.analog_deadzone.read();
-                                let gamma = *self.analog_gamma.read();
-                                let shaped = shape_analog(v, deadzone, gamma);
+                            // Accept values slightly outside [-1.0, 1.0] due to floating point precision
+                            // Clamp to valid range to avoid issues downstream
+                            let clamped = v.clamp(-1.0, 1.0);
 
-                                // Calculate velocity (px per 60Hz tick)
-                                let gain = *self.analog_pan_gain.read();
-                                let vy = shaped * step * gain;
+                            // Shape analog value (gamma curve only, deadzone already applied upstream)
+                            let gamma = *self.analog_gamma.read();
+                            let shaped = shape_analog(clamped, gamma);
 
-                                // Set analog velocity (timer will apply)
-                                self.set_analog_rate(scene_name, source_name, None, Some(vy), None);
-                            }
+                            // Calculate velocity (px per 60Hz tick)
+                            let gain = *self.analog_pan_gain.read();
+                            let vy = shaped * step * gain;
+
+                            // Set analog velocity (timer will apply)
+                            self.set_analog_rate(scene_name, source_name, None, Some(vy), None);
                         }
                     }
                 } else {
@@ -1293,26 +1295,27 @@ impl Driver for ObsDriver {
 
                 // Check if input is from gamepad or encoder
                 let is_gamepad = ctx.control_id.as_ref()
-                    .map(|id| id.starts_with("gamepad."))
+                    .map(|id| id.starts_with("gamepad"))
                     .unwrap_or(false);
 
                 if is_gamepad {
                     // Gamepad analog input: velocity-based
                     if let Some(Value::Number(n)) = ctx.value {
                         if let Some(v) = n.as_f64() {
-                            if v >= -1.0 && v <= 1.0 {
-                                // Shape analog value (deadzone + gamma)
-                                let deadzone = *self.analog_deadzone.read();
-                                let gamma = *self.analog_gamma.read();
-                                let shaped = shape_analog(v, deadzone, gamma);
+                            // Accept values slightly outside [-1.0, 1.0] due to floating point precision
+                            // Clamp to valid range to avoid issues downstream
+                            let clamped = v.clamp(-1.0, 1.0);
 
-                                // Calculate velocity (scale delta per 60Hz tick)
-                                let gain = *self.analog_zoom_gain.read();
-                                let vs = shaped * base * gain;
+                            // Shape analog value (gamma curve only, deadzone already applied upstream)
+                            let gamma = *self.analog_gamma.read();
+                            let shaped = shape_analog(clamped, gamma);
 
-                                // Set analog velocity (timer will apply)
-                                self.set_analog_rate(scene_name, source_name, None, None, Some(vs));
-                            }
+                            // Calculate velocity (scale delta per 60Hz tick)
+                            let gain = *self.analog_zoom_gain.read();
+                            let vs = shaped * base * gain;
+
+                            // Set analog velocity (timer will apply)
+                            self.set_analog_rate(scene_name, source_name, None, None, Some(vs));
                         }
                     }
                 } else {
@@ -1349,6 +1352,121 @@ impl Driver for ObsDriver {
                         self.apply_delta(scene_name, source_name, None, None, Some(final_delta)).await?;
                     }
                 }
+                Ok(())
+            },
+
+            "resetPosition" => {
+                let scene_name = params.get(0).and_then(|v| v.as_str())
+                    .context("Scene name required")?;
+                let source_name = params.get(1).and_then(|v| v.as_str())
+                    .context("Source name required")?;
+
+                info!("🎬 OBS Reset position: scene='{}' source='{}'", scene_name, source_name);
+
+                // Stop any analog motion on position axes
+                self.set_analog_rate(scene_name, source_name, Some(0.0), Some(0.0), None);
+
+                // Resolve item ID
+                let item_id = self.resolve_item_id(scene_name, source_name).await?;
+
+                // Get canvas dimensions
+                let (canvas_width, canvas_height) = self.get_canvas_dimensions().await?;
+
+                // Build transform to reset position to center
+                let mut transform = obws::requests::scene_items::SceneItemTransform::default();
+
+                // Set alignment to center (so position refers to object center, not corner)
+                transform.alignment = Some(obws::common::Alignment::CENTER);
+
+                // Set position to canvas center
+                transform.position = Some(obws::requests::scene_items::Position {
+                    x: Some((canvas_width / 2.0) as f32),
+                    y: Some((canvas_height / 2.0) as f32),
+                    ..Default::default()
+                });
+
+                // Send to OBS
+                let guard = self.client.read().await;
+                let client = guard.as_ref()
+                    .context("OBS client not connected")?
+                    .clone();
+
+                client.scene_items()
+                    .set_transform(obws::requests::scene_items::SetTransform {
+                        scene: scene_name,
+                        item_id,
+                        transform,
+                    })
+                    .await
+                    .context("Failed to reset scene item position")?;
+
+                // Update cache with new position and alignment
+                let cache_key = self.cache_key(scene_name, source_name);
+                if let Some(state) = self.transform_cache.write().get_mut(&cache_key) {
+                    state.x = canvas_width / 2.0;
+                    state.y = canvas_height / 2.0;
+                    state.alignment = 0; // CENTER
+                }
+
+                debug!("OBS reset position: '{}' position=({:.1},{:.1}) alignment=CENTER",
+                    self.cache_key(scene_name, source_name),
+                    canvas_width / 2.0, canvas_height / 2.0);
+
+                Ok(())
+            },
+
+            "resetZoom" => {
+                let scene_name = params.get(0).and_then(|v| v.as_str())
+                    .context("Scene name required")?;
+                let source_name = params.get(1).and_then(|v| v.as_str())
+                    .context("Source name required")?;
+
+                info!("🎬 OBS Reset zoom: scene='{}' source='{}'", scene_name, source_name);
+
+                // Stop any analog motion on zoom axis
+                self.set_analog_rate(scene_name, source_name, None, None, Some(0.0));
+
+                // Resolve item ID
+                let item_id = self.resolve_item_id(scene_name, source_name).await?;
+
+                // Build transform to reset zoom to 1:1
+                let mut transform = obws::requests::scene_items::SceneItemTransform::default();
+
+                // Reset scale to 1.0
+                transform.scale = Some(obws::requests::scene_items::Scale {
+                    x: Some(1.0),
+                    y: Some(1.0),
+                    ..Default::default()
+                });
+
+                // Send to OBS
+                let guard = self.client.read().await;
+                let client = guard.as_ref()
+                    .context("OBS client not connected")?
+                    .clone();
+
+                client.scene_items()
+                    .set_transform(obws::requests::scene_items::SetTransform {
+                        scene: scene_name,
+                        item_id,
+                        transform,
+                    })
+                    .await
+                    .context("Failed to reset scene item zoom")?;
+
+                // Update cache with new scale
+                let cache_key = self.cache_key(scene_name, source_name);
+                if let Some(state) = self.transform_cache.write().get_mut(&cache_key) {
+                    state.scale_x = 1.0;
+                    state.scale_y = 1.0;
+                    // Also clear bounds if they exist (prefer scale-based)
+                    state.bounds_width = None;
+                    state.bounds_height = None;
+                }
+
+                debug!("OBS reset zoom: '{}' scale=(1.0,1.0)",
+                    self.cache_key(scene_name, source_name));
+
                 Ok(())
             },
 
