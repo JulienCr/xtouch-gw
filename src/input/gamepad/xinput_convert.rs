@@ -108,7 +108,7 @@ pub fn convert_xinput_buttons(
 /// Convert XInput analog axes to GamepadEvents
 ///
 /// Compares old and new axis values and emits events for changed axes.
-/// Applies deadzone and normalizes values to -1.0 to 1.0 range.
+/// Applies radial deadzone and normalizes values to -1.0 to 1.0 range.
 pub fn convert_xinput_axes(
     old_state: Option<&CachedXInputState>,
     new_state: &XInputState,
@@ -117,11 +117,20 @@ pub fn convert_xinput_axes(
 ) -> Vec<GamepadEvent> {
     let mut events = Vec::new();
 
-    // Normalize stick values (i16 → f32)
-    let lx = normalize_stick(new_state.raw.Gamepad.sThumbLX);
-    let ly = normalize_stick(new_state.raw.Gamepad.sThumbLY);
-    let rx = normalize_stick(new_state.raw.Gamepad.sThumbRX);
-    let ry = normalize_stick(new_state.raw.Gamepad.sThumbRY);
+    // Normalize sticks with radial deadzone (circular, not square)
+    // XInput API spec recommends deadzone of 7849 for sticks
+    const DEADZONE: f32 = 7849.0;
+
+    let (lx, ly) = normalize_stick_radial(
+        new_state.raw.Gamepad.sThumbLX,
+        new_state.raw.Gamepad.sThumbLY,
+        DEADZONE,
+    );
+    let (rx, ry) = normalize_stick_radial(
+        new_state.raw.Gamepad.sThumbRX,
+        new_state.raw.Gamepad.sThumbRY,
+        DEADZONE,
+    );
 
     // Normalize triggers (u8 0-255 → f32 -1.0 to 1.0)
     // Note: We map to full -1..1 range to match axis convention
@@ -129,11 +138,20 @@ pub fn convert_xinput_axes(
     let rt = (new_state.right_trigger() as f32 / 255.0) * 2.0 - 1.0;
 
     // Build axis list with change detection
+    // Note: old_state values also need radial normalization for accurate change detection
+    let (old_lx, old_ly) = old_state.map(|s| {
+        normalize_stick_radial(s.thumb_lx, s.thumb_ly, DEADZONE)
+    }).unwrap_or((0.0, 0.0));
+
+    let (old_rx, old_ry) = old_state.map(|s| {
+        normalize_stick_radial(s.thumb_rx, s.thumb_ry, DEADZONE)
+    }).unwrap_or((0.0, 0.0));
+
     let axes = [
-        ("lx", lx, old_state.map(|s| normalize_stick(s.thumb_lx))),
-        ("ly", -ly, old_state.map(|s| -normalize_stick(s.thumb_ly))), // Invert Y
-        ("rx", rx, old_state.map(|s| normalize_stick(s.thumb_rx))),
-        ("ry", -ry, old_state.map(|s| -normalize_stick(s.thumb_ry))), // Invert Y
+        ("lx", lx, old_state.map(|_| old_lx)),
+        ("ly", -ly, old_state.map(|_| -old_ly)), // Invert Y
+        ("rx", rx, old_state.map(|_| old_rx)),
+        ("ry", -ry, old_state.map(|_| -old_ry)), // Invert Y
         ("zl", lt, old_state.map(|s| (s.left_trigger as f32 / 255.0) * 2.0 - 1.0)),
         ("zr", rt, old_state.map(|s| (s.right_trigger as f32 / 255.0) * 2.0 - 1.0)),
     ];
@@ -152,38 +170,48 @@ pub fn convert_xinput_axes(
     events
 }
 
-/// Normalize XInput stick value (i16) to -1.0 to 1.0
+/// Normalize XInput stick with radial deadzone and radial scaling
 ///
-/// Applies XInput's recommended deadzone (7849 out of 32768) at the hardware level,
-/// then rescales to use the full -1.0 to 1.0 range for the remaining motion.
-fn normalize_stick(value: i16) -> f32 {
-    // XInput API spec recommends deadzone of 7849 for sticks
-    const DEADZONE: i16 = 7849;
+/// Uses circular deadzone (not square) and ensures diagonal movements reach magnitude 1.0.
+/// This fixes the issue where per-axis normalization caused diagonals to only reach ~0.87.
+///
+/// # Arguments
+/// * `raw_x`, `raw_y` - Raw stick values from XInput (-32768 to 32767)
+/// * `deadzone` - Circular deadzone radius (typically 7849 per XInput API spec)
+///
+/// # Returns
+/// * `(norm_x, norm_y)` - Normalized values in [-1.0, 1.0] with magnitude ≤ 1.0
+fn normalize_stick_radial(raw_x: i16, raw_y: i16, deadzone: f32) -> (f32, f32) {
+    // Convert to float for all calculations
+    let x = raw_x as f32;
+    let y = raw_y as f32;
 
-    // Use i32 for absolute value to correctly handle i16::MIN (-32768)
-    // wrapping_abs() would return -32768 for i16::MIN, causing full left/down to return 0
-    let abs_value = (value as i32).abs();
+    // Calculate magnitude (Euclidean distance from origin)
+    let magnitude = (x * x + y * y).sqrt();
 
-    if abs_value < DEADZONE as i32 {
-        return 0.0;
+    // Circular deadzone check (use <= for stability at threshold)
+    if magnitude <= deadzone {
+        return (0.0, 0.0);
     }
 
-    // Rescale to -1.0..1.0 accounting for asymmetric range and deadzone
-    // Negative: -32768 to -deadzone = 32768 - deadzone values
-    // Positive: +deadzone to +32767 = 32767 - deadzone values
-    let available_range = if value < 0 {
-        32768.0 - DEADZONE as f32
-    } else {
-        32767.0 - DEADZONE as f32
-    };
+    // Maximum single-axis deflection (NOT diagonal!)
+    // Use 32768.0 to handle i16::MIN (-32768) correctly
+    const MAX_MAGNITUDE: f32 = 32768.0;
 
-    let adjusted_value = if value < 0 {
-        value + DEADZONE
-    } else {
-        value - DEADZONE
-    };
+    // Safety check: avoid division by zero if deadzone >= max
+    if deadzone >= MAX_MAGNITUDE {
+        return (0.0, 0.0);
+    }
 
-    adjusted_value as f32 / available_range
+    // Radial rescaling: map [deadzone, max_magnitude] -> [0, 1]
+    // Diagonals may exceed 1.0 before clamping (expected and correct)
+    let normalized_magnitude = ((magnitude - deadzone) / (MAX_MAGNITUDE - deadzone)).min(1.0);
+
+    // Scale the original vector by normalized magnitude
+    // This preserves direction while normalizing magnitude
+    let scale = normalized_magnitude / magnitude;
+
+    (x * scale, y * scale)
 }
 
 /// Poll XInput controller and return current state if available

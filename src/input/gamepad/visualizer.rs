@@ -26,11 +26,17 @@ impl GamepadVisualizerApp {
         for user_index in 0..4 {
             match self.xinput.get_state(user_index) {
                 Ok(state) => {
-                    // Normalize values with Microsoft-recommended deadzones
-                    let lx = normalize_stick(state.raw.Gamepad.sThumbLX, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
-                    let ly = normalize_stick(state.raw.Gamepad.sThumbLY, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
-                    let rx = normalize_stick(state.raw.Gamepad.sThumbRX, XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE);
-                    let ry = normalize_stick(state.raw.Gamepad.sThumbRY, XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE);
+                    // Normalize sticks with radial deadzone (circular, not square)
+                    let (lx, ly) = normalize_stick_radial(
+                        state.raw.Gamepad.sThumbLX,
+                        state.raw.Gamepad.sThumbLY,
+                        XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE as f32,
+                    );
+                    let (rx, ry) = normalize_stick_radial(
+                        state.raw.Gamepad.sThumbRX,
+                        state.raw.Gamepad.sThumbRY,
+                        XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE as f32,
+                    );
                     let lt = normalize_trigger(state.left_trigger());
                     let rt = normalize_trigger(state.right_trigger());
 
@@ -147,6 +153,33 @@ impl GamepadVisualizerApp {
                 ))
                 .color(egui::Color32::from_rgb(150, 255, 150))
                 .family(egui::FontFamily::Monospace),
+            );
+        });
+
+        // Display magnitude to verify radial normalization
+        let magnitude = (stick.normalized_x * stick.normalized_x + stick.normalized_y * stick.normalized_y).sqrt();
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Mag: ").color(egui::Color32::from_gray(180)));
+
+            // Color code: green if near 1.0 at full deflection, yellow otherwise
+            let mag_color = if magnitude > 0.95 {
+                egui::Color32::from_rgb(100, 255, 100)
+            } else if magnitude > 0.1 {
+                egui::Color32::from_rgb(255, 200, 100)
+            } else {
+                egui::Color32::from_gray(150)
+            };
+
+            ui.label(
+                egui::RichText::new(format!("{:.3}", magnitude))
+                    .color(mag_color)
+                    .family(egui::FontFamily::Monospace),
+            );
+
+            ui.label(
+                egui::RichText::new("(should reach ~1.0 at full deflection)")
+                    .color(egui::Color32::from_gray(120))
+                    .size(10.0),
             );
         });
 
@@ -405,39 +438,48 @@ const XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE: i16 = 7849;
 const XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE: i16 = 8689;
 const XINPUT_GAMEPAD_TRIGGER_THRESHOLD: u8 = 30;
 
-/// Normalize XInput stick value (i16) to -1.0 to 1.0
+/// Normalize XInput stick with radial deadzone and radial scaling
 ///
-/// Applies XInput's recommended deadzone at the hardware level,
-/// then rescales to use the full -1.0 to 1.0 range for the remaining motion.
+/// Uses circular deadzone (not square) and ensures diagonal movements reach magnitude 1.0.
+/// This fixes the issue where per-axis normalization caused diagonals to only reach ~0.87.
 ///
 /// # Arguments
-/// * `value` - Raw stick value from XInput (-32768 to 32767)
-/// * `deadzone` - Deadzone threshold (7849 for left stick, 8689 for right stick)
-fn normalize_stick(value: i16, deadzone: i16) -> f32 {
-    // Use i32 for absolute value to correctly handle i16::MIN (-32768)
-    // wrapping_abs() would return -32768 for i16::MIN, causing full left/down to return 0
-    let abs_value = (value as i32).abs();
+/// * `raw_x`, `raw_y` - Raw stick values from XInput (-32768 to 32767)
+/// * `deadzone` - Circular deadzone radius (7849 for left stick, 8689 for right stick)
+///
+/// # Returns
+/// * `(norm_x, norm_y)` - Normalized values in [-1.0, 1.0] with magnitude ≤ 1.0
+fn normalize_stick_radial(raw_x: i16, raw_y: i16, deadzone: f32) -> (f32, f32) {
+    // Convert to float for all calculations
+    let x = raw_x as f32;
+    let y = raw_y as f32;
 
-    if abs_value < deadzone as i32 {
-        return 0.0;
+    // Calculate magnitude (Euclidean distance from origin)
+    let magnitude = (x * x + y * y).sqrt();
+
+    // Circular deadzone check (use <= for stability at threshold)
+    if magnitude <= deadzone {
+        return (0.0, 0.0);
     }
 
-    // Rescale to -1.0..1.0 accounting for asymmetric range and deadzone
-    // Negative: -32768 to -deadzone = 32768 - deadzone values
-    // Positive: +deadzone to +32767 = 32767 - deadzone values
-    let available_range = if value < 0 {
-        32768.0 - deadzone as f32
-    } else {
-        32767.0 - deadzone as f32
-    };
+    // Maximum single-axis deflection (NOT diagonal!)
+    // Use 32768.0 to handle i16::MIN (-32768) correctly
+    const MAX_MAGNITUDE: f32 = 32768.0;
 
-    let adjusted_value = if value < 0 {
-        value + deadzone
-    } else {
-        value - deadzone
-    };
+    // Safety check: avoid division by zero if deadzone >= max
+    if deadzone >= MAX_MAGNITUDE {
+        return (0.0, 0.0);
+    }
 
-    adjusted_value as f32 / available_range
+    // Radial rescaling: map [deadzone, max_magnitude] -> [0, 1]
+    // Diagonals may exceed 1.0 before clamping (expected and correct)
+    let normalized_magnitude = ((magnitude - deadzone) / (MAX_MAGNITUDE - deadzone)).min(1.0);
+
+    // Scale the original vector by normalized magnitude
+    // This preserves direction while normalizing magnitude
+    let scale = normalized_magnitude / magnitude;
+
+    (x * scale, y * scale)
 }
 
 /// Normalize XInput trigger value (u8) to 0.0 to 1.0
