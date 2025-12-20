@@ -61,6 +61,10 @@ struct Args {
     /// Test control mappings
     #[arg(long)]
     test_mappings: bool,
+
+    /// Print gamepad diagnostics
+    #[arg(long)]
+    gamepad_diagnostics: bool,
 }
 
 #[tokio::main]
@@ -89,6 +93,12 @@ async fn main() -> Result<()> {
     // Handle test mappings
     if args.test_mappings {
         test_control_mappings().await?;
+        return Ok(());
+    }
+
+    // Handle gamepad diagnostics
+    if args.gamepad_diagnostics {
+        input::gamepad::run_visualizer();
         return Ok(());
     }
 

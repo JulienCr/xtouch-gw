@@ -24,17 +24,17 @@ use super::{Driver, ExecutionContext, IndicatorCallback};
 // Analog Input Processing
 // =============================================================================
 
-/// Shape analog input with deadzone and gamma curve
+/// Shape analog input with gamma curve
 ///
-/// Applies deadzone filtering and gamma curve for finer control near center.
+/// Applies gamma curve for finer control near center.
+/// Note: Deadzone is already applied upstream by the gamepad mapper.
 /// Formula:
-/// 1. If |value| < deadzone → return 0
-/// 2. Extract sign and magnitude
-/// 3. Apply gamma curve: shaped = magnitude^gamma
-/// 4. Return sign × shaped
-fn shape_analog(value: f64, deadzone: f64, gamma: f64) -> f64 {
-    // Return 0 if not finite or within deadzone
-    if !value.is_finite() || value.abs() < deadzone {
+/// 1. Extract sign and magnitude
+/// 2. Apply gamma curve: shaped = magnitude^gamma
+/// 3. Return sign × shaped
+fn shape_analog(value: f64, gamma: f64) -> f64 {
+    // Return 0 if not finite
+    if !value.is_finite() {
         return 0.0;
     }
 
@@ -168,6 +168,42 @@ impl EncoderSpeedTracker {
 }
 
 // =============================================================================
+// OBS Transform Utilities
+// =============================================================================
+
+/// Compute anchor point from OBS alignment flags
+///
+/// OBS alignment bit flags (from libobs):
+/// - LEFT = 1, RIGHT = 2, TOP = 4, BOTTOM = 8
+/// - CENTER = 0 (no flags set)
+///
+/// Returns (anchor_x, anchor_y) where 0.0=left/top, 0.5=center, 1.0=right/bottom
+fn compute_anchor_from_alignment(alignment: u32) -> (f64, f64) {
+    let left = (alignment & 1) != 0;
+    let right = (alignment & 2) != 0;
+    let top = (alignment & 4) != 0;
+    let bottom = (alignment & 8) != 0;
+
+    let anchor_x = if left {
+        0.0
+    } else if right {
+        1.0
+    } else {
+        0.5 // center
+    };
+
+    let anchor_y = if top {
+        0.0
+    } else if bottom {
+        1.0
+    } else {
+        0.5 // center
+    };
+
+    (anchor_x, anchor_y)
+}
+
+// =============================================================================
 // Analog Motion State
 // =============================================================================
 
@@ -240,6 +276,9 @@ pub struct ObsDriver {
     analog_timer_active: Arc<Mutex<bool>>,
     last_analog_tick: Arc<Mutex<Instant>>,
 
+    // Error tracking to prevent infinite retry loops
+    analog_error_count: Arc<parking_lot::RwLock<HashMap<String, usize>>>,
+
     // Encoder acceleration
     encoder_tracker: Arc<Mutex<EncoderSpeedTracker>>,
 }
@@ -274,6 +313,8 @@ impl ObsDriver {
             analog_rates: Arc::new(parking_lot::RwLock::new(HashMap::new())),
             analog_timer_active: Arc::new(Mutex::new(false)),
             last_analog_tick: Arc::new(Mutex::new(Instant::now())),
+            // Error tracking
+            analog_error_count: Arc::new(parking_lot::RwLock::new(HashMap::new())),
             // Encoder acceleration
             encoder_tracker: Arc::new(Mutex::new(EncoderSpeedTracker::new())),
         }
@@ -730,9 +771,9 @@ impl ObsDriver {
         };
 
         let current = if let Some(cached) = cached_opt {
-            // Check if cached scale looks suspicious (too small)
-            // This can happen if OBS was in a weird state when we first cached it
-            if cached.scale_x < 0.5 || cached.scale_y < 0.5 {
+            // Check if cached scale looks suspicious (extremely small, likely corrupted)
+            // Only invalidate if scale is below 1% - normal zoom out can go much lower than 50%
+            if cached.scale_x < 0.01 || cached.scale_y < 0.01 {
                 warn!("OBS transform cache has suspicious scale ({:.3},{:.3}) for '{}' - invalidating and re-reading from OBS",
                     cached.scale_x, cached.scale_y, cache_key);
                 // Invalidate cache and re-read
@@ -741,7 +782,7 @@ impl ObsDriver {
                 self.transform_cache.write().insert(cache_key.clone(), state.clone());
                 state
             } else {
-                debug!("OBS transform cache HIT: '{}' scale=({:.3},{:.3})", cache_key, cached.scale_x, cached.scale_y);
+                trace!("OBS transform cache HIT: '{}' scale=({:.3},{:.3})", cache_key, cached.scale_x, cached.scale_y);
                 cached
             }
         } else {
@@ -777,6 +818,9 @@ impl ObsDriver {
                 false
             };
 
+            // Compute anchor point from alignment (needed for position calculations)
+            let (anchor_x, anchor_y) = compute_anchor_from_alignment(current.alignment);
+
             if use_bounds {
                 // PATH 1: Bounds-based scaling
                 let bounds_w = current.bounds_width.unwrap();
@@ -785,29 +829,96 @@ impl ObsDriver {
                 let new_w = (bounds_w * factor).max(1.0).round();
                 let new_h = (bounds_h * factor).max(1.0).round();
 
-                // Zoom toward/from canvas center
-                // Formula: new_pos = canvas_center + (current_pos - canvas_center) * factor
-                // This makes canvas center the fixed pivot point for zoom
-                new_state.x = canvas_center_x + (current.x - canvas_center_x) * factor;
-                new_state.y = canvas_center_y + (current.y - canvas_center_y) * factor;
+                // Calculate effective factor (may be limited by bounds constraints)
+                // If bounds hit a limit (min 1.0), the effective factor is smaller than requested
+                let effective_factor_x = new_w / bounds_w;
+                let effective_factor_y = new_h / bounds_h;
+                let effective_factor = effective_factor_x.min(effective_factor_y);
+
+                // Step 1: Calculate object's visual center (accounting for alignment)
+                // The position (current.x, current.y) refers to the anchor point (determined by alignment)
+                // We need to convert this to the object's center
+                let object_center_x = current.x + (0.5 - anchor_x) * bounds_w;
+                let object_center_y = current.y + (0.5 - anchor_y) * bounds_h;
+
+                // Step 2: Zoom the object's center toward/from canvas center
+                // IMPORTANT: Use effective_factor, not factor, to avoid decentering when bounds are capped
+                let new_object_center_x = canvas_center_x + (object_center_x - canvas_center_x) * effective_factor;
+                let new_object_center_y = canvas_center_y + (object_center_y - canvas_center_y) * effective_factor;
+
+                // Step 3: Calculate new anchor position (convert from center back to anchor)
+                new_state.x = new_object_center_x - (0.5 - anchor_x) * new_w;
+                new_state.y = new_object_center_y - (0.5 - anchor_y) * new_h;
                 new_state.bounds_width = Some(new_w);
                 new_state.bounds_height = Some(new_h);
 
-                debug!("OBS bounds zoom: {:.0}×{:.0} * {:.3} = {:.0}×{:.0} (canvas-centered pos {:.1},{:.1} → {:.1},{:.1})",
-                    bounds_w, bounds_h, factor, new_w, new_h,
+                debug!("OBS bounds zoom: {:.0}×{:.0} * {:.3} (eff={:.3}) = {:.0}×{:.0} align=({:.1},{:.1}) center {:.1},{:.1} → {:.1},{:.1} anchor {:.1},{:.1} → {:.1},{:.1}",
+                    bounds_w, bounds_h, factor, effective_factor, new_w, new_h,
+                    anchor_x, anchor_y,
+                    object_center_x, object_center_y, new_object_center_x, new_object_center_y,
                     current.x, current.y, new_state.x, new_state.y);
             } else {
                 // PATH 2: Scale-based scaling
                 new_state.scale_x = (current.scale_x * factor).max(0.01).min(10.0);
                 new_state.scale_y = (current.scale_y * factor).max(0.01).min(10.0);
 
-                // Zoom toward/from canvas center (same formula as bounds-based)
-                new_state.x = canvas_center_x + (current.x - canvas_center_x) * factor;
-                new_state.y = canvas_center_y + (current.y - canvas_center_y) * factor;
+                // Calculate effective factor (may be capped by scale limits)
+                // If scale hits a limit (min 0.01 or max 10.0), the effective factor differs from requested
+                let effective_factor_x = new_state.scale_x / current.scale_x;
+                let effective_factor_y = new_state.scale_y / current.scale_y;
+                let effective_factor = effective_factor_x.min(effective_factor_y);
 
-                debug!("OBS scale zoom: {:.3} * {:.3} = {:.3} (canvas-centered pos {:.1},{:.1} → {:.1},{:.1})",
-                    current.scale_x, factor, new_state.scale_x,
-                    current.x, current.y, new_state.x, new_state.y);
+                // Step 1: Calculate object's visual center (accounting for alignment)
+                // For scale-based, we need the base dimensions
+                if let (Some(w_base), Some(h_base)) = (current.width, current.height) {
+                    if w_base > 0.0 && h_base > 0.0 {
+                        let object_width = w_base * current.scale_x;
+                        let object_height = h_base * current.scale_y;
+
+                        let object_center_x = current.x + (0.5 - anchor_x) * object_width;
+                        let object_center_y = current.y + (0.5 - anchor_y) * object_height;
+
+                        // Step 2: Zoom the object's center toward/from canvas center
+                        // IMPORTANT: Use effective_factor, not factor, to avoid decentering when scale is capped
+                        let new_object_center_x = canvas_center_x + (object_center_x - canvas_center_x) * effective_factor;
+                        let new_object_center_y = canvas_center_y + (object_center_y - canvas_center_y) * effective_factor;
+
+                        // Step 3: Calculate new anchor position
+                        let new_object_width = w_base * new_state.scale_x;
+                        let new_object_height = h_base * new_state.scale_y;
+
+                        new_state.x = new_object_center_x - (0.5 - anchor_x) * new_object_width;
+                        new_state.y = new_object_center_y - (0.5 - anchor_y) * new_object_height;
+
+                        debug!("OBS scale zoom: {:.3} * {:.3} (eff={:.3}) = {:.3} align=({:.1},{:.1}) center {:.1},{:.1} → {:.1},{:.1} anchor {:.1},{:.1} → {:.1},{:.1}",
+                            current.scale_x, factor, effective_factor, new_state.scale_x,
+                            anchor_x, anchor_y,
+                            object_center_x, object_center_y, new_object_center_x, new_object_center_y,
+                            current.x, current.y, new_state.x, new_state.y);
+                    } else {
+                        // Fallback: if we don't have dimensions, just scale position directly
+                        // Use effective_factor to avoid decentering when scale is capped
+                        new_state.x = canvas_center_x + (current.x - canvas_center_x) * effective_factor;
+                        new_state.y = canvas_center_y + (current.y - canvas_center_y) * effective_factor;
+
+                        debug!("OBS scale zoom (fallback): {:.3} * {:.3} (eff={:.3}) = {:.3} pos {:.1},{:.1} → {:.1},{:.1}",
+                            current.scale_x, factor, effective_factor, new_state.scale_x,
+                            current.x, current.y, new_state.x, new_state.y);
+                    }
+                } else {
+                    // No dimensions available, use fallback
+                    // Use effective_factor to avoid decentering when scale is capped
+                    let effective_factor_x = new_state.scale_x / current.scale_x;
+                    let effective_factor_y = new_state.scale_y / current.scale_y;
+                    let effective_factor = effective_factor_x.min(effective_factor_y);
+
+                    new_state.x = canvas_center_x + (current.x - canvas_center_x) * effective_factor;
+                    new_state.y = canvas_center_y + (current.y - canvas_center_y) * effective_factor;
+
+                    debug!("OBS scale zoom (no dims): {:.3} * {:.3} (eff={:.3}) = {:.3} pos {:.1},{:.1} → {:.1},{:.1}",
+                        current.scale_x, factor, effective_factor, new_state.scale_x,
+                        current.x, current.y, new_state.x, new_state.y);
+                }
             }
         }
 
@@ -925,15 +1036,19 @@ impl ObsDriver {
         if new_vx == 0.0 && new_vy == 0.0 && new_vs == 0.0 {
             // Remove entry if all velocities are zero
             rates.remove(&cache_key);
+            // Clear error count when rate is removed
+            self.analog_error_count.write().remove(&cache_key);
         } else {
             // Update or insert velocity with merged values
-            rates.insert(cache_key, AnalogRate {
+            rates.insert(cache_key.clone(), AnalogRate {
                 scene: scene_name.to_string(),
                 source: source_name.to_string(),
                 vx: new_vx,
                 vy: new_vy,
                 vs: new_vs,
             });
+            // Clear error count when rate is updated (fresh start)
+            self.analog_error_count.write().remove(&cache_key);
         }
 
         // Manage timer based on active rates
@@ -999,14 +1114,37 @@ impl ObsDriver {
                         let dy_opt = if dy != 0.0 { Some(dy) } else { None };
                         let ds_opt = if ds != 0.0 { Some(ds) } else { None };
 
-                        if let Err(e) = driver_self.apply_delta(
+                        let cache_key = driver_self.cache_key(&rate.scene, &rate.source);
+
+                        match driver_self.apply_delta(
                             &rate.scene,
                             &rate.source,
                             dx_opt,
                             dy_opt,
                             ds_opt
                         ).await {
-                            trace!("OBS analog tick error: {}", e);
+                            Ok(_) => {
+                                // Success - clear error count
+                                driver_self.analog_error_count.write().remove(&cache_key);
+                            }
+                            Err(e) => {
+                                // Increment error count
+                                let mut error_counts = driver_self.analog_error_count.write();
+                                let count = error_counts.entry(cache_key.clone()).or_insert(0);
+                                *count += 1;
+
+                                const MAX_RETRIES: usize = 3;
+                                if *count >= MAX_RETRIES {
+                                    // Remove the failing rate to prevent infinite loop
+                                    drop(error_counts); // Release lock before modifying rates
+                                    driver_self.analog_rates.write().remove(&cache_key);
+                                    warn!("OBS analog tick: removed failing rate '{}' after {} attempts. Last error: {}",
+                                        cache_key, MAX_RETRIES, e);
+                                } else {
+                                    // Only trace on early attempts
+                                    trace!("OBS analog tick error (attempt {}): {}", count, e);
+                                }
+                            }
                         }
                     }
                 }
@@ -1053,6 +1191,7 @@ impl ObsDriver {
             analog_rates: Arc::clone(&self.analog_rates),
             analog_timer_active: Arc::clone(&self.analog_timer_active),
             last_analog_tick: Arc::clone(&self.last_analog_tick),
+            analog_error_count: Arc::clone(&self.analog_error_count),
             encoder_tracker: Arc::clone(&self.encoder_tracker),
         }
     }
@@ -1157,26 +1296,27 @@ impl Driver for ObsDriver {
 
                 // Check if input is from gamepad or encoder
                 let is_gamepad = ctx.control_id.as_ref()
-                    .map(|id| id.starts_with("gamepad."))
+                    .map(|id| id.starts_with("gamepad"))
                     .unwrap_or(false);
 
                 if is_gamepad {
                     // Gamepad analog input: velocity-based
                     if let Some(Value::Number(n)) = ctx.value {
                         if let Some(v) = n.as_f64() {
-                            if v >= -1.0 && v <= 1.0 {
-                                // Shape analog value (deadzone + gamma)
-                                let deadzone = *self.analog_deadzone.read();
-                                let gamma = *self.analog_gamma.read();
-                                let shaped = shape_analog(v, deadzone, gamma);
+                            // Accept values slightly outside [-1.0, 1.0] due to floating point precision
+                            // Clamp to valid range to avoid issues downstream
+                            let clamped = v.clamp(-1.0, 1.0);
 
-                                // Calculate velocity (px per 60Hz tick)
-                                let gain = *self.analog_pan_gain.read();
-                                let vx = shaped * step * gain;
+                            // Shape analog value (gamma curve only, deadzone already applied upstream)
+                            let gamma = *self.analog_gamma.read();
+                            let shaped = shape_analog(clamped, gamma);
 
-                                // Set analog velocity (timer will apply)
-                                self.set_analog_rate(scene_name, source_name, Some(vx), None, None);
-                            }
+                            // Calculate velocity (px per 60Hz tick)
+                            let gain = *self.analog_pan_gain.read();
+                            let vx = shaped * step * gain;
+
+                            // Set analog velocity (timer will apply)
+                            self.set_analog_rate(scene_name, source_name, Some(vx), None, None);
                         }
                     }
                 } else {
@@ -1225,26 +1365,27 @@ impl Driver for ObsDriver {
 
                 // Check if input is from gamepad or encoder
                 let is_gamepad = ctx.control_id.as_ref()
-                    .map(|id| id.starts_with("gamepad."))
+                    .map(|id| id.starts_with("gamepad"))
                     .unwrap_or(false);
 
                 if is_gamepad {
                     // Gamepad analog input: velocity-based
                     if let Some(Value::Number(n)) = ctx.value {
                         if let Some(v) = n.as_f64() {
-                            if v >= -1.0 && v <= 1.0 {
-                                // Shape analog value (deadzone + gamma)
-                                let deadzone = *self.analog_deadzone.read();
-                                let gamma = *self.analog_gamma.read();
-                                let shaped = shape_analog(v, deadzone, gamma);
+                            // Accept values slightly outside [-1.0, 1.0] due to floating point precision
+                            // Clamp to valid range to avoid issues downstream
+                            let clamped = v.clamp(-1.0, 1.0);
 
-                                // Calculate velocity (px per 60Hz tick)
-                                let gain = *self.analog_pan_gain.read();
-                                let vy = shaped * step * gain;
+                            // Shape analog value (gamma curve only, deadzone already applied upstream)
+                            let gamma = *self.analog_gamma.read();
+                            let shaped = shape_analog(clamped, gamma);
 
-                                // Set analog velocity (timer will apply)
-                                self.set_analog_rate(scene_name, source_name, None, Some(vy), None);
-                            }
+                            // Calculate velocity (px per 60Hz tick)
+                            let gain = *self.analog_pan_gain.read();
+                            let vy = shaped * step * gain;
+
+                            // Set analog velocity (timer will apply)
+                            self.set_analog_rate(scene_name, source_name, None, Some(vy), None);
                         }
                     }
                 } else {
@@ -1293,26 +1434,27 @@ impl Driver for ObsDriver {
 
                 // Check if input is from gamepad or encoder
                 let is_gamepad = ctx.control_id.as_ref()
-                    .map(|id| id.starts_with("gamepad."))
+                    .map(|id| id.starts_with("gamepad"))
                     .unwrap_or(false);
 
                 if is_gamepad {
                     // Gamepad analog input: velocity-based
                     if let Some(Value::Number(n)) = ctx.value {
                         if let Some(v) = n.as_f64() {
-                            if v >= -1.0 && v <= 1.0 {
-                                // Shape analog value (deadzone + gamma)
-                                let deadzone = *self.analog_deadzone.read();
-                                let gamma = *self.analog_gamma.read();
-                                let shaped = shape_analog(v, deadzone, gamma);
+                            // Accept values slightly outside [-1.0, 1.0] due to floating point precision
+                            // Clamp to valid range to avoid issues downstream
+                            let clamped = v.clamp(-1.0, 1.0);
 
-                                // Calculate velocity (scale delta per 60Hz tick)
-                                let gain = *self.analog_zoom_gain.read();
-                                let vs = shaped * base * gain;
+                            // Shape analog value (gamma curve only, deadzone already applied upstream)
+                            let gamma = *self.analog_gamma.read();
+                            let shaped = shape_analog(clamped, gamma);
 
-                                // Set analog velocity (timer will apply)
-                                self.set_analog_rate(scene_name, source_name, None, None, Some(vs));
-                            }
+                            // Calculate velocity (scale delta per 60Hz tick)
+                            let gain = *self.analog_zoom_gain.read();
+                            let vs = shaped * base * gain;
+
+                            // Set analog velocity (timer will apply)
+                            self.set_analog_rate(scene_name, source_name, None, None, Some(vs));
                         }
                     }
                 } else {
@@ -1349,6 +1491,121 @@ impl Driver for ObsDriver {
                         self.apply_delta(scene_name, source_name, None, None, Some(final_delta)).await?;
                     }
                 }
+                Ok(())
+            },
+
+            "resetPosition" => {
+                let scene_name = params.get(0).and_then(|v| v.as_str())
+                    .context("Scene name required")?;
+                let source_name = params.get(1).and_then(|v| v.as_str())
+                    .context("Source name required")?;
+
+                info!("🎬 OBS Reset position: scene='{}' source='{}'", scene_name, source_name);
+
+                // Stop any analog motion on position axes
+                self.set_analog_rate(scene_name, source_name, Some(0.0), Some(0.0), None);
+
+                // Resolve item ID
+                let item_id = self.resolve_item_id(scene_name, source_name).await?;
+
+                // Get canvas dimensions
+                let (canvas_width, canvas_height) = self.get_canvas_dimensions().await?;
+
+                // Build transform to reset position to center
+                let mut transform = obws::requests::scene_items::SceneItemTransform::default();
+
+                // Set alignment to center (so position refers to object center, not corner)
+                transform.alignment = Some(obws::common::Alignment::CENTER);
+
+                // Set position to canvas center
+                transform.position = Some(obws::requests::scene_items::Position {
+                    x: Some((canvas_width / 2.0) as f32),
+                    y: Some((canvas_height / 2.0) as f32),
+                    ..Default::default()
+                });
+
+                // Send to OBS
+                let guard = self.client.read().await;
+                let client = guard.as_ref()
+                    .context("OBS client not connected")?
+                    .clone();
+
+                client.scene_items()
+                    .set_transform(obws::requests::scene_items::SetTransform {
+                        scene: scene_name,
+                        item_id,
+                        transform,
+                    })
+                    .await
+                    .context("Failed to reset scene item position")?;
+
+                // Update cache with new position and alignment
+                let cache_key = self.cache_key(scene_name, source_name);
+                if let Some(state) = self.transform_cache.write().get_mut(&cache_key) {
+                    state.x = canvas_width / 2.0;
+                    state.y = canvas_height / 2.0;
+                    state.alignment = 0; // CENTER
+                }
+
+                debug!("OBS reset position: '{}' position=({:.1},{:.1}) alignment=CENTER",
+                    self.cache_key(scene_name, source_name),
+                    canvas_width / 2.0, canvas_height / 2.0);
+
+                Ok(())
+            },
+
+            "resetZoom" => {
+                let scene_name = params.get(0).and_then(|v| v.as_str())
+                    .context("Scene name required")?;
+                let source_name = params.get(1).and_then(|v| v.as_str())
+                    .context("Source name required")?;
+
+                info!("🎬 OBS Reset zoom: scene='{}' source='{}'", scene_name, source_name);
+
+                // Stop any analog motion on zoom axis
+                self.set_analog_rate(scene_name, source_name, None, None, Some(0.0));
+
+                // Resolve item ID
+                let item_id = self.resolve_item_id(scene_name, source_name).await?;
+
+                // Build transform to reset zoom to 1:1
+                let mut transform = obws::requests::scene_items::SceneItemTransform::default();
+
+                // Reset scale to 1.0
+                transform.scale = Some(obws::requests::scene_items::Scale {
+                    x: Some(1.0),
+                    y: Some(1.0),
+                    ..Default::default()
+                });
+
+                // Send to OBS
+                let guard = self.client.read().await;
+                let client = guard.as_ref()
+                    .context("OBS client not connected")?
+                    .clone();
+
+                client.scene_items()
+                    .set_transform(obws::requests::scene_items::SetTransform {
+                        scene: scene_name,
+                        item_id,
+                        transform,
+                    })
+                    .await
+                    .context("Failed to reset scene item zoom")?;
+
+                // Update cache with new scale
+                let cache_key = self.cache_key(scene_name, source_name);
+                if let Some(state) = self.transform_cache.write().get_mut(&cache_key) {
+                    state.scale_x = 1.0;
+                    state.scale_y = 1.0;
+                    // Also clear bounds if they exist (prefer scale-based)
+                    state.bounds_width = None;
+                    state.bounds_height = None;
+                }
+
+                debug!("OBS reset zoom: '{}' scale=(1.0,1.0)",
+                    self.cache_key(scene_name, source_name));
+
                 Ok(())
             },
 

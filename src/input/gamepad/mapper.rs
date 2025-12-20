@@ -2,49 +2,54 @@
 
 use anyhow::{Result, anyhow};
 use std::sync::Arc;
-use tracing::{warn, debug, error};
+use std::collections::HashMap;
+use tracing::{debug, error};
 use serde_json::Value;
 
 use crate::config::{GamepadConfig, AnalogConfig};
 use crate::router::Router;
-use super::provider::{GamepadEvent, GilrsProvider, EventCallback};
+use super::provider::GamepadEvent;
+use super::hybrid_provider::{HybridGamepadProvider, EventCallback};
 use super::analog::{process_axis, apply_inversion};
 
 /// Gamepad mapper - connects provider events to router
 pub struct GamepadMapper {
-    _provider: Arc<GilrsProvider>,
+    _provider: Arc<HybridGamepadProvider>,
     router: Arc<Router>,
     analog_config: Option<AnalogConfig>,
+    last_axis_values: Arc<std::sync::RwLock<HashMap<String, f32>>>,
 }
 
 impl GamepadMapper {
     /// Create and attach a gamepad mapper
     ///
     /// # Arguments
-    /// * `provider` - Gamepad provider instance
+    /// * `provider` - Hybrid gamepad provider instance
     /// * `router` - Router instance
     /// * `config` - Gamepad configuration
     ///
     /// # Returns
     /// Configured mapper instance
     pub async fn attach(
-        provider: Arc<GilrsProvider>,
+        provider: Arc<HybridGamepadProvider>,
         router: Arc<Router>,
         config: &GamepadConfig,
     ) -> Result<Self> {
         let analog_config = config.analog.clone();
+        let last_axis_values = Arc::new(std::sync::RwLock::new(HashMap::new()));
 
         // Subscribe to provider events
         let router_clone = router.clone();
-        let analog_clone = analog_config.clone();
+        let cache_clone = last_axis_values.clone();
 
         let callback: EventCallback = Arc::new(move |event| {
             let router = router_clone.clone();
-            let analog = analog_clone.clone();
+            let cache = cache_clone.clone();
 
             // Spawn async task to handle event
+            // Note: analog_config is now embedded in Axis events
             tokio::spawn(async move {
-                if let Err(e) = Self::handle_event(event, &router, &analog).await {
+                if let Err(e) = Self::handle_event(event, &router, &cache).await {
                     error!("Error handling gamepad event: {}", e);
                 }
             });
@@ -56,6 +61,7 @@ impl GamepadMapper {
             _provider: provider,
             router,
             analog_config,
+            last_axis_values,
         })
     }
 
@@ -63,14 +69,14 @@ impl GamepadMapper {
     async fn handle_event(
         event: GamepadEvent,
         router: &Arc<Router>,
-        analog_config: &Option<AnalogConfig>,
+        cache: &Arc<std::sync::RwLock<HashMap<String, f32>>>,
     ) -> Result<()> {
         match event {
-            GamepadEvent::Button { id, pressed } => {
-                Self::handle_button(id, pressed, router).await?;
+            GamepadEvent::Button { control_id, pressed } => {
+                Self::handle_button(control_id, pressed, router).await?;
             }
-            GamepadEvent::Axis { id, value } => {
-                Self::handle_axis(id, value, router, analog_config).await?;
+            GamepadEvent::Axis { control_id, value, analog_config } => {
+                Self::handle_axis(control_id, value, router, &analog_config, cache).await?;
             }
         }
 
@@ -109,47 +115,90 @@ impl GamepadMapper {
         raw_value: f32,
         router: &Arc<Router>,
         analog_config: &Option<AnalogConfig>,
+        cache: &Arc<std::sync::RwLock<HashMap<String, f32>>>,
     ) -> Result<()> {
-        // Extract axis name (e.g., "lx" from "gamepad.axis.lx")
+        // Extract axis name (e.g., "lx" from "gamepad1.axis.lx" or "gamepad.axis.lx")
         let axis_name = control_id
-            .strip_prefix("gamepad.axis.")
+            .rsplit_once(".axis.")
+            .and_then(|(_, name)| Some(name))
             .ok_or_else(|| anyhow!("Invalid axis control ID: {}", control_id))?;
 
-        // Get analog config
-        let analog = match analog_config {
-            Some(cfg) => cfg,
+        // Check if this is XInput (gamepad2) - skip software deadzone for XInput
+        let is_xinput = control_id.starts_with("gamepad2");
+
+        // Process the axis value
+        let processed = if is_xinput {
+            // XInput already has hardware deadzone (7849), skip software deadzone
+            // Just apply gamma and inversion if configured
+            if let Some(cfg) = analog_config {
+                // Apply gamma curve only (no deadzone)
+                let sign = raw_value.signum();
+                let magnitude = raw_value.abs();
+                let curved = magnitude.powf(cfg.gamma);
+                Some(sign * curved)
+            } else {
+                // No config, use raw value
+                Some(raw_value)
+            }
+        } else {
+            // gilrs (gamepad1/FaceOff) needs software deadzone processing
+            match analog_config {
+                Some(cfg) => process_axis(raw_value, cfg),
+                None => Some(raw_value),
+            }
+        };
+
+        // Get final value after processing
+        let final_value = match processed {
+            Some(v) => {
+                // Apply inversion if configured
+                if let Some(cfg) = analog_config {
+                    apply_inversion(v, axis_name, cfg)
+                } else {
+                    v
+                }
+            }
             None => {
-                // No analog config - use raw value
-                match router.handle_control(&control_id, Some(Value::from(raw_value))).await {
-                    Ok(_) => debug!("✅ Router handled axis: {} = {:.3}", control_id, raw_value),
-                    Err(e) => debug!("⚠️  Router error for {}: {}", control_id, e),
+                // Within deadzone (gilrs only) - check cache before sending 0.0
+                let should_send_zero = {
+                    let cache_read = cache.read().unwrap();
+                    cache_read.get(&control_id).map_or(true, |&last| last != 0.0)
+                };
+
+                if should_send_zero {
+                    debug!("Axis event: {} = 0.0 (deadzone)", control_id);
+                    match router.handle_control(&control_id, Some(Value::from(0.0))).await {
+                        Ok(_) => debug!("✅ Router handled axis (deadzone): {} = 0.0", control_id),
+                        Err(e) => debug!("⚠️  Router error for {}: {}", control_id, e),
+                    }
+                    // Update cache
+                    cache.write().unwrap().insert(control_id, 0.0);
+                } else {
+                    debug!("Axis already at 0.0, skipping redundant event: {}", control_id);
                 }
                 return Ok(());
             }
         };
 
-        // Apply deadzone and gamma
-        let processed = match process_axis(raw_value, analog) {
-            Some(v) => v,
-            None => {
-                // Within deadzone - send zero
-                match router.handle_control(&control_id, Some(Value::from(0.0))).await {
-                    Ok(_) => debug!("✅ Router handled axis (deadzone): {} = 0.0", control_id),
-                    Err(e) => debug!("⚠️  Router error for {}: {}", control_id, e),
-                }
-                return Ok(());
-            }
+        // Check cache to avoid sending redundant values
+        let should_send = {
+            let cache_read = cache.read().unwrap();
+            cache_read.get(&control_id).map_or(true, |&last| last != final_value)
         };
 
-        // Apply inversion
-        let final_value = apply_inversion(processed, axis_name, analog);
+        if should_send {
+            debug!("Axis event: {} = {:.3} (raw: {:.3})", control_id, final_value, raw_value);
 
-        debug!("Axis event: {} = {:.3} (raw: {:.3})", control_id, final_value, raw_value);
+            // Send to router (pass normalized value, driver will handle scaling)
+            match router.handle_control(&control_id, Some(Value::from(final_value))).await {
+                Ok(_) => debug!("✅ Router handled axis: {} = {:.3}", control_id, final_value),
+                Err(e) => debug!("⚠️  Router error for {}: {}", control_id, e),
+            }
 
-        // Send to router (pass normalized value, driver will handle scaling)
-        match router.handle_control(&control_id, Some(Value::from(final_value))).await {
-            Ok(_) => debug!("✅ Router handled axis: {} = {:.3}", control_id, final_value),
-            Err(e) => debug!("⚠️  Router error for {}: {}", control_id, e),
+            // Update cache
+            cache.write().unwrap().insert(control_id, final_value);
+        } else {
+            debug!("Axis value unchanged ({}), skipping redundant event: {}", final_value, control_id);
         }
 
         Ok(())

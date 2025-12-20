@@ -14,7 +14,17 @@
       "Bash(then echo \"exists\")",
       "Bash(else echo \"not exists\")",
       "Bash(fi)",
-      "Bash(cargo test:*)"
+      "Bash(cargo test:*)",
+      "Bash(taskkill:*)",
+      "Bash(cargo run:*)",
+      "Bash(git checkout:*)",
+      "Bash(targetreleasextouch-gw.exe --gamepad-diagnostics)",
+      "Bash(.\\target\\release\\xtouch-gw.exe:*)",
+      "Bash(./xtouch-gw.exe:*)",
+      "Bash(RUST_LOG=debug cargo run:*)",
+      "Bash(cargo clean:*)",
+      "Bash(cat:*)",
+      "Bash(git log:*)"
     ],
     "deny": [],
     "ask": []
