@@ -27,6 +27,8 @@ pub enum TrayCommand {
     RecheckAll,
     /// Shutdown the application
     Shutdown,
+    /// Open the configuration editor
+    OpenConfigEditor,
 }
 
 /// Updates sent from the main runtime to the tray UI

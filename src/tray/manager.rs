@@ -134,6 +134,10 @@ impl TrayManager {
                             *menu_clone.lock() = new_menu;
                         }
                     }
+                    "edit_config" => {
+                        debug!("Edit Configuration selected");
+                        let _ = self.command_tx.try_send(TrayCommand::OpenConfigEditor);
+                    }
                     "about" => {
                         info!("About selected");
                         // Note: In a real implementation, this would show a dialog
@@ -346,6 +350,16 @@ impl TrayManager {
             None,
         );
         settings_menu.append(&toggle_status)?;
+
+        settings_menu.append(&muda::PredefinedMenuItem::separator())?;
+
+        let edit_config = muda::MenuItem::with_id(
+            "edit_config",
+            "Edit Configuration...",
+            true,
+            None,
+        );
+        settings_menu.append(&edit_config)?;
 
         menu.append(&settings_menu)?;
 

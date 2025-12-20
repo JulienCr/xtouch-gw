@@ -10,6 +10,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod cli;
 mod config;
+mod config_editor;
 mod control_mapping;
 mod drivers;
 mod input;
@@ -176,6 +177,7 @@ async fn main() -> Result<()> {
     run_app(
         router,
         (*initial_config).clone(),
+        args.config.clone(),
         config_watcher,
         shutdown_signal,
         activity_tracker,
@@ -207,6 +209,7 @@ async fn main() -> Result<()> {
 async fn run_app(
     router: Arc<Router>,
     config: AppConfig,
+    config_path: String,
     mut config_watcher: ConfigWatcher,
     shutdown: impl std::future::Future<Output = ()>,
     activity_tracker: Arc<crate::tray::ActivityTracker>,
@@ -659,6 +662,15 @@ async fn run_app(
                                 }
                             }
                         }
+                    }
+                    crate::tray::TrayCommand::OpenConfigEditor => {
+                        info!("Opening config editor from tray...");
+                        let path = config_path.clone();
+                        std::thread::spawn(move || {
+                            if let Err(e) = crate::config_editor::run_config_editor(path) {
+                                tracing::error!("Config editor error: {}", e);
+                            }
+                        });
                     }
                     crate::tray::TrayCommand::Shutdown => {
                         info!("Shutdown requested from tray");
