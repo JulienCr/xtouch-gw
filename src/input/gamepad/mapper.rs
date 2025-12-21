@@ -1,5 +1,7 @@
 //! Gamepad event mapper - transforms gamepad events to router commands
 
+#![allow(dead_code)]
+
 use anyhow::{Result, anyhow};
 use std::sync::Arc;
 use std::collections::HashMap;

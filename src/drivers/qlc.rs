@@ -12,19 +12,15 @@ use tracing::{info, debug};
 use super::{Driver, ExecutionContext};
 
 /// QLC+ lighting control driver
-/// 
+///
 /// Note: QLC+ receives MIDI CC messages via the MIDI bridge.
 /// This driver is primarily for logging and future direct control features.
-pub struct QlcDriver {
-    name: String,
-}
+pub struct QlcDriver;
 
 impl QlcDriver {
     /// Create a new QLC+ driver
     pub fn new() -> Self {
-        Self {
-            name: "qlc".to_string(),
-        }
+        Self
     }
 }
 
@@ -36,10 +32,6 @@ impl Default for QlcDriver {
 
 #[async_trait]
 impl Driver for QlcDriver {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
     async fn init(&self, _ctx: ExecutionContext) -> Result<()> {
         info!("✅ QLC+ driver initialized (MIDI control via bridge)");
         Ok(())
@@ -75,7 +67,7 @@ mod tests {
     async fn test_qlc_driver_lifecycle() {
         let driver = QlcDriver::new();
         // Create a minimal config for testing
-        let config = Arc::new(RwLock::new(crate::config::AppConfig {
+        let _config = Arc::new(RwLock::new(crate::config::AppConfig {
             midi: crate::config::MidiConfig {
                 input_port: "test".to_string(),
                 output_port: "test".to_string(),
@@ -90,8 +82,6 @@ mod tests {
             tray: None,
         }));
         let ctx = ExecutionContext {
-            config,
-            active_page: Some("test".to_string()),
             value: None,
             control_id: None,
             activity_tracker: None,
@@ -108,12 +98,6 @@ mod tests {
 
         // Test shutdown
         assert!(driver.shutdown().await.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_qlc_driver_name() {
-        let driver = QlcDriver::new();
-        assert_eq!(driver.name(), "qlc");
     }
 }
 

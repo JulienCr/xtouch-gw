@@ -26,7 +26,16 @@
       "Bash(cat:*)",
       "Bash(git log:*)",
       "Bash(where:*)",
-      "Bash(magick:*)"
+      "Bash(magick:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(cargo fix:*)",
+      "Bash(if [ -f \"D:\\\\dev\\\\xtouch-gw-v3\\\\src\\\\cli.rs\" ])",
+      "Bash(then rm \"D:\\\\dev\\\\xtouch-gw-v3\\\\src\\\\cli.rs\")",
+      "Bash(else echo \"File not found\")",
+      "Bash(RUSTFLAGS=\"-A dead_code\" cargo build:*)",
+      "Bash(wc:*)",
+      "Bash(git push:*)",
+      "Bash(gh pr create:*)"
     ],
     "deny": [],
     "ask": []

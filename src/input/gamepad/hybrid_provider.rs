@@ -4,10 +4,12 @@
 //! (for non-XInput controllers like FaceOff) simultaneously, enabling support for
 //! multiple controller types in a headless tray application.
 
+#![allow(dead_code)]
+
 use anyhow::Result;
 use gilrs::{Gilrs, Event, EventType};
-use rusty_xinput::{XInputHandle, XInputUsageError};
-use std::collections::{HashSet, HashMap};
+use rusty_xinput::XInputHandle;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
@@ -441,7 +443,7 @@ impl HybridProviderState {
         prefix: &str,
         analog_config: Option<AnalogConfig>
     ) -> Option<GamepadEvent> {
-        use gilrs::{Button, Axis};
+        use gilrs::Axis;
 
         match event {
             EventType::ButtonPressed(button, _) => {

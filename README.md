@@ -2,42 +2,6 @@
 
 A high-performance Rust port of the XTouch Gateway - Control Voicemeeter, QLC+, and OBS from a Behringer X-Touch MIDI controller.
 
-## 🚀 Migration from TypeScript
-
-This is a complete rewrite of the original TypeScript implementation in Rust, targeting:
-- **Sub-20ms end-to-end latency** (MIDI → App → Feedback)
-- **Zero-copy MIDI processing** where possible
-- **Lock-free concurrent state management**
-- **Native Windows performance** with cross-platform compatibility
-
-### 📚 Reference Implementation
-
-**IMPORTANT**: The TypeScript version at `D:\dev\xtouch-gw-v2\` is the authoritative reference for all features and behavior. During development:
-
-- **Always consult the TS code** for correct implementation details
-- **Run the TS version** to verify expected behavior (`pnpm dev` in v2 folder)
-- **Compare outputs** between TS and Rust versions
-- **Match exact behavior** including MIDI formats, timing, and state management
-
-Key TS files to reference:
-- `xtouch-gw-v2/src/router.ts` - Core orchestration logic
-- `xtouch-gw-v2/src/state/` - State management patterns
-- `xtouch-gw-v2/src/drivers/` - Application integrations
-- `xtouch-gw-v2/config.yaml` - Real configuration example
-
-## 📋 Status
-
-🏗️ **Under Development** - Following the migration plan in [RUST_MIGRATION_SPEC.md](RUST_MIGRATION_SPEC.md)
-
-### Current Phase: **Phase 1 - Core Runtime Foundation**
-
-- [x] Project initialization
-- [x] Dependency setup (Cargo.toml)
-- [x] Module structure
-- [ ] Configuration loading
-- [ ] Logging infrastructure
-- [ ] CLI skeleton
-
 ## 🛠️ Architecture
 
 ```
@@ -142,19 +106,6 @@ pages:
           cc: 0
 ```
 
-## 🔄 Migration Progress
-
-Following the 8-phase plan from [RUST_MIGRATION_SPEC.md](RUST_MIGRATION_SPEC.md):
-
-- [ ] **Phase 1**: Core Runtime Foundation (Week 1)
-- [ ] **Phase 2**: MIDI Infrastructure (Week 2)
-- [ ] **Phase 3**: Router and State Management (Week 2-3)
-- [ ] **Phase 4**: Driver Framework (Week 3)
-- [ ] **Phase 5**: Application Drivers (Week 4)
-- [ ] **Phase 6**: Feedback Loop (Week 5)
-- [ ] **Phase 7**: Advanced Features (Week 6)
-- [ ] **Phase 8**: Polish and Optimization (Week 7)
-
 ## 🎯 Performance Targets
 
 - **MIDI input → Driver execution**: <5ms
@@ -170,16 +121,4 @@ MPL-2.0 (Mozilla Public License 2.0)
 ## 📚 Documentation
 
 - [Migration Specification](RUST_MIGRATION_SPEC.md) - Detailed migration plan
-- [Original TypeScript README](README_TS.md) - Reference implementation docs
 - [API Documentation](https://docs.rs/xtouch-gw) - Rust API docs (coming soon)
-
-## 🤝 Contributing
-
-This project is currently in active development. Contributions welcome after Phase 3 completion.
-
-## 📞 Support
-
-For issues and questions:
-- Check the [RUST_MIGRATION_SPEC.md](RUST_MIGRATION_SPEC.md) for known TODOs
-- Review the original TypeScript implementation for behavior reference
-- Open an issue with the `rust-port` label

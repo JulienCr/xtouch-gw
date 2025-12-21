@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::fs;
 
-pub use watcher::ConfigWatcher;
 
 /// Root configuration structure
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -368,18 +367,6 @@ impl AppConfig {
         config.validate()?;
         
         Ok(config)
-    }
-
-    /// Save configuration to file
-    pub async fn save(&self, path: &str) -> Result<()> {
-        let yaml = serde_yaml::to_string(self)
-            .context("Failed to serialize config to YAML")?;
-        
-        fs::write(path, yaml)
-            .await
-            .with_context(|| format!("Failed to write config file: {}", path))?;
-        
-        Ok(())
     }
 
     /// Validate configuration for correctness and consistency

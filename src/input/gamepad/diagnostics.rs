@@ -1,5 +1,7 @@
 //! Gamepad diagnostics tool for troubleshooting detection issues
 
+#![allow(dead_code)]
+
 use gilrs::{Gilrs, Button, Axis, Event, EventType};
 use rusty_xinput::XInputHandle;
 use tracing::info;

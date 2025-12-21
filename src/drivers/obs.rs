@@ -15,7 +15,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::time::{sleep, interval, MissedTickBehavior};
+use tokio::time::{interval, MissedTickBehavior};
 use tracing::{info, debug, warn, trace};
 
 use super::{Driver, ExecutionContext, IndicatorCallback};
@@ -320,29 +320,6 @@ impl ObsDriver {
         }
     }
 
-    /// Create from config
-    pub fn from_config(config: &crate::config::ObsConfig) -> Self {
-        Self::new(
-            config.host.clone(),
-            config.port,
-            config.password.clone(),
-        )
-    }
-
-    /// Load analog config from gamepad settings
-    pub fn load_analog_config(&self, gamepad_config: Option<&crate::config::GamepadConfig>) {
-        if let Some(gamepad) = gamepad_config {
-            if let Some(analog) = &gamepad.analog {
-                *self.analog_pan_gain.write() = analog.pan_gain as f64;
-                *self.analog_zoom_gain.write() = analog.zoom_gain as f64;
-                *self.analog_deadzone.write() = analog.deadzone as f64;
-                *self.analog_gamma.write() = analog.gamma as f64;
-                debug!("OBS: analog config loaded (pan_gain={}, zoom_gain={}, deadzone={}, gamma={})",
-                    analog.pan_gain, analog.zoom_gain, analog.deadzone, analog.gamma);
-            }
-        }
-    }
-
     /// Emit connection status to all subscribers
     fn emit_status(&self, status: crate::tray::ConnectionStatus) {
         *self.current_status.write() = status.clone();
@@ -394,7 +371,7 @@ impl ObsDriver {
                 }
 
                 // Get event stream
-                let mut events = {
+                let events = {
                     let guard = client.read().await;
                     match guard.as_ref() {
                         Some(c) => match c.events() {
@@ -532,8 +509,7 @@ impl ObsDriver {
     async fn refresh_state(&self) -> Result<()> {
         let guard = self.client.read().await;
         let client = guard.as_ref()
-            .context("OBS client not connected")?
-            .clone();
+            .context("OBS client not connected")?;
 
         // Get studio mode state
         let studio_mode = client.ui().studio_mode_enabled().await?;
@@ -558,41 +534,6 @@ impl ObsDriver {
         Ok(())
     }
 
-    /// Schedule reconnection with exponential backoff
-    async fn schedule_reconnect(&self) {
-        if *self.shutdown_flag.lock() {
-            return;
-        }
-
-        let retry_count = {
-            let mut count = self.reconnect_count.lock();
-            *count += 1;
-            *count
-        };
-
-        let delay_ms = std::cmp::min(30_000, 1000 * retry_count);
-        info!("⏳ OBS reconnect #{} in {}ms", retry_count, delay_ms);
-
-        // Emit reconnecting status
-        self.emit_status(crate::tray::ConnectionStatus::Reconnecting {
-            attempt: retry_count,
-        });
-
-        sleep(Duration::from_millis(delay_ms as u64)).await;
-
-        if *self.shutdown_flag.lock() {
-            return;
-        }
-
-        match self.connect().await {
-            Ok(_) => {},
-            Err(e) => {
-                warn!("OBS reconnect failed: {}", e);
-                // The next reconnect will be triggered by operations that need the connection
-            }
-        }
-    }
-
     /// Get the cache key for a scene item
     fn cache_key(&self, scene_name: &str, source_name: &str) -> String {
         format!("{}::{}", scene_name, source_name)
@@ -614,8 +555,7 @@ impl ObsDriver {
         // Cache miss, resolve from OBS
         let guard = self.client.read().await;
         let client = guard.as_ref()
-            .context("OBS client not connected")?
-            .clone();
+            .context("OBS client not connected")?;
 
         debug!("Resolving OBS item ID: scene='{}' source='{}'", scene_name, source_name);
 
@@ -639,8 +579,7 @@ impl ObsDriver {
     async fn read_transform(&self, scene_name: &str, item_id: i64) -> Result<ObsItemState> {
         let guard = self.client.read().await;
         let client = guard.as_ref()
-            .context("OBS client not connected")?
-            .clone();
+            .context("OBS client not connected")?;
 
         let transform = client.scene_items()
             .transform(scene_name, item_id)
@@ -676,8 +615,7 @@ impl ObsDriver {
     async fn get_canvas_dimensions(&self) -> Result<(f64, f64)> {
         let guard = self.client.read().await;
         let client = guard.as_ref()
-            .context("OBS client not connected")?
-            .clone();
+            .context("OBS client not connected")?;
 
         let video_settings = client.config().video_settings().await
             .context("Failed to get OBS video settings")?;
@@ -717,33 +655,6 @@ impl ObsDriver {
             self.emit_signal("obs.selectedScene", Value::String(selected.clone()));
             *last = Some(selected);
         }
-    }
-
-    /// Emit selectedScene signal with 80ms debouncing
-    /// Spawns a task that delays emission to coalesce rapid changes
-    fn schedule_selected_scene_emit(&self) {
-        let studio_mode = *self.studio_mode.read();
-        let program_scene = self.program_scene.read().clone();
-        let preview_scene = self.preview_scene.read().clone();
-        let emitters = Arc::clone(&self.indicator_emitters);
-        let last_selected = Arc::clone(&self.last_selected_sent);
-
-        tokio::spawn(async move {
-            // Debounce for 80ms
-            tokio::time::sleep(Duration::from_millis(80)).await;
-
-            let selected = if studio_mode { preview_scene } else { program_scene };
-
-            // Only emit if changed
-            let mut last = last_selected.write();
-            if last.as_ref() != Some(&selected) {
-                let emitters_guard = emitters.read();
-                for emit in emitters_guard.iter() {
-                    emit("obs.selectedScene".to_string(), Value::String(selected.clone()));
-                }
-                *last = Some(selected);
-            }
-        });
     }
 
     /// Apply position/scale delta to an item
@@ -925,8 +836,7 @@ impl ObsDriver {
         // Send update to OBS
         let guard = self.client.read().await;
         let client = guard.as_ref()
-            .context("OBS client not connected")?
-            .clone();
+            .context("OBS client not connected")?;
 
         // Build transform conditionally based on what changed
         let mut transform = obws::requests::scene_items::SceneItemTransform::default();
@@ -1199,10 +1109,6 @@ impl ObsDriver {
 
 #[async_trait]
 impl Driver for ObsDriver {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
     async fn init(&self, ctx: ExecutionContext) -> Result<()> {
         info!("🎬 Initializing OBS WebSocket driver");
 
@@ -1235,8 +1141,7 @@ impl Driver for ObsDriver {
 
                 let guard = self.client.read().await;
                 let client = guard.as_ref()
-                    .context("OBS not connected")?
-                    .clone();
+                    .context("OBS not connected")?;
 
                 // Check studio mode to determine which scene to change
                 let studio_mode = *self.studio_mode.read();
@@ -1255,8 +1160,7 @@ impl Driver for ObsDriver {
             "toggleStudioMode" => {
                 let guard = self.client.read().await;
                 let client = guard.as_ref()
-                    .context("OBS not connected")?
-                    .clone();
+                    .context("OBS not connected")?;
 
                 // Get current state and toggle
                 let current = *self.studio_mode.read();
@@ -1280,8 +1184,7 @@ impl Driver for ObsDriver {
                 info!("🎬 OBS Studio Transition requested");
                 let guard = self.client.read().await;
                 let client = guard.as_ref()
-                    .context("OBS not connected")?
-                    .clone();
+                    .context("OBS not connected")?;
 
                 client.transitions().trigger().await?;
                 Ok(())
@@ -1527,8 +1430,7 @@ impl Driver for ObsDriver {
                 // Send to OBS
                 let guard = self.client.read().await;
                 let client = guard.as_ref()
-                    .context("OBS client not connected")?
-                    .clone();
+                    .context("OBS client not connected")?;
 
                 client.scene_items()
                     .set_transform(obws::requests::scene_items::SetTransform {
@@ -1581,8 +1483,7 @@ impl Driver for ObsDriver {
                 // Send to OBS
                 let guard = self.client.read().await;
                 let client = guard.as_ref()
-                    .context("OBS client not connected")?
-                    .clone();
+                    .context("OBS client not connected")?;
 
                 client.scene_items()
                     .set_transform(obws::requests::scene_items::SetTransform {
@@ -1653,10 +1554,6 @@ impl Driver for ObsDriver {
             let selected = if studio_mode { preview_scene } else { program_scene };
             emit("obs.selectedScene".to_string(), Value::String(selected));
         }
-    }
-
-    fn connection_status(&self) -> crate::tray::ConnectionStatus {
-        self.current_status.read().clone()
     }
 
     fn subscribe_connection_status(&self, callback: crate::tray::StatusCallback) {

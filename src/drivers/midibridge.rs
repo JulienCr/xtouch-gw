@@ -8,8 +8,6 @@ use anyhow::{Result, anyhow};
 use serde_json::Value;
 use parking_lot::Mutex;
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::time::sleep;
 use tracing::{info, debug, warn, trace};
 
 use super::{Driver, ExecutionContext};
@@ -199,94 +197,6 @@ impl MidiBridgeDriver {
         Ok(())
     }
 
-    /// Schedule reconnection for output port
-    async fn schedule_out_reconnect(&self) {
-        // Check shutdown flag
-        {
-            if *self.shutdown_flag.lock() {
-                return;
-            }
-        }
-
-        // Increment retry count
-        let retry_count = {
-            let mut count = self.reconnect_count_out.lock();
-            *count += 1;
-            *count
-        };
-
-        let delay_ms = std::cmp::min(10_000, 250 * retry_count);
-        info!("⏳ MIDI Bridge OUT reconnect #{} for '{}' in {}ms", retry_count, self.to_port, delay_ms);
-
-        // Update reconnecting status
-        self.update_status();
-
-        sleep(Duration::from_millis(delay_ms as u64)).await;
-        
-        // Check shutdown flag again
-        {
-            if *self.shutdown_flag.lock() {
-                return;
-            }
-        }
-
-        match self.try_open_out() {
-            Ok(_) => {},
-            Err(e) if self.optional => {
-                warn!("MIDI Bridge OUT reconnect failed (optional): {}", e);
-                // TODO: Implement automatic reconnection
-                // Currently skipped due to Send trait complexity with MIDI connections
-            },
-            Err(e) => {
-                warn!("MIDI Bridge OUT reconnect failed: {}", e);
-            }
-        }
-    }
-
-    /// Schedule reconnection for input port
-    async fn schedule_in_reconnect(&self) {
-        // Check shutdown flag
-        {
-            if *self.shutdown_flag.lock() {
-                return;
-            }
-        }
-
-        // Increment retry count
-        let retry_count = {
-            let mut count = self.reconnect_count_in.lock();
-            *count += 1;
-            *count
-        };
-
-        let delay_ms = std::cmp::min(10_000, 250 * retry_count);
-        info!("⏳ MIDI Bridge IN reconnect #{} for '{}' in {}ms", retry_count, self.from_port, delay_ms);
-
-        // Update reconnecting status
-        self.update_status();
-
-        sleep(Duration::from_millis(delay_ms as u64)).await;
-        
-        // Check shutdown flag again
-        {
-            if *self.shutdown_flag.lock() {
-                return;
-            }
-        }
-
-        match self.try_open_in() {
-            Ok(_) => {},
-            Err(e) if self.optional => {
-                warn!("MIDI Bridge IN reconnect failed (optional): {}", e);
-                // TODO: Implement automatic reconnection
-                // Currently skipped due to Send trait complexity with MIDI connections
-            },
-            Err(e) => {
-                warn!("MIDI Bridge IN reconnect failed: {}", e);
-            }
-        }
-    }
-
     /// Check if message matches the filter
     fn matches_filter(&self, msg: &MidiMessage) -> bool {
         let filter = match &self.filter {
@@ -458,10 +368,6 @@ impl MidiBridgeDriver {
 
 #[async_trait]
 impl Driver for MidiBridgeDriver {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
     async fn init(&self, ctx: ExecutionContext) -> Result<()> {
         info!("🌉 Initializing MIDI Bridge: '{}' ⇄ '{}'", self.to_port, self.from_port);
 
@@ -558,10 +464,6 @@ impl Driver for MidiBridgeDriver {
 
         info!("✅ MIDI Bridge shutdown complete");
         Ok(())
-    }
-
-    fn connection_status(&self) -> crate::tray::ConnectionStatus {
-        self.current_status.read().clone()
     }
 
     fn subscribe_connection_status(&self, callback: crate::tray::StatusCallback) {

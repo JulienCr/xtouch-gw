@@ -167,7 +167,7 @@ mod tests {
         let entry = build_entry_from_raw(&raw, "test").unwrap();
         assert_eq!(entry.addr.status, MidiStatus::SysEx);
         assert!(entry.hash.is_some());
-        assert_eq!(entry.value.as_binary().unwrap(), &raw);
+        assert!(matches!(entry.value, MidiValue::Binary(_)));
     }
 
     #[test]

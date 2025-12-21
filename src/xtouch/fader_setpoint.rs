@@ -147,7 +147,8 @@ impl FaderSetpoint {
         channels.get(&channel).map(|state| state.desired14)
     }
 
-    /// Get the current epoch for a channel (for debugging)
+    /// Get the current epoch for a channel (for testing)
+    #[cfg(test)]
     pub fn get_epoch(&self, channel: u8) -> Option<u32> {
         let channels = self.channels.read().unwrap();
         channels.get(&channel).map(|state| state.epoch)

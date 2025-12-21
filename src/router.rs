@@ -19,34 +19,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, info, trace, warn};
 
-/// Anti-echo time windows (in milliseconds) per MIDI status type
-const ANTI_ECHO_WINDOWS: &[(MidiStatus, u64)] = &[
-    (MidiStatus::PB, 250),   // Pitch Bend: motors need time to settle
-    (MidiStatus::CC, 100),   // Control Change: encoders can generate rapid changes
-    (MidiStatus::Note, 10),  // Note On/Off: buttons are discrete events
-    (MidiStatus::SysEx, 60), // SysEx: fallback for other messages
-];
-
-/// Last-Write-Wins grace periods (in milliseconds)
-const LWW_GRACE_PERIOD_PB: u64 = 300;
-const LWW_GRACE_PERIOD_CC: u64 = 50;
-
-/// Shadow state entry (value + timestamp)
-#[derive(Debug, Clone)]
-struct ShadowEntry {
-    value: u16,
-    ts: u64,
-}
-
-impl ShadowEntry {
-    fn new(value: u16) -> Self {
-        Self {
-            value,
-            ts: Router::now_ms(),
-        }
-    }
-}
-
 /// Main router orchestrating page navigation, state management, and driver execution
 pub struct Router {
     /// Application configuration
@@ -57,8 +29,6 @@ pub struct Router {
     active_page_index: Arc<RwLock<usize>>,
     /// MIDI state store (per application)
     state: StateStore,
-    /// Shadow states per app (for anti-echo)
-    app_shadows: Arc<StdRwLock<HashMap<String, HashMap<String, ShadowEntry>>>>,
     /// Last user action timestamps per X-Touch control (for Last-Write-Wins)
     last_user_action_ts: Arc<StdRwLock<HashMap<String, u64>>>,
     /// Flag indicating display needs update after page change
@@ -83,7 +53,6 @@ impl Router {
             drivers: Arc::new(RwLock::new(HashMap::new())),
             active_page_index: Arc::new(RwLock::new(0)),
             state: StateStore::new(),
-            app_shadows: Arc::new(StdRwLock::new(HashMap::new())),
             last_user_action_ts: Arc::new(StdRwLock::new(HashMap::new())),
             display_needs_update: Arc::new(tokio::sync::Mutex::new(false)),
             fader_setpoint: Arc::new(fader_setpoint),
@@ -114,8 +83,6 @@ impl Router {
     /// Create an execution context for driver calls
     async fn create_execution_context(&self) -> ExecutionContext {
         ExecutionContext {
-            config: self.config.clone(),
-            active_page: Some(self.get_active_page_name().await),
             value: None,
             control_id: None,
             activity_tracker: self.activity_tracker.clone(),
@@ -125,8 +92,6 @@ impl Router {
     /// Create an execution context with control information
     async fn create_execution_context_with_control(&self, control_id: String, value: Option<serde_json::Value>) -> ExecutionContext {
         ExecutionContext {
-            config: self.config.clone(),
-            active_page: Some(self.get_active_page_name().await),
             value,
             control_id: Some(control_id),
             activity_tracker: self.activity_tracker.clone(),
@@ -222,12 +187,6 @@ impl Router {
             .await
             .map(|p| p.name.clone())
             .unwrap_or_else(|| "(none)".to_string())
-    }
-
-    /// List all page names
-    pub async fn list_pages(&self) -> Vec<String> {
-        let config = self.config.read().await;
-        config.pages.iter().map(|p| p.name.clone()).collect()
     }
 
     /// Set active page by index or name
@@ -990,9 +949,6 @@ impl Router {
 
         debug!("Refreshing page '{}'", page.name);
 
-        // Clear X-Touch shadow state to allow re-emission
-        self.clear_xtouch_shadow();
-
         // Build and execute refresh plan
         let entries = self.plan_page_refresh(&page);
 
@@ -1050,14 +1006,6 @@ impl Router {
 
         // Signal that display needs update (LCD + LEDs)
         *self.display_needs_update.lock().await = true;
-    }
-
-    /// Clear X-Touch shadow state (allows re-emission during refresh)
-    fn clear_xtouch_shadow(&self) {
-        // X-Touch shadow is per-app, clear all
-        if let Ok(mut shadows) = self.app_shadows.write() {
-            shadows.clear();
-        }
     }
 
     /// Convert MidiStateEntry to raw MIDI bytes for sending to X-Touch
@@ -1575,15 +1523,6 @@ impl Router {
         self.state.save_snapshot(path).await
     }
 
-    /// Get anti-echo window for a MIDI status type
-    fn get_anti_echo_window(status: MidiStatus) -> u64 {
-        ANTI_ECHO_WINDOWS
-            .iter()
-            .find(|(s, _)| *s == status)
-            .map(|(_, ms)| *ms)
-            .unwrap_or(60)
-    }
-
     /// Update F1-F8 LEDs to reflect active page
     ///
     /// Matches TypeScript updateFKeyLedsForActivePage() from xtouch/fkeys.ts
@@ -1649,101 +1588,6 @@ impl Router {
                 vec![54, 55, 56, 57, 58, 59, 60, 61]
             },
         }
-    }
-
-    /// Check if a value should be suppressed due to anti-echo
-    fn should_suppress_anti_echo(&self, app_key: &str, entry: &MidiStateEntry) -> bool {
-        let app_shadows = match self.app_shadows.try_read() {
-            Ok(shadows) => shadows,
-            Err(_) => return false,
-        };
-
-        let app_shadow = match app_shadows.get(app_key) {
-            Some(shadow) => shadow,
-            None => return false,
-        };
-
-        let key = format!(
-            "{}|{}|{}",
-            entry.addr.status,
-            entry.addr.channel.unwrap_or(0),
-            entry.addr.data1.unwrap_or(0)
-        );
-
-        if let Some(prev) = app_shadow.get(&key) {
-            let value = entry.value.as_number().unwrap_or(0);
-            let window = Self::get_anti_echo_window(entry.addr.status);
-            let elapsed = Self::now_ms().saturating_sub(prev.ts);
-
-            // Suppress if value matches and within time window
-            if prev.value == value && elapsed < window {
-                trace!(
-                    "Anti-echo suppression: {} {}ms < {}ms",
-                    entry.addr.status,
-                    elapsed,
-                    window
-                );
-                return true;
-            }
-        }
-
-        false
-    }
-
-    /// Update shadow state after sending to app
-    fn update_app_shadow(&self, app_key: &str, entry: &MidiStateEntry) {
-        let key = format!(
-            "{}|{}|{}",
-            entry.addr.status,
-            entry.addr.channel.unwrap_or(0),
-            entry.addr.data1.unwrap_or(0)
-        );
-
-        let value = entry.value.as_number().unwrap_or(0);
-        let shadow_entry = ShadowEntry::new(value);
-
-        let mut app_shadows = self.app_shadows.write().unwrap();
-        let app_shadow = app_shadows
-            .entry(app_key.to_string())
-            .or_insert_with(HashMap::new);
-        app_shadow.insert(key, shadow_entry);
-    }
-
-    /// Check Last-Write-Wins: should suppress feedback if user action was recent
-    fn should_suppress_lww(&self, entry: &MidiStateEntry) -> bool {
-        let key = format!(
-            "{}|{}|{}",
-            entry.addr.status,
-            entry.addr.channel.unwrap_or(0),
-            entry.addr.data1.unwrap_or(0)
-        );
-
-        let last_user_ts = self
-            .last_user_action_ts
-            .try_read()
-            .ok()
-            .and_then(|ts_map| ts_map.get(&key).copied())
-            .unwrap_or(0);
-
-        let grace_period = match entry.addr.status {
-            MidiStatus::PB => LWW_GRACE_PERIOD_PB,
-            MidiStatus::CC => LWW_GRACE_PERIOD_CC,
-            _ => 0,
-        };
-
-        let elapsed = Self::now_ms().saturating_sub(last_user_ts);
-
-        if grace_period > 0 && elapsed < grace_period {
-            trace!(
-                "LWW suppression: {} {}ms < {}ms",
-                entry.addr.status,
-                elapsed,
-                grace_period
-            );
-            return true;
-        }
-
-        false
     }
 
     /// Mark a user action from X-Touch (for Last-Write-Wins)
@@ -1823,9 +1667,6 @@ impl Router {
             entry.addr.data1,
             entry.value
         );
-
-        // Mark this as sent to app (for anti-echo)
-        self.update_app_shadow(app_key, &entry);
 
         // TODO: Forward to X-Touch if relevant for active page
         // This will be implemented in the forward module (Phase 6.2)
@@ -2117,7 +1958,6 @@ mod tests {
         // Verify we can retrieve the driver
         let retrieved = router.get_driver("test_console").await;
         assert!(retrieved.is_some());
-        assert_eq!(retrieved.unwrap().name(), "test_console");
     }
 
     #[tokio::test]
@@ -2184,12 +2024,6 @@ mod tests {
 
         let result = router.update_config(new_config).await;
         assert!(result.is_ok());
-
-        // Verify new config is active
-        let pages = router.list_pages().await;
-        assert_eq!(pages.len(), 3);
-        assert!(pages.contains(&"New Page 1".to_string()));
-        assert!(pages.contains(&"New Page 3".to_string()));
 
         // Driver should still be registered
         assert!(router.get_driver("test_driver").await.is_some());

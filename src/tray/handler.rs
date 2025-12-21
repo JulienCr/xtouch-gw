@@ -128,32 +128,6 @@ impl TrayMessageHandler {
         })
     }
 
-    /// Get current status of all drivers
-    pub fn get_all_statuses(&self) -> HashMap<String, ConnectionStatus> {
-        self.driver_statuses.read().clone()
-    }
-
-    /// Send initial status for a driver (used when driver is first initialized)
-    pub fn send_initial_status(&self, driver_name: String, status: ConnectionStatus) {
-        debug!("TrayHandler: sending initial status for {}: {:?}", driver_name, status);
-
-        // Update internal tracking
-        {
-            let mut statuses = self.driver_statuses.write();
-            statuses.insert(driver_name.clone(), status.clone());
-        }
-
-        // Send to tray UI
-        let update = TrayUpdate::DriverStatus {
-            name: driver_name,
-            status,
-        };
-
-        if let Err(e) = self.tray_tx.try_send(update) {
-            warn!("Failed to send initial status to tray: {}", e);
-        }
-    }
-
     /// Run the handler - polls activity and forwards updates to tray
     ///
     /// Continuously polls the ActivityTracker at the configured interval
@@ -276,12 +250,6 @@ mod tests {
         cb1(ConnectionStatus::Connected);
         cb2(ConnectionStatus::Disconnected);
 
-        // Should have both in tracking
-        let statuses = handler.get_all_statuses();
-        assert_eq!(statuses.len(), 2);
-        assert_eq!(statuses.get("Driver1"), Some(&ConnectionStatus::Connected));
-        assert_eq!(statuses.get("Driver2"), Some(&ConnectionStatus::Disconnected));
-
         // Should receive both updates
         let u1 = rx.recv_timeout(std::time::Duration::from_millis(100)).unwrap();
         let u2 = rx.recv_timeout(std::time::Duration::from_millis(100)).unwrap();
@@ -291,30 +259,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_send_initial_status() {
-        let (tx, rx) = crossbeam::channel::unbounded();
-        let handler = TrayMessageHandler::new(tx, None, 100);
-
-        handler.send_initial_status("OBS".to_string(), ConnectionStatus::Connected);
-
-        // Should receive update
-        let update = rx.recv_timeout(std::time::Duration::from_millis(100)).unwrap();
-        match update {
-            TrayUpdate::DriverStatus { name, status } => {
-                assert_eq!(name, "OBS");
-                assert_eq!(status, ConnectionStatus::Connected);
-            }
-            _ => panic!("Expected DriverStatus update"),
-        }
-
-        // Should be in tracking
-        let statuses = handler.get_all_statuses();
-        assert_eq!(statuses.get("OBS"), Some(&ConnectionStatus::Connected));
-    }
-
-    #[tokio::test]
     async fn test_status_update_overwrites() {
-        let (tx, _rx) = crossbeam::channel::unbounded();
+        let (tx, rx) = crossbeam::channel::unbounded();
         let handler = TrayMessageHandler::new(tx, None, 100);
 
         let callback = handler.subscribe_driver("OBS".to_string());
@@ -323,11 +269,13 @@ mod tests {
         callback(ConnectionStatus::Disconnected);
         callback(ConnectionStatus::Reconnecting { attempt: 1 });
 
-        // Should have latest status
-        let statuses = handler.get_all_statuses();
-        assert_eq!(
-            statuses.get("OBS"),
-            Some(&ConnectionStatus::Reconnecting { attempt: 1 })
-        );
+        // Should receive all updates
+        let u1 = rx.recv_timeout(std::time::Duration::from_millis(100)).unwrap();
+        let u2 = rx.recv_timeout(std::time::Duration::from_millis(100)).unwrap();
+        let u3 = rx.recv_timeout(std::time::Duration::from_millis(100)).unwrap();
+
+        assert!(matches!(u1, TrayUpdate::DriverStatus { .. }));
+        assert!(matches!(u2, TrayUpdate::DriverStatus { .. }));
+        assert!(matches!(u3, TrayUpdate::DriverStatus { .. }));
     }
 }

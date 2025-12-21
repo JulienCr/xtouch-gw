@@ -83,30 +83,6 @@ impl ActivityTracker {
             .unwrap_or(false)
     }
 
-    /// Get the last activity timestamp for a driver+direction
-    ///
-    /// Returns None if no activity has been recorded.
-    pub fn last_activity(&self, driver: &str, direction: ActivityDirection) -> Option<Instant> {
-        let key = format!("{}:{:?}", driver, direction);
-        self.activity_map.get(&key).map(|entry| *entry.value())
-    }
-
-    /// Clear all activity records
-    ///
-    /// Useful for resetting the tracker or cleanup.
-    pub fn clear(&self) {
-        self.activity_map.clear();
-    }
-
-    /// Get the number of tracked activities
-    pub fn len(&self) -> usize {
-        self.activity_map.len()
-    }
-
-    /// Check if the tracker is empty
-    pub fn is_empty(&self) -> bool {
-        self.activity_map.is_empty()
-    }
 }
 
 #[cfg(test)]
@@ -133,31 +109,5 @@ mod tests {
 
         // Should no longer be active
         assert!(!tracker.is_active("test_driver", ActivityDirection::Inbound));
-    }
-
-    #[test]
-    fn test_last_activity() {
-        let tracker = ActivityTracker::new(100, None);
-
-        assert!(tracker.last_activity("test", ActivityDirection::Inbound).is_none());
-
-        tracker.record("test", ActivityDirection::Inbound);
-
-        assert!(tracker.last_activity("test", ActivityDirection::Inbound).is_some());
-    }
-
-    #[test]
-    fn test_clear() {
-        let tracker = ActivityTracker::new(100, None);
-
-        tracker.record("test1", ActivityDirection::Inbound);
-        tracker.record("test2", ActivityDirection::Outbound);
-
-        assert_eq!(tracker.len(), 2);
-
-        tracker.clear();
-
-        assert_eq!(tracker.len(), 0);
-        assert!(tracker.is_empty());
     }
 }

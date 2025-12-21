@@ -24,7 +24,6 @@ use crate::router::Router;
 
 pub use hybrid_provider::HybridGamepadProvider;
 pub use mapper::GamepadMapper;
-pub use diagnostics::print_gamepad_diagnostics;
 pub use visualizer::run_visualizer;
 
 /// Initialize and attach gamepad input to router

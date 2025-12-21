@@ -3,7 +3,7 @@
 //! Stores MIDI state for each application (Voicemeeter, QLC+, OBS, etc.)
 //! and notifies subscribers on updates.
 
-use super::types::{addr_key, AppKey, MidiAddr, MidiStateEntry, MidiStatus, MidiValue, Origin};
+use super::types::{addr_key, AppKey, MidiStateEntry, MidiStatus, Origin};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
@@ -59,17 +59,6 @@ impl StateStore {
         }
     }
 
-    /// Get exact state entry for an app (requires full address match including port)
-    pub fn get_state_for_app(&self, app: AppKey, addr: &MidiAddr) -> Option<MidiStateEntry> {
-        let key = addr_key(addr);
-        let states = self.app_states.read().unwrap();
-        states
-            .get(&app)
-            .and_then(|app_state| app_state.get(&key))
-            .filter(|entry| entry.known)
-            .cloned()
-    }
-
     /// List all known state entries for an application
     pub fn list_states_for_app(&self, app: AppKey) -> Vec<MidiStateEntry> {
         let states = self.app_states.read().unwrap();
@@ -77,27 +66,6 @@ impl StateStore {
             .get(&app)
             .map(|app_state| app_state.values().cloned().collect())
             .unwrap_or_default()
-    }
-
-    /// List state entries for multiple applications
-    pub fn list_states_for_apps(&self, apps: &[AppKey]) -> HashMap<AppKey, Vec<MidiStateEntry>> {
-        let mut result = HashMap::new();
-        for app in apps {
-            result.insert(*app, self.list_states_for_app(*app));
-        }
-        result
-    }
-
-    /// Subscribe to state update notifications
-    ///
-    /// Returns an unsubscribe handle (currently just the subscriber ID)
-    pub fn subscribe<F>(&self, listener: F) -> usize
-    where
-        F: Fn(&MidiStateEntry, AppKey) + Send + Sync + 'static,
-    {
-        let mut subscribers = self.subscribers.write().unwrap();
-        subscribers.push(Arc::new(listener));
-        subscribers.len() - 1
     }
 
     /// Get the latest known value for (status, channel, data1) regardless of port
@@ -167,22 +135,6 @@ impl StateStore {
             }
         }
     }
-
-    /// Clear all states for a specific application
-    pub fn clear_states_for_app(&self, app: AppKey) {
-        let mut states = self.app_states.write().unwrap();
-        if let Some(app_state) = states.get_mut(&app) {
-            app_state.clear();
-        }
-    }
-
-    /// Clear all states for all applications
-    pub fn clear_all_states(&self) {
-        let mut states = self.app_states.write().unwrap();
-        for app_state in states.values_mut() {
-            app_state.clear();
-        }
-    }
 }
 
 impl Default for StateStore {
@@ -194,10 +146,8 @@ impl Default for StateStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    };
+    use crate::state::{MidiAddr, MidiValue};
+    
 
     fn make_test_entry(status: MidiStatus, channel: u8, data1: u8, value: u16) -> MidiStateEntry {
         MidiStateEntry {
@@ -217,16 +167,15 @@ mod tests {
     }
 
     #[test]
-    fn test_update_and_get() {
+    fn test_update_and_list() {
         let store = StateStore::new();
         let entry = make_test_entry(MidiStatus::CC, 1, 7, 100);
 
         store.update_from_feedback(AppKey::Voicemeeter, entry.clone());
 
-        let retrieved = store
-            .get_state_for_app(AppKey::Voicemeeter, &entry.addr)
-            .unwrap();
-        assert_eq!(retrieved.value.as_number(), Some(100));
+        let states = store.list_states_for_app(AppKey::Voicemeeter);
+        assert_eq!(states.len(), 1);
+        assert_eq!(states[0].value.as_number(), Some(100));
     }
 
     #[test]
@@ -263,47 +212,5 @@ mod tests {
         assert_eq!(latest.ts, 2000);
     }
 
-    #[test]
-    fn test_subscribe() {
-        let store = StateStore::new();
-        let counter = Arc::new(AtomicUsize::new(0));
-        let counter_clone = counter.clone();
-
-        store.subscribe(move |_entry, _app| {
-            counter_clone.fetch_add(1, Ordering::SeqCst);
-        });
-
-        let entry = make_test_entry(MidiStatus::CC, 1, 7, 100);
-        store.update_from_feedback(AppKey::Voicemeeter, entry.clone());
-        store.update_from_feedback(AppKey::Voicemeeter, entry);
-
-        assert_eq!(counter.load(Ordering::SeqCst), 2);
-    }
-
-    #[test]
-    fn test_hydrate_from_snapshot() {
-        let store = StateStore::new();
-        let entry = make_test_entry(MidiStatus::CC, 1, 7, 100);
-
-        store.hydrate_from_snapshot(AppKey::Voicemeeter, vec![entry.clone()]);
-
-        let retrieved = store
-            .get_state_for_app(AppKey::Voicemeeter, &entry.addr)
-            .unwrap();
-        assert!(retrieved.stale); // Should be marked stale
-        assert_eq!(retrieved.value.as_number(), Some(100));
-    }
-
-    #[test]
-    fn test_clear_states() {
-        let store = StateStore::new();
-        let entry = make_test_entry(MidiStatus::CC, 1, 7, 100);
-
-        store.update_from_feedback(AppKey::Voicemeeter, entry.clone());
-        assert_eq!(store.list_states_for_app(AppKey::Voicemeeter).len(), 1);
-
-        store.clear_states_for_app(AppKey::Voicemeeter);
-        assert_eq!(store.list_states_for_app(AppKey::Voicemeeter).len(), 0);
-    }
 }
 

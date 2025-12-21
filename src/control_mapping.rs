@@ -5,10 +5,9 @@
 use anyhow::{Result, Context};
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
-use std::time::SystemTime;
-use tracing::{info, debug};
+use std::path::Path;
+use std::sync::OnceLock;
+use tracing::info;
 
 /// Control mapping entry from CSV
 #[derive(Debug, Clone, Deserialize)]
@@ -199,48 +198,6 @@ impl ControlMappingDB {
             None
         })
     }
-    
-    /// Get all fader control IDs (fader1-fader8, fader_master)
-    pub fn get_fader_controls(&self) -> Vec<&str> {
-        let mut faders = Vec::new();
-        for i in 1..=8 {
-            let fader_id = format!("fader{}", i);
-            if self.mappings.contains_key(&fader_id) {
-                faders.push(self.mappings[&fader_id].control_id.as_str());
-            }
-        }
-        if self.mappings.contains_key("fader_master") {
-            faders.push("fader_master");
-        }
-        faders
-    }
-    
-    /// Get all button control IDs for a strip (mute, solo, rec, select)
-    pub fn get_strip_buttons(&self, strip_num: u8) -> Vec<&str> {
-        let mut buttons = Vec::new();
-        for button_type in &["rec", "solo", "mute", "select"] {
-            let button_id = format!("{}{}", button_type, strip_num);
-            if self.mappings.contains_key(&button_id) {
-                buttons.push(self.mappings[&button_id].control_id.as_str());
-            }
-        }
-        buttons
-    }
-    
-    /// Get all encoder control IDs (vpotN_rotate, vpotN_push)
-    pub fn get_encoder_controls(&self, encoder_num: u8) -> Vec<&str> {
-        let mut controls = Vec::new();
-        let rotate_id = format!("vpot{}_rotate", encoder_num);
-        let push_id = format!("vpot{}_push", encoder_num);
-        
-        if self.mappings.contains_key(&rotate_id) {
-            controls.push(self.mappings[&rotate_id].control_id.as_str());
-        }
-        if self.mappings.contains_key(&push_id) {
-            controls.push(self.mappings[&push_id].control_id.as_str());
-        }
-        controls
-    }
 }
 
 /// Default embedded CSV content (for when file is not available)
@@ -248,15 +205,6 @@ pub const DEFAULT_CSV: &str = include_str!("../docs/xtouch-matching.csv");
 
 /// Global cache for the embedded default mappings
 static DEFAULT_DB: OnceLock<ControlMappingDB> = OnceLock::new();
-
-/// In-memory cache for on-disk CSV (path + mtime)
-struct FileCache {
-    path: PathBuf,
-    mtime: SystemTime,
-    db: ControlMappingDB,
-}
-
-static FILE_DB: OnceLock<Mutex<Option<FileCache>>> = OnceLock::new();
 
 /// Load the default control mappings (cached after first parse)
 pub fn load_default_mappings() -> Result<ControlMappingDB> {
@@ -274,43 +222,6 @@ pub fn load_default_mappings() -> Result<ControlMappingDB> {
 pub fn warm_default_mappings() -> Result<()> {
     let _ = load_default_mappings()?;
     Ok(())
-}
-
-/// Load mappings from a CSV path, re-parsing only when the file changed.
-pub async fn load_mappings_from_path(path: impl AsRef<Path>) -> Result<ControlMappingDB> {
-    let path = path.as_ref().to_path_buf();
-
-    // Check file metadata (mtime)
-    let meta = tokio::fs::metadata(&path)
-        .await
-        .with_context(|| format!("Failed to stat CSV file: {}", path.display()))?;
-    let mtime = meta
-        .modified()
-        .unwrap_or(SystemTime::UNIX_EPOCH);
-
-    let cache = FILE_DB.get_or_init(|| Mutex::new(None));
-    {
-        let guard = cache.lock().expect("cache mutex poisoned");
-        if let Some(FileCache { path: cached_path, mtime: cached_mtime, db }) = guard.as_ref() {
-            if *cached_path == path && *cached_mtime == mtime {
-                return Ok(db.clone());
-            }
-        }
-    }
-
-    // Not cached or outdated -> re-read
-    let csv_content = tokio::fs::read_to_string(&path)
-        .await
-        .with_context(|| format!("Failed to read CSV file: {}", path.display()))?;
-    let db = ControlMappingDB::parse_csv(&csv_content)?;
-
-    // Update cache
-    {
-        let mut guard = cache.lock().expect("cache mutex poisoned");
-        *guard = Some(FileCache { path, mtime, db: db.clone() });
-    }
-
-    Ok(db)
 }
 
 #[cfg(test)]
@@ -393,16 +304,5 @@ mod tests {
         assert!(db.get_group("strip").is_some());
         assert!(db.get_group("transport").is_some());
         assert!(db.get_group("function").is_some());
-        
-        // Check fader controls
-        let faders = db.get_fader_controls();
-        assert_eq!(faders.len(), 9); // 8 strips + master
-        assert!(faders.contains(&"fader_master"));
-        
-        // Check strip buttons
-        let buttons = db.get_strip_buttons(1);
-        assert_eq!(buttons.len(), 4);
-        assert!(buttons.contains(&"mute1"));
-        assert!(buttons.contains(&"solo1"));
     }
 }
