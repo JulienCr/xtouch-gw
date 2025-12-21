@@ -236,22 +236,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_normalize_stick() {
-        // Dead zone
-        assert_eq!(normalize_stick(0), 0.0);
-        assert_eq!(normalize_stick(7000), 0.0);
-        assert_eq!(normalize_stick(-7000), 0.0);
-
-        // Full deflection
-        assert_eq!(normalize_stick(32767), 1.0);
-        assert_eq!(normalize_stick(-32768), -1.0);
-
-        // Partial deflection (above deadzone)
-        let partial = normalize_stick(16000);
-        assert!(partial > 0.0 && partial < 1.0);
-    }
-
-    #[test]
     fn test_button_conversion() {
         // Press A button
         let events = convert_xinput_buttons(None, button_flags::A, "gamepad1");

@@ -8,7 +8,6 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-mod cli;
 mod config;
 mod control_mapping;
 mod drivers;
@@ -585,7 +584,7 @@ async fn run_app(
                     // Check if this is a PitchBend message - use set_fader with squelch
                     if transformed.len() == 3 && (transformed[0] & 0xF0) == 0xE0 {
                         // PitchBend message: status byte Exch, LSB, MSB
-                        let channel = (transformed[0] & 0x0F);
+                        let channel = transformed[0] & 0x0F;
                         let lsb = transformed[1];
                         let msb = transformed[2];
                         let value14 = ((msb as u16) << 7) | (lsb as u16);

@@ -6,6 +6,8 @@
 //! - Connection state (current gamepad ID or None)
 //! - Per-slot analog configuration
 
+#![allow(dead_code)]
+
 use gilrs::Gilrs;
 use std::time::Instant;
 use crate::config::AnalogConfig;
@@ -231,7 +233,7 @@ impl SlotManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gilrs::GamepadId;
+    
 
     #[test]
     fn test_slot_matching() {
@@ -258,22 +260,22 @@ mod tests {
             ("Nintendo".to_string(), None),
         ]);
 
-        // Simulate hybrid gamepad IDs
+        // Simulate hybrid gamepad IDs (using XInput only, gilrs IDs can't be constructed in tests)
         let xbox_id = HybridControllerId::from_xinput(0);
-        let switch_id = HybridControllerId::from_gilrs(GamepadId::from(0));
-        let ps_id = HybridControllerId::from_gilrs(GamepadId::from(1));
+        let nintendo_id = HybridControllerId::from_xinput(1);
+        let ps_id = HybridControllerId::from_xinput(2);
 
-        // Xbox should match slot 0
-        let (slot_idx, _) = manager.find_slot_for_gamepad(xbox_id, "XInput Controller 1").unwrap();
+        // Xbox controller should match slot 0
+        let (slot_idx, _) = manager.find_slot_for_gamepad(xbox_id, "Xbox Wireless Controller").unwrap();
         assert_eq!(slot_idx, 0);
-        manager.get_slot_mut(slot_idx).unwrap().connect(xbox_id, "XInput Controller 1".to_string());
+        manager.get_slot_mut(slot_idx).unwrap().connect(xbox_id, "Xbox Wireless Controller".to_string());
 
-        // Switch should match slot 1
-        let (slot_idx, _) = manager.find_slot_for_gamepad(switch_id, "Nintendo Switch Pro").unwrap();
+        // Nintendo controller should match slot 1
+        let (slot_idx, _) = manager.find_slot_for_gamepad(nintendo_id, "Nintendo Switch Pro Controller").unwrap();
         assert_eq!(slot_idx, 1);
 
-        // PS4 should find no slot
-        assert!(manager.find_slot_for_gamepad(ps_id, "PS4 Controller").is_none());
+        // PS4 controller should find no slot
+        assert!(manager.find_slot_for_gamepad(ps_id, "PS4 DualShock").is_none());
     }
 
     #[test]

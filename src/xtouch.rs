@@ -10,7 +10,6 @@ use pitch_bend_squelch::PitchBendSquelch;
 use anyhow::{bail, Context, Result};
 use midir::{MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 use tokio::sync::mpsc;
 use tracing::{debug, info, trace};
 
@@ -20,8 +19,6 @@ use crate::midi::{format_hex, MidiMessage};
 /// MIDI event from X-Touch
 #[derive(Debug, Clone)]
 pub struct XTouchEvent {
-    pub timestamp: Instant,
-    pub message: MidiMessage,
     pub raw_data: Vec<u8>,
 }
 
@@ -73,34 +70,6 @@ impl XTouchDriver {
             output_port_name: config.midi.output_port.clone(),
             pb_squelch: PitchBendSquelch::new(),
         })
-    }
-
-    /// List available MIDI input ports
-    pub fn list_input_ports() -> Result<Vec<String>> {
-        let midi_in = MidiInput::new("XTouch-GW-Scanner")?;
-
-        let mut port_names = Vec::new();
-        for port in midi_in.ports() {
-            if let Ok(name) = midi_in.port_name(&port) {
-                port_names.push(name);
-            }
-        }
-
-        Ok(port_names)
-    }
-
-    /// List available MIDI output ports
-    pub fn list_output_ports() -> Result<Vec<String>> {
-        let midi_out = MidiOutput::new("XTouch-GW-Scanner")?;
-
-        let mut port_names = Vec::new();
-        for port in midi_out.ports() {
-            if let Ok(name) = midi_out.port_name(&port) {
-                port_names.push(name);
-            }
-        }
-
-        Ok(port_names)
     }
 
     /// Find an input port by substring match (Windows-friendly)
@@ -170,8 +139,6 @@ impl XTouchDriver {
                 &in_port,
                 "XTouch-GW",
                 move |_timestamp, data, _| {
-                    let timestamp = Instant::now();
-
                     // Check if this is a pitch bend message
                     if data.len() >= 1 {
                         let status = data[0];
@@ -186,10 +153,8 @@ impl XTouchDriver {
                     }
 
                     // Parse the message
-                    if let Some(message) = MidiMessage::parse(data) {
+                    if let Some(_message) = MidiMessage::parse(data) {
                         let event = XTouchEvent {
-                            timestamp,
-                            message,
                             raw_data: data.to_vec(),
                         };
 
@@ -242,11 +207,6 @@ impl XTouchDriver {
         info!("X-Touch disconnected");
     }
 
-    /// Check if connected
-    pub fn is_connected(&self) -> bool {
-        self.input_conn.is_some() && self.output_conn.is_some()
-    }
-
     /// Send a MIDI message to X-Touch
     pub async fn send(&self, message: &MidiMessage) -> Result<()> {
         let output = self
@@ -260,24 +220,6 @@ impl XTouchDriver {
         conn.send(&data).context("Failed to send MIDI message")?;
 
         trace!("Sent: {} | {}", format_hex(&data), message);
-
-        Ok(())
-    }
-
-    /// Send raw MIDI data directly to X-Touch (synchronous, for callbacks)
-    ///
-    /// Used for feedback routing from MIDI bridge drivers.
-    /// This is a non-async version safe to call from within MIDI callbacks.
-    pub fn send_raw_sync(&self, data: &[u8]) -> Result<()> {
-        let output = self
-            .output_conn
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Not connected to output port"))?;
-
-        let mut conn = output.lock().unwrap();
-        conn.send(data).context("Failed to send raw MIDI data")?;
-
-        trace!("Sent raw feedback: {}", format_hex(data));
 
         Ok(())
     }
@@ -356,7 +298,7 @@ impl XTouchDriver {
             },
         };
 
-        self.send(&message).await;
+        self.send(&message).await?;
 
         Ok(())
     }
@@ -378,21 +320,6 @@ impl XTouchDriver {
             channel: 0,
             note,
             velocity: if on { 127 } else { 0 },
-        };
-
-        self.send(&message).await
-    }
-
-    /// Set encoder LED ring (0-11 for position, 12-15 for modes)
-    pub async fn set_encoder_led(&self, encoder: u8, value: u8) -> Result<()> {
-        if encoder > 7 {
-            bail!("Invalid encoder number: {} (must be 0-7)", encoder);
-        }
-
-        let message = MidiMessage::ControlChange {
-            channel: 0,
-            cc: 48 + encoder, // CC 48-55 for encoder LEDs
-            value: value.min(15),
         };
 
         self.send(&message).await
@@ -464,24 +391,6 @@ impl XTouchDriver {
         }
 
         bytes
-    }
-
-    /// Send only lower line LCD text (for value overlay)
-    pub async fn send_lcd_strip_lower_text(&self, strip_index: u8, lower: &str) -> Result<()> {
-        if strip_index > 7 {
-            bail!("Invalid LCD strip index: {} (must be 0-7)", strip_index);
-        }
-
-        let lower_bytes = Self::ascii7(lower, 7);
-
-        let header = vec![0x00, 0x00, 0x66, 0x14, 0x12];
-        let pos_bot = 0x38 + strip_index * 7;
-
-        let mut data = header;
-        data.push(pos_bot);
-        data.extend_from_slice(&lower_bytes);
-
-        self.send(&MidiMessage::SysEx { data }).await
     }
 
     /// Set LCD colors for all 8 strips (firmware >= 1.22)
@@ -665,7 +574,7 @@ impl XTouchDriver {
                 note,
                 velocity: 0, // Velocity 0 turns off LED
             };
-            self.send(&message).await;
+            self.send(&message).await?;
             // Small delay between messages to avoid overwhelming MIDI buffer
             tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
         }

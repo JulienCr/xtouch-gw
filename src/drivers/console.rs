@@ -36,18 +36,11 @@ impl ConsoleDriver {
 
 #[async_trait]
 impl Driver for ConsoleDriver {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    async fn init(&self, ctx: ExecutionContext) -> Result<()> {
-        let config = ctx.config.read().await;
+    async fn init(&self, _ctx: ExecutionContext) -> Result<()> {
         info!(
-            "🔌 ConsoleDriver '{}' initializing (config has {} pages)",
-            self.name,
-            config.pages.len()
+            "🔌 ConsoleDriver '{}' initializing",
+            self.name
         );
-        drop(config);
 
         *self.initialized.write().await = true;
         *self.execution_count.write().await = 0;
@@ -56,7 +49,7 @@ impl Driver for ConsoleDriver {
         Ok(())
     }
 
-    async fn execute(&self, action: &str, params: Vec<Value>, ctx: ExecutionContext) -> Result<()> {
+    async fn execute(&self, action: &str, params: Vec<Value>, _ctx: ExecutionContext) -> Result<()> {
         // Check if initialized
         if !*self.initialized.read().await {
             warn!("⚠️  ConsoleDriver '{}' not initialized, skipping execution", self.name);
@@ -80,19 +73,12 @@ impl Driver for ConsoleDriver {
                 .join(", ")
         };
 
-        // Get active page if available
-        let page_info = ctx
-            .active_page
-            .map(|p| format!(" [page: {}]", p))
-            .unwrap_or_default();
-
         info!(
-            "🎮 [{}] Driver '{}' → {} ({}){} [exec #{}]",
+            "🎮 [{}] Driver '{}' → {} ({}) [exec #{}]",
             chrono::Local::now().format("%H:%M:%S%.3f"),
             self.name,
             action,
             params_str,
-            page_info,
             exec_num
         );
 
@@ -134,29 +120,9 @@ impl Driver for ConsoleDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::AppConfig;
-    use std::sync::Arc;
-    use tokio::sync::RwLock;
 
     fn make_test_context() -> ExecutionContext {
-        let config = AppConfig {
-            midi: crate::config::MidiConfig {
-                input_port: "test_in".to_string(),
-                output_port: "test_out".to_string(),
-                apps: None,
-            },
-            obs: None,
-            xtouch: None,
-            paging: None,
-            gamepad: None,
-            pages_global: None,
-            pages: vec![],
-            tray: None,
-        };
-
         ExecutionContext {
-            config: Arc::new(RwLock::new(config)),
-            active_page: Some("TestPage".to_string()),
             value: None,
             control_id: None,
             activity_tracker: None,
@@ -167,8 +133,6 @@ mod tests {
     async fn test_console_driver_lifecycle() {
         let driver = ConsoleDriver::new("test");
         let ctx = make_test_context();
-
-        assert_eq!(driver.name(), "test");
 
         // Should not be initialized initially
         assert!(!*driver.initialized.read().await);

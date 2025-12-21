@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::Path;
 use tokio::fs;
-use tracing::{debug, info};
+use tracing::debug;
 
 /// State snapshot for JSON serialization
 #[derive(Debug, serde::Serialize, serde::Deserialize)]

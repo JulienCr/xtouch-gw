@@ -48,25 +48,6 @@ pub fn apply_inversion(value: f32, axis_id: &str, config: &AnalogConfig) -> f32 
     }
 }
 
-/// Scale analog value to MIDI CC range (0-127)
-pub fn to_midi_cc(value: f32) -> u8 {
-    // Map -1.0..1.0 → 0..127
-    let scaled = ((value + 1.0) / 2.0 * 127.0).round();
-    scaled.clamp(0.0, 127.0) as u8
-}
-
-/// Scale analog value to MIDI PitchBend range (0-16383)
-pub fn to_midi_pb(value: f32) -> u16 {
-    // Map -1.0..1.0 → 0..16383
-    let scaled = ((value + 1.0) / 2.0 * 16383.0).round();
-    scaled.clamp(0.0, 16383.0) as u16
-}
-
-/// Convert button state to MIDI value
-pub fn button_to_midi(pressed: bool) -> u8 {
-    if pressed { 127 } else { 0 }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,25 +97,5 @@ mod tests {
         assert_eq!(apply_inversion(0.5, "lx", &config), 0.5);   // Not inverted
         assert_eq!(apply_inversion(0.5, "ly", &config), -0.5);  // Inverted
         assert_eq!(apply_inversion(-0.5, "ly", &config), 0.5);  // Inverted
-    }
-
-    #[test]
-    fn test_midi_cc_scaling() {
-        assert_eq!(to_midi_cc(-1.0), 0);
-        assert_eq!(to_midi_cc(0.0), 64);  // Middle (rounding)
-        assert_eq!(to_midi_cc(1.0), 127);
-    }
-
-    #[test]
-    fn test_midi_pb_scaling() {
-        assert_eq!(to_midi_pb(-1.0), 0);
-        assert_eq!(to_midi_pb(0.0), 8192);  // Middle (rounding)
-        assert_eq!(to_midi_pb(1.0), 16383);
-    }
-
-    #[test]
-    fn test_button_to_midi() {
-        assert_eq!(button_to_midi(true), 127);
-        assert_eq!(button_to_midi(false), 0);
     }
 }

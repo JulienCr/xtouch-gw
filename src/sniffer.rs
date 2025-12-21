@@ -22,16 +22,12 @@ use crate::xtouch::discovery;
 #[derive(Debug, Clone, Copy)]
 pub enum Direction {
     Input,
-    Output,
-    Bidirectional,
 }
 
 impl Direction {
     fn display(&self) -> ColoredString {
         match self {
             Direction::Input => "IN ".green(),
-            Direction::Output => "OUT".red(),
-            Direction::Bidirectional => "I/O".yellow(),
         }
     }
 }
@@ -363,7 +359,5 @@ mod tests {
     fn test_direction_display() {
         // Just ensure display doesn't panic
         let _ = Direction::Input.display();
-        let _ = Direction::Output.display();
-        let _ = Direction::Bidirectional.display();
     }
 }

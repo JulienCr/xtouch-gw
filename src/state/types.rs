@@ -63,14 +63,6 @@ impl MidiValue {
             _ => None,
         }
     }
-
-    /// Extract binary data if available
-    pub fn as_binary(&self) -> Option<&[u8]> {
-        match self {
-            MidiValue::Binary(b) => Some(b),
-            _ => None,
-        }
-    }
 }
 
 /// MIDI state entry with metadata, stored in the StateStore
@@ -159,16 +151,6 @@ pub fn addr_key(addr: &MidiAddr) -> String {
     format!(
         "{}|{}|{}|{}",
         addr.port_id,
-        addr.status,
-        addr.channel.unwrap_or(0),
-        addr.data1.unwrap_or(0)
-    )
-}
-
-/// Constructs a key without the port (for X-Touch shadow state)
-pub fn addr_key_without_port(addr: &MidiAddr) -> String {
-    format!(
-        "{}|{}|{}",
         addr.status,
         addr.channel.unwrap_or(0),
         addr.data1.unwrap_or(0)

@@ -250,16 +250,6 @@ impl MidiMessage {
             _ => None,
         }
     }
-    
-    /// Check if this is a channel message
-    pub fn is_channel_message(&self) -> bool {
-        self.channel().is_some()
-    }
-    
-    /// Check if this is a system message
-    pub fn is_system_message(&self) -> bool {
-        !self.is_channel_message()
-    }
 }
 
 impl fmt::Display for MidiMessage {
@@ -296,12 +286,6 @@ impl fmt::Display for MidiMessage {
 
 /// MIDI value conversion utilities
 pub mod convert {
-    /// Convert 14-bit value (0-16383) to 7-bit value (0-127) using bit shift
-    /// Note: This uses bit shift and may lose precision. Use to_7bit_from_14bit() for precise conversion.
-    pub fn to_7bit(value_14bit: u16) -> u8 {
-        ((value_14bit >> 7) & 0x7F) as u8
-    }
-
     /// Convert 14-bit value (0-16383) to 7-bit value (0-127) with proper rounding
     /// Matches TypeScript to7bitFrom14bit(): Math.round((v / 16383) * 127)
     pub fn to_7bit_from_14bit(value_14bit: u16) -> u8 {
@@ -309,18 +293,6 @@ pub mod convert {
         ((clamped as f32 / 16383.0) * 127.0).round() as u8
     }
 
-    /// Convert 14-bit value (0-16383) to 8-bit value (0-255) with proper rounding
-    /// Matches TypeScript to8bitFrom14bit(): Math.round((v / 16383) * 255)
-    pub fn to_8bit_from_14bit(value_14bit: u16) -> u8 {
-        let clamped = value_14bit.min(16383);
-        ((clamped as f32 / 16383.0) * 255.0).round() as u8
-    }
-    
-    /// Convert 7-bit value (0-127) to 14-bit value (0-16383)
-    pub fn to_14bit(value_7bit: u8) -> u16 {
-        (value_7bit as u16) << 7
-    }
-    
     /// Convert 14-bit value to percentage (0-100)
     pub fn to_percent_14bit(value: u16) -> f32 {
         (value as f32 * 100.0) / 16383.0
@@ -340,16 +312,6 @@ pub mod convert {
     pub fn from_percent_7bit(percent: f32) -> u8 {
         ((percent.clamp(0.0, 100.0) * 127.0) / 100.0).round() as u8
     }
-    
-    /// Convert 14-bit value to 8-bit value (0-255) - for 8-bit CC mode
-    pub fn to_8bit(value_14bit: u16) -> u8 {
-        ((value_14bit >> 6) & 0xFF) as u8
-    }
-    
-    /// Convert 8-bit value to 14-bit value
-    pub fn from_8bit(value_8bit: u8) -> u16 {
-        (value_8bit as u16) << 6
-    }
 }
 
 /// Extract the type nibble from a MIDI status byte (upper 4 bits)
@@ -362,30 +324,12 @@ pub fn pb14_from_raw(lsb: u8, msb: u8) -> u16 {
     ((msb as u16) << 7) | (lsb as u16)
 }
 
-/// Deconstruct a 14-bit value into LSB and MSB bytes
-pub fn pb14_to_bytes(value: u16) -> (u8, u8) {
-    let lsb = (value & 0x7F) as u8;
-    let msb = ((value >> 7) & 0x7F) as u8;
-    (lsb, msb)
-}
-
 /// Format MIDI bytes as hex string for debugging
 pub fn format_hex(data: &[u8]) -> String {
     data.iter()
         .map(|b| format!("{:02X}", b))
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-/// Format MIDI message for sniffer output
-pub fn format_sniffer(timestamp_ms: u64, direction: &str, port: &str, data: &[u8]) -> String {
-    let hex = format_hex(data);
-    let message = MidiMessage::parse(data)
-        .map(|m| format!(" => {}", m))
-        .unwrap_or_default();
-    
-    format!("[{:08}ms] {} {} | {}{}", 
-        timestamp_ms, direction, port, hex, message)
 }
 
 /// Find a MIDI output port by substring matching (case-insensitive)
@@ -428,22 +372,6 @@ impl MidiMessage {
             MidiMessage::NoteOff { velocity, .. } |
             MidiMessage::NoteOn { velocity, .. } => velocity,
             _ => 0,
-        }
-    }
-
-    /// Get the controller number for CC messages
-    pub fn controller(&self) -> Option<u8> {
-        match *self {
-            MidiMessage::ControlChange { cc, .. } => Some(cc),
-            _ => None,
-        }
-    }
-
-    /// Get the value for CC messages
-    pub fn value(&self) -> Option<u8> {
-        match *self {
-            MidiMessage::ControlChange { value, .. } => Some(value),
-            _ => None,
         }
     }
 }
@@ -511,27 +439,13 @@ mod tests {
     }
     
     #[test]
-    fn test_14bit_to_7bit() {
-        assert_eq!(convert::to_7bit(0), 0);
-        assert_eq!(convert::to_7bit(8192), 64);
-        assert_eq!(convert::to_7bit(16383), 127);
-    }
-    
-    #[test]
-    fn test_7bit_to_14bit() {
-        assert_eq!(convert::to_14bit(0), 0);
-        assert_eq!(convert::to_14bit(64), 8192);
-        assert_eq!(convert::to_14bit(127), 16256);
-    }
-    
-    #[test]
     fn test_percent_conversions() {
         assert_eq!(convert::to_percent_14bit(0) as u32, 0);
         assert_eq!(convert::to_percent_14bit(8192) as u32, 50);
         assert_eq!(convert::to_percent_14bit(16383) as u32, 100);
         
         assert_eq!(convert::from_percent_14bit(0.0), 0);
-        assert_eq!(convert::from_percent_14bit(50.0), 8191);
+        assert_eq!(convert::from_percent_14bit(50.0), 8192);
         assert_eq!(convert::from_percent_14bit(100.0), 16383);
     }
 }

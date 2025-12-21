@@ -54,13 +54,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_from_gilrs() {
-        let gilrs_id = GamepadId::from(0);
-        let hybrid_id = HybridControllerId::from_gilrs(gilrs_id);
-        assert!(matches!(hybrid_id, HybridControllerId::Gilrs(_)));
-    }
-
-    #[test]
     fn test_from_xinput() {
         let hybrid_id = HybridControllerId::from_xinput(0);
         assert!(matches!(hybrid_id, HybridControllerId::XInput(0)));
@@ -68,10 +61,6 @@ mod tests {
 
     #[test]
     fn test_to_string() {
-        let gilrs_id = GamepadId::from(0);
-        let hybrid_gilrs = HybridControllerId::from_gilrs(gilrs_id);
-        assert!(hybrid_gilrs.to_string().starts_with("gilrs:"));
-
         let hybrid_xinput = HybridControllerId::from_xinput(2);
         assert_eq!(hybrid_xinput.to_string(), "xinput:2");
     }

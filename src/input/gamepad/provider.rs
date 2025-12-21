@@ -1,5 +1,7 @@
 //! GilRs gamepad provider with hot-plug support
 
+#![allow(dead_code)]
+
 use anyhow::Result;
 use gilrs::{Gilrs, Event, EventType, Button, Axis};
 use std::sync::Arc;
