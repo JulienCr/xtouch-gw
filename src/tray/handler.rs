@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use parking_lot::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 use super::{ActivityDirection, ActivityTracker, ConnectionStatus, TrayUpdate};
 
@@ -70,7 +70,7 @@ impl TrayMessageHandler {
         let name = driver_name.clone();
 
         Arc::new(move |status: ConnectionStatus| {
-            debug!("TrayHandler: {} status changed to {:?}", name, status);
+            trace!("TrayHandler: {} status changed to {:?}", name, status);
 
             // Check if status actually changed (always send if different from previous)
             let status_changed = {
@@ -135,7 +135,7 @@ impl TrayMessageHandler {
 
     /// Send initial status for a driver (used when driver is first initialized)
     pub fn send_initial_status(&self, driver_name: String, status: ConnectionStatus) {
-        debug!("TrayHandler: sending initial status for {}: {:?}", driver_name, status);
+        trace!("TrayHandler: sending initial status for {}: {:?}", driver_name, status);
 
         // Update internal tracking
         {
@@ -226,6 +226,7 @@ impl TrayMessageHandler {
             }
 
             // Log periodic stats
+            /*
             if iteration_count % 100 == 0 {
                 debug!(
                     "TrayHandler stats: {} drivers, {} active directions (iteration {})",
@@ -234,9 +235,10 @@ impl TrayMessageHandler {
                     iteration_count
                 );
             }
+            */
         }
 
-        info!("TrayMessageHandler stopped");
+        //info!("TrayMessageHandler stopped");
     }
 }
 
