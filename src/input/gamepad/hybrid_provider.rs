@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tokio::sync::mpsc;
-use tracing::{info, warn, debug};
+use tracing::{info, warn, debug, trace};
 
 use crate::config::AnalogConfig;
 use super::hybrid_id::HybridControllerId;
@@ -220,7 +220,7 @@ impl HybridProviderState {
             while let Some(Event { id, event, .. }) = self.gilrs.next_event() {
                 match event {
                     EventType::Connected => {
-                        debug!("gilrs gamepad connected during initial scan: {:?}", id);
+                        trace!("gilrs gamepad connected during initial scan: {:?}", id);
                     }
                     _ => {}
                 }
@@ -501,7 +501,7 @@ impl HybridProviderState {
                 }
             }
             EventType::Connected => {
-                debug!("gilrs gamepad connected event");
+                trace!("gilrs gamepad connected event");
                 None
             }
             EventType::Disconnected => {
