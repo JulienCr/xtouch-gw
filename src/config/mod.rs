@@ -58,6 +58,30 @@ pub struct ObsConfig {
     pub port: u16,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub password: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub camera_control: Option<CameraControlConfig>,
+}
+
+/// Camera control configuration for OBS split views
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CameraControlConfig {
+    pub cameras: Vec<CameraConfig>,
+    pub splits: SplitConfig,
+}
+
+/// Individual camera configuration
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CameraConfig {
+    pub id: String,
+    pub scene: String,
+    pub split_source: String,
+}
+
+/// Split scene configuration
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SplitConfig {
+    pub left: String,
+    pub right: String,
 }
 
 /// X-Touch specific configuration

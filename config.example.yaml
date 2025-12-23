@@ -21,6 +21,25 @@ obs:
   host: "127.0.0.1"
   port: 4455
   password: "aaaaaa"
+  
+  # Configuration du contrôle caméra (split views)
+  camera_control:
+    cameras:
+      - id: "Main"
+        scene: "--- CAM Main"
+        split_source: "SPLIT CAM Main"
+      - id: "Main2"
+        scene: "--- CAM Main 2"
+        split_source: "SPLIT CAM Main 2"
+      - id: "Jardin"
+        scene: "--- CAM Jardin"
+        split_source: "SPLIT CAM Jardin"
+      - id: "Cour"
+        scene: "--- CAM Cour"
+        split_source: "SPLIT CAM Cour"
+    splits:
+      left: "--- SPLIT left"
+      right: "--- SPLIT right"
 
 paging:
   channel: 1
@@ -90,25 +109,43 @@ pages_global:
       # Vitesse effective = 0.015 * zoom_gain(1.5) * analog_value
       # À stick à fond : 0.015 * 1.5 * 1.0 = 0.0225 par tick = 1.35 scale/sec
 
+    # Boutons caméra (nouveau système split)
     gamepad1.btn.a:
       app: "obs"
-      action: "changeScene"
-      params: ["--- CAM Cour"]
+      action: "selectCamera"
+      params: ["Main"]
 
     gamepad1.btn.b:
       app: "obs"
-      action: "changeScene"
-      params: ["--- CAM Main"]
+      action: "selectCamera"
+      params: ["Main2"]
 
     gamepad1.btn.x:
       app: "obs"
-      action: "changeScene"
-      params: ["--- CAM Main 2"]
+      action: "selectCamera"
+      params: ["Jardin"]
 
     gamepad1.btn.y:
       app: "obs"
-      action: "changeScene"
-      params: ["--- CAM Jardin"]
+      action: "selectCamera"
+      params: ["Cour"]
+
+    # D-Pad : Contrôle des vues split
+    gamepad1.btn.dpad_left:
+      app: "obs"
+      action: "enterSplit"
+      params: ["left"]
+
+    gamepad1.btn.dpad_right:
+      app: "obs"
+      action: "enterSplit"
+      params: ["right"]
+
+    # START : Retour vue pleine
+    gamepad1.btn.start:
+      app: "obs"
+      action: "exitSplit"
+      params: []
 
     gamepad1.btn.capture:
       app: "obs"
@@ -135,7 +172,7 @@ pages_global:
       action: "resetZoom"
       params: ["--- CAM Main 2", "--- CAM Main"]
 
-    # Gamepad 2 (Xbox Bluetooth): contrôle caméra CAM Jardin
+    # Gamepad 2 (Xbox Bluetooth): contrôle caméra CAM Jardin + mêmes actions split
     gamepad2.axis.lx:
       app: "obs"
       action: "nudgeX"
@@ -151,25 +188,43 @@ pages_global:
       action: "scaleUniform"
       params: ["--- CAM Jardin", "NDI - Cam Jardin", 0.015]
 
+    # Boutons caméra (état partagé avec gamepad1)
     gamepad2.btn.a:
       app: "obs"
-      action: "changeScene"
-      params: ["--- CAM Cour"]
+      action: "selectCamera"
+      params: ["Main"]
 
     gamepad2.btn.b:
       app: "obs"
-      action: "changeScene"
-      params: ["--- CAM Main"]
+      action: "selectCamera"
+      params: ["Main2"]
 
     gamepad2.btn.x:
       app: "obs"
-      action: "changeScene"
-      params: ["--- CAM Jardin"]
+      action: "selectCamera"
+      params: ["Jardin"]
 
     gamepad2.btn.y:
       app: "obs"
-      action: "changeScene"
-      params: ["--- CAM Main 2"]
+      action: "selectCamera"
+      params: ["Cour"]
+
+    # D-Pad : Contrôle des vues split (état partagé)
+    gamepad2.btn.dpad_left:
+      app: "obs"
+      action: "enterSplit"
+      params: ["left"]
+
+    gamepad2.btn.dpad_right:
+      app: "obs"
+      action: "enterSplit"
+      params: ["right"]
+
+    # START : Retour vue pleine (état partagé)
+    gamepad2.btn.start:
+      app: "obs"
+      action: "exitSplit"
+      params: []
 
     gamepad2.btn.rb:
       app: "obs"

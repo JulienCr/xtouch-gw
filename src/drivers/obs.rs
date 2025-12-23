@@ -231,6 +231,34 @@ struct ObsItemState {
     alignment: u32,  // OBS alignment flags (LEFT=1, RIGHT=2, TOP=4, BOTTOM=8, CENTER=0)
 }
 
+// =============================================================================
+// Camera Control State (for split views)
+// =============================================================================
+
+/// View mode for camera control
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ViewMode {
+    Full,
+    SplitLeft,
+    SplitRight,
+}
+
+/// Camera control state (shared between all gamepads)
+#[derive(Debug, Clone)]
+struct CameraControlState {
+    current_view_mode: ViewMode,
+    last_camera: String,
+}
+
+impl Default for CameraControlState {
+    fn default() -> Self {
+        Self {
+            current_view_mode: ViewMode::Full,
+            last_camera: String::new(),
+        }
+    }
+}
+
 /// OBS Studio WebSocket driver
 pub struct ObsDriver {
     name: String,
@@ -281,6 +309,10 @@ pub struct ObsDriver {
 
     // Encoder acceleration
     encoder_tracker: Arc<Mutex<EncoderSpeedTracker>>,
+
+    // Camera control state (for split views)
+    camera_control_state: Arc<parking_lot::RwLock<CameraControlState>>,
+    camera_control_config: Arc<parking_lot::RwLock<Option<crate::config::CameraControlConfig>>>,
 }
 
 impl ObsDriver {
@@ -317,16 +349,31 @@ impl ObsDriver {
             analog_error_count: Arc::new(parking_lot::RwLock::new(HashMap::new())),
             // Encoder acceleration
             encoder_tracker: Arc::new(Mutex::new(EncoderSpeedTracker::new())),
+            // Camera control state
+            camera_control_state: Arc::new(parking_lot::RwLock::new(CameraControlState::default())),
+            camera_control_config: Arc::new(parking_lot::RwLock::new(None)),
         }
     }
 
     /// Create from config
     pub fn from_config(config: &crate::config::ObsConfig) -> Self {
-        Self::new(
+        let mut driver = Self::new(
             config.host.clone(),
             config.port,
             config.password.clone(),
-        )
+        );
+        
+        // Load camera control config if present
+        if let Some(camera_control) = &config.camera_control {
+            *driver.camera_control_config.write() = Some(camera_control.clone());
+            
+            // Initialize last_camera to first camera if available
+            if let Some(first_camera) = camera_control.cameras.first() {
+                driver.camera_control_state.write().last_camera = first_camera.id.clone();
+            }
+        }
+        
+        driver
     }
 
     /// Load analog config from gamepad settings
@@ -1193,9 +1240,52 @@ impl ObsDriver {
             last_analog_tick: Arc::clone(&self.last_analog_tick),
             analog_error_count: Arc::clone(&self.analog_error_count),
             encoder_tracker: Arc::clone(&self.encoder_tracker),
+            camera_control_state: Arc::clone(&self.camera_control_state),
+            camera_control_config: Arc::clone(&self.camera_control_config),
         }
     }
+
+    /// Helper: Set scene item enabled/disabled
+    async fn set_scene_item_enabled(&self, scene_name: &str, source_name: &str, enabled: bool) -> Result<()> {
+        let item_id = self.resolve_item_id(scene_name, source_name).await?;
+        
+        let guard = self.client.read().await;
+        let client = guard.as_ref()
+            .context("OBS client not connected")?
+            .clone();
+        
+        client.scene_items()
+            .set_enabled(scene_name, item_id, enabled)
+            .await
+            .with_context(|| format!("Failed to set item '{}' enabled={} in scene '{}'", source_name, enabled, scene_name))?;
+        
+        debug!("OBS: Set '{}' in '{}' enabled={}", source_name, scene_name, enabled);
+        Ok(())
+    }
+
+    /// Helper: Set split camera (hide all, show one)
+    async fn set_split_camera(&self, split_scene: &str, camera_id: &str) -> Result<()> {
+        let config_guard = self.camera_control_config.read();
+        let config = config_guard.as_ref()
+            .context("Camera control not configured")?;
+        
+        // Hide all SPLIT CAM sources
+        for camera in &config.cameras {
+            self.set_scene_item_enabled(split_scene, &camera.split_source, false).await?;
+        }
+        
+        // Show the target camera
+        let target_camera = config.cameras.iter()
+            .find(|c| c.id == camera_id)
+            .with_context(|| format!("Camera '{}' not found in config", camera_id))?;
+        
+        self.set_scene_item_enabled(split_scene, &target_camera.split_source, true).await?;
+        
+        info!("🎬 OBS: Set split camera '{}' in '{}'", camera_id, split_scene);
+        Ok(())
+    }
 }
+
 
 #[async_trait]
 impl Driver for ObsDriver {
@@ -1606,6 +1696,167 @@ impl Driver for ObsDriver {
                 debug!("OBS reset zoom: '{}' scale=(1.0,1.0)",
                     self.cache_key(scene_name, source_name));
 
+                Ok(())
+            },
+
+            "selectCamera" => {
+                let camera_id = params.get(0)
+                    .and_then(|v| v.as_str())
+                    .context("Camera ID required")?;
+                
+                let mut state = self.camera_control_state.write();
+                let config_guard = self.camera_control_config.read();
+                let config = config_guard.as_ref()
+                    .context("Camera control not configured")?;
+                
+                // Find camera config
+                let camera = config.cameras.iter()
+                    .find(|c| c.id == camera_id)
+                    .with_context(|| format!("Camera '{}' not found", camera_id))?;
+                
+                match state.current_view_mode {
+                    ViewMode::Full => {
+                        // FULL mode: Change to full scene
+                        info!("🎬 OBS: Select camera '{}' (FULL mode) → scene '{}'", camera_id, camera.scene);
+                        
+                        drop(config_guard);
+                        drop(state);
+                        
+                        let guard = self.client.read().await;
+                        let client = guard.as_ref()
+                            .context("OBS not connected")?
+                            .clone();
+                        
+                        let studio_mode = *self.studio_mode.read();
+                        
+                        if studio_mode {
+                            client.scenes().set_current_preview_scene(&camera.scene).await?;
+                        } else {
+                            client.scenes().set_current_program_scene(&camera.scene).await?;
+                        }
+                        
+                        // Update last_camera
+                        self.camera_control_state.write().last_camera = camera_id.to_string();
+                    },
+                    ViewMode::SplitLeft | ViewMode::SplitRight => {
+                        // SPLIT mode: Change visible source in split
+                        let split_scene = match state.current_view_mode {
+                            ViewMode::SplitLeft => &config.splits.left,
+                            ViewMode::SplitRight => &config.splits.right,
+                            _ => unreachable!(),
+                        };
+                        
+                        info!("🎬 OBS: Select camera '{}' (SPLIT mode) in '{}'", camera_id, split_scene);
+                        
+                        let split_scene = split_scene.clone();
+                        drop(config_guard);
+                        drop(state);
+                        
+                        self.set_split_camera(&split_scene, camera_id).await?;
+                        
+                        // Update last_camera
+                        self.camera_control_state.write().last_camera = camera_id.to_string();
+                    },
+                }
+                
+                Ok(())
+            },
+
+            "enterSplit" => {
+                let side = params.get(0)
+                    .and_then(|v| v.as_str())
+                    .context("Side required ('left' or 'right')")?;
+                
+                let mut state = self.camera_control_state.write();
+                let config_guard = self.camera_control_config.read();
+                let config = config_guard.as_ref()
+                    .context("Camera control not configured")?;
+                
+                // Determine split scene
+                let (split_scene, new_mode) = match side {
+                    "left" => (&config.splits.left, ViewMode::SplitLeft),
+                    "right" => (&config.splits.right, ViewMode::SplitRight),
+                    _ => return Err(anyhow!("Invalid side '{}', must be 'left' or 'right'", side)),
+                };
+                
+                info!("🎬 OBS: Enter split '{}' → scene '{}'", side, split_scene);
+                
+                let split_scene = split_scene.clone();
+                let last_camera = state.last_camera.clone();
+                
+                // If last_camera is empty, use first camera
+                let last_camera = if last_camera.is_empty() {
+                    config.cameras.first()
+                        .map(|c| c.id.clone())
+                        .unwrap_or_else(|| "Main".to_string())
+                } else {
+                    last_camera
+                };
+                
+                drop(config_guard);
+                drop(state);
+                
+                // Switch to split scene
+                let guard = self.client.read().await;
+                let client = guard.as_ref()
+                    .context("OBS not connected")?
+                    .clone();
+                
+                let studio_mode = *self.studio_mode.read();
+                
+                if studio_mode {
+                    client.scenes().set_current_preview_scene(&split_scene).await?;
+                } else {
+                    client.scenes().set_current_program_scene(&split_scene).await?;
+                }
+                
+                // Set the camera in the split
+                self.set_split_camera(&split_scene, &last_camera).await?;
+                
+                // Update state
+                let mut state = self.camera_control_state.write();
+                state.current_view_mode = new_mode;
+                state.last_camera = last_camera;
+                
+                Ok(())
+            },
+
+            "exitSplit" => {
+                let mut state = self.camera_control_state.write();
+                let config_guard = self.camera_control_config.read();
+                let config = config_guard.as_ref()
+                    .context("Camera control not configured")?;
+                
+                // Find last camera scene
+                let last_camera = &state.last_camera;
+                let camera = config.cameras.iter()
+                    .find(|c| &c.id == last_camera)
+                    .or_else(|| config.cameras.first())
+                    .context("No cameras configured")?;
+                
+                info!("🎬 OBS: Exit split → camera '{}' scene '{}'", last_camera, camera.scene);
+                
+                let camera_scene = camera.scene.clone();
+                drop(config_guard);
+                drop(state);
+                
+                // Switch to full scene
+                let guard = self.client.read().await;
+                let client = guard.as_ref()
+                    .context("OBS not connected")?
+                    .clone();
+                
+                let studio_mode = *self.studio_mode.read();
+                
+                if studio_mode {
+                    client.scenes().set_current_preview_scene(&camera_scene).await?;
+                } else {
+                    client.scenes().set_current_program_scene(&camera_scene).await?;
+                }
+                
+                // Update state
+                self.camera_control_state.write().current_view_mode = ViewMode::Full;
+                
                 Ok(())
             },
 
