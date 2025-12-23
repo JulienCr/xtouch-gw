@@ -3,7 +3,7 @@
 use crate::config::PageConfig;
 use crate::state::{AppKey, MidiAddr, MidiStateEntry, MidiStatus, MidiValue, Origin};
 use std::collections::HashMap;
-use tracing::{debug, info};
+use tracing::{debug, info, trace};
 
 impl super::Router {
     /// Refresh the active page (replay all known states to X-Touch)
@@ -21,7 +21,7 @@ impl super::Router {
         // Build and execute refresh plan
         let entries = self.plan_page_refresh(&page);
 
-        debug!(
+        trace!(
             "Page refresh plan: {} Notes, {} CCs, {} PBs",
             entries
                 .iter()
@@ -39,7 +39,7 @@ impl super::Router {
 
         // Log PB entries in detail
         for entry in entries.iter().filter(|e| e.addr.status == MidiStatus::PB) {
-            debug!(
+            trace!(
                 "  PB entry: ch={} value={:?} port={}",
                 entry.addr.channel.unwrap_or(0),
                 entry.value,
@@ -53,7 +53,7 @@ impl super::Router {
             let bytes = self.entry_to_midi_bytes(entry);
             if !bytes.is_empty() {
                 if entry.addr.status == MidiStatus::PB {
-                    debug!(
+                    trace!(
                         "  Converting PB entry to MIDI: ch={} value={:?} → bytes={:02X?}",
                         entry.addr.channel.unwrap_or(0),
                         entry.value,
@@ -131,7 +131,7 @@ impl super::Router {
     ) -> Option<MidiStateEntry> {
         use crate::control_mapping::{load_default_mappings, MidiSpec};
 
-        debug!(
+        trace!(
             "🔄 CC→PB transform: app={:?} page={} pb_channel={}",
             app, page.name, pb_channel
         );
@@ -140,7 +140,7 @@ impl super::Router {
         let mapping_db = match load_default_mappings() {
             Ok(db) => db,
             Err(e) => {
-                debug!("❌ Failed to load mapping DB: {}", e);
+                trace!("❌ Failed to load mapping DB: {}", e);
                 return None;
             }
         };
@@ -159,11 +159,11 @@ impl super::Router {
 
         let control_id = match control_id {
             Some(id) => {
-                debug!("  ✓ Found control_id: {}", id);
+                trace!("  ✓ Found control_id: {}", id);
                 id
             }
             None => {
-                debug!("  ❌ No control found for PB channel {}", pb_channel);
+                trace!("  ❌ No control found for PB channel {}", pb_channel);
                 return None;
             }
         };
@@ -172,25 +172,25 @@ impl super::Router {
         let page_controls = match page.controls.as_ref() {
             Some(controls) => controls,
             None => {
-                debug!("  ❌ Page has no controls");
+                trace!("  ❌ Page has no controls");
                 return None;
             }
         };
 
         let control_config = match page_controls.get(&control_id) {
             Some(config) => {
-                debug!("  ✓ Found control config for {}: app={}", control_id, config.app);
+                trace!("  ✓ Found control config for {}: app={}", control_id, config.app);
                 config
             }
             None => {
-                debug!("  ❌ Control '{}' not found in page", control_id);
+                trace!("  ❌ Control '{}' not found in page", control_id);
                 return None;
             }
         };
 
         // Ensure control's app matches the app we're querying for
         if control_config.app != app.as_str() {
-            debug!("  ❌ Control app '{}' doesn't match queried app '{:?}'", control_config.app, app);
+            trace!("  ❌ Control app '{}' doesn't match queried app '{:?}'", control_config.app, app);
             return None;
         }
 
@@ -198,13 +198,13 @@ impl super::Router {
         let midi_spec = match control_config.midi.as_ref() {
             Some(spec) => spec,
             None => {
-                debug!("  ❌ Control has no MIDI spec");
+                trace!("  ❌ Control has no MIDI spec");
                 return None;
             }
         };
 
         if !matches!(midi_spec.midi_type, crate::config::MidiType::Cc) {
-            debug!("  ❌ Control MIDI type is not CC (is {:?})", midi_spec.midi_type);
+            trace!("  ❌ Control MIDI type is not CC (is {:?})", midi_spec.midi_type);
             return None;
         }
 
@@ -212,19 +212,19 @@ impl super::Router {
         let cc_channel = match midi_spec.channel {
             Some(ch) => ch,
             None => {
-                debug!("  ❌ CC spec has no channel");
+                trace!("  ❌ CC spec has no channel");
                 return None;
             }
         };
         let cc_num = match midi_spec.cc {
             Some(num) => num,
             None => {
-                debug!("  ❌ CC spec has no cc number");
+                trace!("  ❌ CC spec has no cc number");
                 return None;
             }
         };
 
-        debug!(
+        trace!(
             "  → Querying StateStore: app={:?} CC ch={} cc={}",
             app, cc_channel, cc_num
         );
@@ -236,11 +236,11 @@ impl super::Router {
             Some(cc_num),
         ) {
             Some(entry) => {
-                debug!("  ✓ Found CC entry: value={:?}", entry.value);
+                trace!("  ✓ Found CC entry: value={:?}", entry.value);
                 entry
             }
             None => {
-                debug!("  ❌ No CC entry found in StateStore");
+                trace!("  ❌ No CC entry found in StateStore");
                 return None;
             }
         };
@@ -250,13 +250,13 @@ impl super::Router {
         let cc_value = match cc_entry.value.as_number() {
             Some(num) => num as u8,
             None => {
-                debug!("  ❌ CC value is not a number");
+                trace!("  ❌ CC value is not a number");
                 return None;
             }
         };
         let pb_value = ((cc_value as u16) << 7) | (cc_value as u16);
 
-        debug!(
+        trace!(
             "  ✓ Transform CC {} → PB {} (0x{:04X})",
             cc_value, pb_value, pb_value
         );
@@ -384,7 +384,7 @@ impl super::Router {
 
                 // Priority 2: Try to transform CC to PB (for apps like QLC+)
                 if let Some(transformed_pb) = self.try_cc_to_pb_transform(_page, app, ch) {
-                    debug!("  ✅ Adding CC→PB to plan: ch={} value={:?}", ch, transformed_pb.value);
+                    trace!("  ✅ Adding CC→PB to plan: ch={} value={:?}", ch, transformed_pb.value);
                     push_pb(&mut pb_plan, ch, transformed_pb, 2);
                     continue;
                 }
