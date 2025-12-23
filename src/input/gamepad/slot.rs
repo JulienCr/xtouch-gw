@@ -9,7 +9,7 @@
 use gilrs::Gilrs;
 use std::time::Instant;
 use crate::config::AnalogConfig;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 use super::hybrid_id::HybridControllerId;
 
 /// Represents a configured gamepad slot
@@ -108,7 +108,7 @@ impl SlotManager {
     pub fn find_slot_for_gamepad(&self, id: HybridControllerId, name: &str) -> Option<(usize, bool)> {
         // Check if already connected to a slot (shouldn't happen, but handle it)
         if let Some(idx) = self.slots.iter().position(|s| s.connected_id == Some(id)) {
-            debug!("Gamepad {} already connected to slot {}", id.to_string(), idx);
+            trace!("Gamepad {} already connected to slot {}", id.to_string(), idx);
             return Some((idx, true));
         }
 
