@@ -32,6 +32,54 @@ impl Default for CameraControlState {
 }
 
 impl ObsDriver {
+    /// Detect ViewMode from scene name using camera_control_config
+    ///
+    /// Returns:
+    /// - Some(ViewMode::SplitLeft) if scene matches left split
+    /// - Some(ViewMode::SplitRight) if scene matches right split
+    /// - Some(ViewMode::Full) if scene matches a camera scene
+    /// - None if camera control not configured or scene doesn't match
+    pub(super) fn detect_view_mode_from_scene(&self, scene_name: &str) -> Option<ViewMode> {
+        let config_guard = self.camera_control_config.read();
+        let config = config_guard.as_ref()?;
+
+        // Check if scene is a split scene
+        if scene_name == config.splits.left {
+            return Some(ViewMode::SplitLeft);
+        }
+        if scene_name == config.splits.right {
+            return Some(ViewMode::SplitRight);
+        }
+
+        // Check if scene is a camera scene
+        for camera in &config.cameras {
+            if scene_name == camera.scene {
+                return Some(ViewMode::Full);
+            }
+        }
+
+        // Unknown scene (e.g., "BRB Screen", graphics, etc.)
+        None
+    }
+
+    /// Update camera control ViewMode state based on scene name
+    ///
+    /// This should be called whenever the active scene changes (at connection
+    /// or via scene change events). It synchronizes the internal ViewMode with
+    /// the actual OBS scene.
+    pub(super) fn update_view_mode_from_scene(&self, scene_name: &str) {
+        if let Some(view_mode) = self.detect_view_mode_from_scene(scene_name) {
+            let mut state = self.camera_control_state.write();
+            let old_mode = state.current_view_mode;
+            state.current_view_mode = view_mode;
+
+            if old_mode != view_mode {
+                debug!("ViewMode synced from scene '{}': {:?} → {:?}", scene_name, old_mode, view_mode);
+            }
+        }
+        // If None, preserve current ViewMode (non-camera scene like "BRB Screen")
+    }
+
     /// Helper: Set scene item enabled/disabled
     pub(super) async fn set_scene_item_enabled(&self, scene_name: &str, source_name: &str, enabled: bool) -> Result<()> {
         let item_id = self.resolve_item_id(scene_name, source_name).await?;

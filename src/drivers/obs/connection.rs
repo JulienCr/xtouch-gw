@@ -55,7 +55,44 @@ impl ObsDriver {
         let shutdown_flag = Arc::clone(&self.shutdown_flag);
         let activity_tracker = Arc::clone(&self.activity_tracker);
 
+        // Clone for ViewMode synchronization
+        let camera_control_config = Arc::clone(&self.camera_control_config);
+        let camera_control_state = Arc::clone(&self.camera_control_state);
+
+        // Clone for reconnection trigger
+        let driver_for_reconnect = self.clone_for_reconnect();
+        let status_callbacks = Arc::clone(&self.status_callbacks);
+        let current_status = Arc::clone(&self.current_status);
+
         tokio::spawn(async move {
+            // Helper: Sync ViewMode from scene name
+            let sync_view_mode = |scene_name: &str| {
+                use crate::drivers::obs::camera::ViewMode;
+
+                let config_guard = camera_control_config.read();
+                if let Some(config) = config_guard.as_ref() {
+                    let view_mode = if scene_name == config.splits.left {
+                        Some(ViewMode::SplitLeft)
+                    } else if scene_name == config.splits.right {
+                        Some(ViewMode::SplitRight)
+                    } else if config.cameras.iter().any(|c| c.scene == scene_name) {
+                        Some(ViewMode::Full)
+                    } else {
+                        None
+                    };
+
+                    if let Some(new_mode) = view_mode {
+                        let mut state = camera_control_state.write();
+                        let old_mode = state.current_view_mode;
+                        state.current_view_mode = new_mode;
+
+                        if old_mode != new_mode {
+                            debug!("ViewMode synced from scene '{}': {:?} → {:?}", scene_name, old_mode, new_mode);
+                        }
+                    }
+                }
+            };
+
             loop {
                 if *shutdown_flag.lock() {
                     debug!("OBS event listener shutting down");
@@ -102,6 +139,11 @@ impl ObsDriver {
                             debug!("OBS program scene changed: {}", name);
                             *program_scene.write() = name.clone();
 
+                            // Sync ViewMode if not in studio mode
+                            if !*studio_mode.read() {
+                                sync_view_mode(&name);
+                            }
+
                             // Emit signals
                             let emitters_guard = emitters.read();
                             for emit in emitters_guard.iter() {
@@ -122,6 +164,14 @@ impl ObsDriver {
                             debug!("OBS studio mode changed: {}", enabled);
                             *studio_mode.write() = enabled;
 
+                            // Sync ViewMode based on which scene is now "active"
+                            let active_scene = if enabled {
+                                preview_scene.read().clone()
+                            } else {
+                                program_scene.read().clone()
+                            };
+                            sync_view_mode(&active_scene);
+
                             // Emit signal
                             let emitters_guard = emitters.read();
                             for emit in emitters_guard.iter() {
@@ -141,6 +191,11 @@ impl ObsDriver {
                         Event::CurrentPreviewSceneChanged { name } => {
                             debug!("OBS preview scene changed: {}", name);
                             *preview_scene.write() = name.clone();
+
+                            // Sync ViewMode in studio mode
+                            if *studio_mode.read() {
+                                sync_view_mode(&name);
+                            }
 
                             // Emit signal
                             let emitters_guard = emitters.read();
@@ -164,9 +219,25 @@ impl ObsDriver {
                     }
                 }
 
-                // Stream ended (disconnected), wait before retry
-                warn!("OBS event stream closed, waiting for reconnection...");
-                tokio::time::sleep(Duration::from_secs(2)).await;
+                // Stream ended (disconnected)
+                warn!("🔌 OBS event stream closed");
+
+                // Emit disconnected status
+                {
+                    *current_status.write() = crate::tray::ConnectionStatus::Disconnected;
+                    for callback in status_callbacks.read().iter() {
+                        callback(crate::tray::ConnectionStatus::Disconnected);
+                    }
+                }
+
+                // Trigger automatic reconnection
+                let driver_clone = driver_for_reconnect.clone_for_reconnect();
+                tokio::spawn(async move {
+                    driver_clone.schedule_reconnect().await;
+                });
+
+                // Exit listener - new one will be spawned after successful reconnect
+                break;
             }
         });
     }
@@ -221,6 +292,16 @@ impl ObsDriver {
             debug!("OBS preview scene: {}", preview_scene);
         }
 
+        // Sync ViewMode from current scene
+        // In studio mode, preview is the "active" scene for camera control
+        // In normal mode, program is the active scene
+        let active_scene = if studio_mode {
+            self.preview_scene.read().clone()
+        } else {
+            self.program_scene.read().clone()
+        };
+        self.update_view_mode_from_scene(&active_scene);
+
         // Emit initial indicator signals
         self.emit_all_signals().await;
 
@@ -229,35 +310,40 @@ impl ObsDriver {
 
     /// Schedule reconnection with exponential backoff
     pub(super) async fn schedule_reconnect(&self) {
-        if *self.shutdown_flag.lock() {
-            return;
-        }
+        loop {
+            if *self.shutdown_flag.lock() {
+                return;
+            }
 
-        let retry_count = {
-            let mut count = self.reconnect_count.lock();
-            *count += 1;
-            *count
-        };
+            let retry_count = {
+                let mut count = self.reconnect_count.lock();
+                *count += 1;
+                *count
+            };
 
-        let delay_ms = std::cmp::min(30_000, 1000 * retry_count);
-        info!("⏳ OBS reconnect #{} in {}ms", retry_count, delay_ms);
+            let delay_ms = std::cmp::min(30_000, 1000 * retry_count);
+            debug!("⏳ OBS reconnect #{} in {}ms", retry_count, delay_ms);
 
-        // Emit reconnecting status
-        self.emit_status(crate::tray::ConnectionStatus::Reconnecting {
-            attempt: retry_count,
-        });
+            // Emit reconnecting status
+            self.emit_status(crate::tray::ConnectionStatus::Reconnecting {
+                attempt: retry_count,
+            });
 
-        sleep(Duration::from_millis(delay_ms as u64)).await;
+            sleep(Duration::from_millis(delay_ms as u64)).await;
 
-        if *self.shutdown_flag.lock() {
-            return;
-        }
+            if *self.shutdown_flag.lock() {
+                return;
+            }
 
-        match self.connect().await {
-            Ok(_) => {},
-            Err(e) => {
-                warn!("OBS reconnect failed: {}", e);
-                // The next reconnect will be triggered by operations that need the connection
+            match self.connect().await {
+                Ok(_) => {
+                    info!("✅ OBS reconnection successful");
+                    return; // Success, exit loop
+                },
+                Err(e) => {
+                    debug!("OBS reconnect #{} failed: {}", retry_count, e);
+                    // Continue loop for next attempt
+                }
             }
         }
     }

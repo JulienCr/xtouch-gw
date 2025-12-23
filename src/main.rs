@@ -389,11 +389,7 @@ async fn run_app(
 
     // Register OBS driver if configured
     if let Some(obs_config) = &config.obs {
-        let obs_driver = Arc::new(ObsDriver::new(
-            obs_config.host.clone(),
-            obs_config.port,
-            obs_config.password.clone(),
-        ));
+        let obs_driver = Arc::new(ObsDriver::from_config(obs_config));
 
         // Subscribe to OBS indicator signals before registering
         let router_clone = router.clone();

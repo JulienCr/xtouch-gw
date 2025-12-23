@@ -26,15 +26,44 @@ impl Driver for ObsDriver {
             *self.activity_tracker.write() = Some(tracker);
         }
 
-        self.connect().await?;
+        // Attempt initial connection
+        match self.connect().await {
+            Ok(_) => {
+                info!("✅ OBS connected on init");
+            },
+            Err(e) => {
+                warn!("⚠️  OBS connection failed on init: {}", e);
+                warn!("🔄 Will retry automatically in background");
+
+                self.emit_status(crate::tray::ConnectionStatus::Disconnected);
+
+                // Start background reconnection
+                let driver_clone = self.clone_for_reconnect();
+                tokio::spawn(async move {
+                    driver_clone.schedule_reconnect().await;
+                });
+            }
+        }
+
+        // Always succeed - driver is registered even if disconnected
         Ok(())
     }
 
     async fn execute(&self, action: &str, params: Vec<Value>, ctx: ExecutionContext) -> Result<()> {
-        // Check if connected, reconnect if needed
+        // Check if connected
         if self.client.read().await.is_none() {
-            warn!("OBS client disconnected, attempting to reconnect...");
-            self.connect().await?;
+            warn!("⚠️  OBS not connected, action dropped");
+
+            // Trigger reconnect if not already running
+            if *self.reconnect_count.lock() == 0 {
+                debug!("Triggering background reconnection");
+                let driver_clone = self.clone_for_reconnect();
+                tokio::spawn(async move {
+                    driver_clone.schedule_reconnect().await;
+                });
+            }
+
+            return Err(anyhow!("OBS not connected"));
         }
 
         // Record outbound activity
@@ -534,14 +563,16 @@ impl Driver for ObsDriver {
                 } else {
                     client.scenes().set_current_program_scene(&split_scene).await?;
                 }
-                
+
+                // Update state BEFORE setting camera (so state is updated even if camera fails)
+                {
+                    let mut state = self.camera_control_state.write();
+                    state.current_view_mode = new_mode;
+                    state.last_camera = last_camera.clone();
+                }
+
                 // Set the camera in the split
                 self.set_split_camera(&split_scene, &last_camera).await?;
-                
-                // Update state
-                let mut state = self.camera_control_state.write();
-                state.current_view_mode = new_mode;
-                state.last_camera = last_camera;
                 
                 Ok(())
             },

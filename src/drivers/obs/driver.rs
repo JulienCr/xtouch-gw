@@ -179,5 +179,39 @@ impl ObsDriver {
             camera_control_config: Arc::clone(&self.camera_control_config),
         }
     }
+
+    /// Clone fields needed for reconnection task
+    pub(super) fn clone_for_reconnect(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            host: self.host.clone(),
+            port: self.port,
+            password: self.password.clone(),
+            client: Arc::clone(&self.client),
+            studio_mode: Arc::clone(&self.studio_mode),
+            program_scene: Arc::clone(&self.program_scene),
+            preview_scene: Arc::clone(&self.preview_scene),
+            transform_cache: Arc::clone(&self.transform_cache),
+            item_id_cache: Arc::clone(&self.item_id_cache),
+            indicator_emitters: Arc::clone(&self.indicator_emitters),
+            last_selected_sent: Arc::clone(&self.last_selected_sent),
+            status_callbacks: Arc::clone(&self.status_callbacks),
+            current_status: Arc::clone(&self.current_status),
+            activity_tracker: Arc::clone(&self.activity_tracker),
+            reconnect_count: Arc::clone(&self.reconnect_count),
+            shutdown_flag: Arc::clone(&self.shutdown_flag),
+            analog_pan_gain: Arc::clone(&self.analog_pan_gain),
+            analog_zoom_gain: Arc::clone(&self.analog_zoom_gain),
+            analog_deadzone: Arc::clone(&self.analog_deadzone),
+            analog_gamma: Arc::clone(&self.analog_gamma),
+            analog_rates: Arc::clone(&self.analog_rates),
+            analog_timer_active: Arc::clone(&self.analog_timer_active),
+            last_analog_tick: Arc::clone(&self.last_analog_tick),
+            analog_error_count: Arc::clone(&self.analog_error_count),
+            encoder_tracker: Arc::clone(&self.encoder_tracker),
+            camera_control_state: Arc::clone(&self.camera_control_state),
+            camera_control_config: Arc::clone(&self.camera_control_config),
+        }
+    }
 }
 
