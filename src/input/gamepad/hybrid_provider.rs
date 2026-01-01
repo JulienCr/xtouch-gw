@@ -100,7 +100,7 @@ impl HybridGamepadProvider {
             // Check for shutdown signal (non-blocking)
             match shutdown_rx.try_recv() {
                 Ok(_) | Err(mpsc::error::TryRecvError::Disconnected) => {
-                    info!("Hybrid gamepad provider shutting down");
+                    debug!("Hybrid gamepad provider shutting down");
                     break;
                 }
                 Err(mpsc::error::TryRecvError::Empty) => {}
@@ -132,7 +132,7 @@ impl HybridGamepadProvider {
     pub async fn shutdown(&mut self) -> Result<()> {
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(()).await;
-            info!("Hybrid gamepad provider shutdown requested");
+            debug!("Hybrid gamepad provider shutdown requested");
         }
         Ok(())
     }
@@ -166,7 +166,7 @@ impl HybridProviderState {
         // Initialize gilrs (always required)
         let gilrs = match Gilrs::new() {
             Ok(g) => {
-                info!("gilrs initialized (WGI backend enabled)");
+                debug!("gilrs initialized (WGI backend enabled)");
                 g
             }
             Err(e) => {
@@ -178,7 +178,7 @@ impl HybridProviderState {
         // Try to initialize XInput (optional, graceful fallback)
         let (xinput_handle, xinput_available) = match XInputHandle::load_default() {
             Ok(handle) => {
-                info!("XInput initialized successfully");
+                debug!("XInput initialized successfully");
                 (Some(handle), true)
             }
             Err(e) => {
@@ -208,8 +208,8 @@ impl HybridProviderState {
 
     /// Initial scan for gamepads (wait for Bluetooth enumeration)
     fn initial_scan(&mut self) {
-        info!("Scanning for gamepads...");
-        info!("⏳ Waiting for gamepad enumeration (3 seconds)...");
+        debug!("Scanning for gamepads...");
+        debug!("Waiting for gamepad enumeration (3 seconds)...");
 
         let scan_start = Instant::now();
         let scan_duration = Duration::from_secs(3);
@@ -316,7 +316,7 @@ impl HybridProviderState {
         if gilrs_count == 0 && xinput_count == 0 {
             warn!("⚠️  No gamepads detected at all");
         } else {
-            info!("Found {} gilrs gamepad(s) and {} XInput gamepad(s):", gilrs_count, xinput_count);
+            debug!("Found {} gilrs gamepad(s) and {} XInput gamepad(s):", gilrs_count, xinput_count);
 
             // List gilrs gamepads
             let xinput_has_controllers = self.xinput_connected.iter().any(|&c| c);
@@ -325,7 +325,7 @@ impl HybridProviderState {
                 if xinput_has_controllers && Self::is_xbox_name(name) {
                     debug!("  - gilrs {:?}: \"{}\" (will use XInput instead)", id, name);
                 } else {
-                    info!("  - gilrs {:?}: \"{}\"", id, name);
+                    debug!("  - gilrs {:?}: \"{}\"", id, name);
                 }
             }
 
@@ -333,7 +333,7 @@ impl HybridProviderState {
             if let Some(ref handle) = self.xinput_handle {
                 for user_index in 0..4u32 {
                     if let Ok(Some(_)) = poll_xinput_controller(handle, user_index) {
-                        info!("  - XInput {}: \"XInput Controller {}\"", user_index, user_index + 1);
+                        debug!("  - XInput {}: \"XInput Controller {}\"", user_index, user_index + 1);
                     }
                 }
             }
