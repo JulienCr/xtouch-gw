@@ -356,7 +356,7 @@ impl XTouchDriver {
             },
         };
 
-        self.send(&message).await;
+        self.send(&message).await?;
 
         Ok(())
     }
@@ -665,7 +665,7 @@ impl XTouchDriver {
                 note,
                 velocity: 0, // Velocity 0 turns off LED
             };
-            self.send(&message).await;
+            self.send(&message).await?;
             // Small delay between messages to avoid overwhelming MIDI buffer
             tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
         }

@@ -250,7 +250,28 @@ impl MidiMessage {
             _ => None,
         }
     }
-    
+
+    /// Get the normalized value (0.0-1.0) from this MIDI message
+    /// Returns None for messages without continuous values
+    pub fn normalized_value(&self) -> Option<f64> {
+        match *self {
+            MidiMessage::PitchBend { value, .. } => {
+                Some(convert::to_percent_14bit(value) as f64 / 100.0)
+            }
+            MidiMessage::ControlChange { value, .. } => {
+                Some(convert::to_percent_7bit(value) as f64 / 100.0)
+            }
+            MidiMessage::NoteOn { velocity, .. } | MidiMessage::NoteOff { velocity, .. } => {
+                Some(convert::to_percent_7bit(velocity) as f64 / 100.0)
+            }
+            MidiMessage::ChannelPressure { pressure, .. } |
+            MidiMessage::PolyPressure { pressure, .. } => {
+                Some(convert::to_percent_7bit(pressure) as f64 / 100.0)
+            }
+            _ => None,
+        }
+    }
+
     /// Check if this is a channel message
     pub fn is_channel_message(&self) -> bool {
         self.channel().is_some()
@@ -317,8 +338,11 @@ pub mod convert {
     }
     
     /// Convert 7-bit value (0-127) to 14-bit value (0-16383)
+    /// Uses linear scaling: 0 → 0, 127 → 16383
     pub fn to_14bit(value_7bit: u8) -> u16 {
-        (value_7bit as u16) << 7
+        // Linear scaling: value * 129 gives 127 * 129 = 16383
+        // This properly maps the full 7-bit range to full 14-bit range
+        (value_7bit as u16) * 129
     }
     
     /// Convert 14-bit value to percentage (0-100)
@@ -349,6 +373,32 @@ pub mod convert {
     /// Convert 8-bit value to 14-bit value
     pub fn from_8bit(value_8bit: u8) -> u16 {
         (value_8bit as u16) << 6
+    }
+
+    /// Convert config channel (1-based) to MIDI channel (0-based)
+    /// Config files use 1-16, MIDI protocol uses 0-15
+    #[inline]
+    pub fn config_channel_to_midi(channel: u8) -> u8 {
+        channel.saturating_sub(1)
+    }
+
+    /// Convert MIDI channel (0-based) to config channel (1-based)
+    /// MIDI protocol uses 0-15, config files use 1-16
+    #[inline]
+    pub fn midi_channel_to_config(channel: u8) -> u8 {
+        channel.saturating_add(1)
+    }
+
+    /// Convert normalized value (0.0-1.0) to 7-bit MIDI value (0-127)
+    #[inline]
+    pub fn denormalize_to_7bit(normalized: f64) -> u8 {
+        from_percent_7bit((normalized * 100.0).clamp(0.0, 100.0) as f32)
+    }
+
+    /// Convert normalized value (0.0-1.0) to 14-bit MIDI value (0-16383)
+    #[inline]
+    pub fn denormalize_to_14bit(normalized: f64) -> u16 {
+        from_percent_14bit((normalized * 100.0).clamp(0.0, 100.0) as f32)
     }
 }
 

@@ -246,7 +246,7 @@ impl super::Router {
         };
 
         // 5. Transform CC (7-bit) to PB (14-bit)
-        // Use TypeScript fast approximation: (v7 << 7) | v7
+        // Use proper linear scaling via centralized conversion
         let cc_value = match cc_entry.value.as_number() {
             Some(num) => num as u8,
             None => {
@@ -254,7 +254,7 @@ impl super::Router {
                 return None;
             }
         };
-        let pb_value = ((cc_value as u16) << 7) | (cc_value as u16);
+        let pb_value = crate::midi::convert::to_14bit(cc_value);
 
         trace!(
             "  ✓ Transform CC {} → PB {} (0x{:04X})",

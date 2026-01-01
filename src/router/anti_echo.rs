@@ -8,6 +8,27 @@ use crate::state::{MidiStateEntry, MidiStatus};
 use std::collections::HashMap;
 use tracing::trace;
 
+/// Generate a consistent shadow key for MIDI state tracking
+/// Format: "{status_lowercase}|{channel}|{data1}"
+fn make_shadow_key(status: MidiStatus, channel: u8, data1: u8) -> String {
+    let status_str = match status {
+        MidiStatus::Note => "note",
+        MidiStatus::CC => "cc",
+        MidiStatus::PB => "pb",
+        MidiStatus::SysEx => "sysex",
+    };
+    format!("{}|{}|{}", status_str, channel, data1)
+}
+
+/// Generate shadow key from a MidiStateEntry
+fn make_shadow_key_from_entry(entry: &MidiStateEntry) -> String {
+    make_shadow_key(
+        entry.addr.status,
+        entry.addr.channel.unwrap_or(0),
+        entry.addr.data1.unwrap_or(0),
+    )
+}
+
 /// Anti-echo time windows (in milliseconds) per MIDI status type
 pub(crate) const ANTI_ECHO_WINDOWS: &[(MidiStatus, u64)] = &[
     (MidiStatus::PB, 250),   // Pitch Bend: motors need time to settle
@@ -58,12 +79,7 @@ impl super::Router {
             None => return false,
         };
 
-        let key = format!(
-            "{}|{}|{}",
-            entry.addr.status,
-            entry.addr.channel.unwrap_or(0),
-            entry.addr.data1.unwrap_or(0)
-        );
+        let key = make_shadow_key_from_entry(entry);
 
         if let Some(prev) = app_shadow.get(&key) {
             let value = entry.value.as_number().unwrap_or(0);
@@ -87,12 +103,7 @@ impl super::Router {
 
     /// Update shadow state after sending to app
     pub(crate) fn update_app_shadow(&self, app_key: &str, entry: &MidiStateEntry) {
-        let key = format!(
-            "{}|{}|{}",
-            entry.addr.status,
-            entry.addr.channel.unwrap_or(0),
-            entry.addr.data1.unwrap_or(0)
-        );
+        let key = make_shadow_key_from_entry(entry);
 
         let value = entry.value.as_number().unwrap_or(0);
         let shadow_entry = ShadowEntry::new(value);
@@ -114,18 +125,14 @@ impl super::Router {
 
     /// Check Last-Write-Wins: should suppress feedback if user action was recent
     pub(crate) fn should_suppress_lww(&self, entry: &MidiStateEntry) -> bool {
-        let key = format!(
-            "{}|{}|{}",
-            entry.addr.status,
-            entry.addr.channel.unwrap_or(0),
-            entry.addr.data1.unwrap_or(0)
-        );
+        let key = make_shadow_key_from_entry(entry);
 
+        // Use blocking read to avoid silent failures
+        // This is acceptable since reads are fast and we need correctness
         let last_user_ts = self
             .last_user_action_ts
-            .try_read()
-            .ok()
-            .and_then(|ts_map| ts_map.get(&key).copied())
+            .read()
+            .map(|ts_map| ts_map.get(&key).copied().unwrap_or(0))
             .unwrap_or(0);
 
         let grace_period = match entry.addr.status {
@@ -167,16 +174,16 @@ impl super::Router {
             0x9 | 0x8 => {
                 // Note On/Off
                 let note = raw.get(1).copied().unwrap_or(0);
-                format!("note|{}|{}", channel, note)
+                make_shadow_key(MidiStatus::Note, channel, note)
             },
             0xB => {
                 // Control Change
                 let cc = raw.get(1).copied().unwrap_or(0);
-                format!("cc|{}|{}", channel, cc)
+                make_shadow_key(MidiStatus::CC, channel, cc)
             },
             0xE => {
                 // Pitch Bend
-                format!("pb|{}|0", channel)
+                make_shadow_key(MidiStatus::PB, channel, 0)
             },
             _ => return,
         };

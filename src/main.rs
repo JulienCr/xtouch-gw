@@ -8,7 +8,6 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-mod cli;
 mod config;
 mod control_mapping;
 mod drivers;
@@ -263,13 +262,7 @@ async fn run_app(
         // Convert LcdColor to u8 values
         let colors_u8: Option<Vec<u8>> = page.lcd.as_ref().and_then(|lcd| {
             lcd.colors.as_ref().map(|colors| {
-                colors
-                    .iter()
-                    .map(|c| match c {
-                        crate::config::LcdColor::Numeric(n) => (*n as u8).min(7),
-                        crate::config::LcdColor::Named(_) => 0, // TODO: Parse named colors
-                    })
-                    .collect()
+                colors.iter().map(|c| c.to_u8()).collect()
             })
         });
 
@@ -332,7 +325,7 @@ async fn run_app(
     let mut setpoint_apply_rx = router
         .take_setpoint_receiver()
         .await
-        .expect("Failed to get setpoint receiver");
+        .ok_or_else(|| anyhow::anyhow!("Failed to get setpoint receiver"))?;
     info!("FaderSetpoint receiver initialized");
 
     // Register MIDI bridge drivers for each configured app
@@ -533,10 +526,7 @@ async fn run_app(
                         // Convert LcdColor to u8 values
                         let colors_u8: Option<Vec<u8>> = page.lcd.as_ref().and_then(|lcd| {
                             lcd.colors.as_ref().map(|colors| {
-                                colors.iter().map(|c| match c {
-                                    crate::config::LcdColor::Numeric(n) => (*n as u8).min(7),
-                                    crate::config::LcdColor::Named(_) => 0, // TODO: Parse named colors
-                                }).collect()
+                                colors.iter().map(|c| c.to_u8()).collect()
                             })
                         });
 
@@ -714,9 +704,11 @@ fn init_logging(level: &str) -> Result<()> {
 }
 
 async fn shutdown_signal() {
-    tokio::signal::ctrl_c()
-        .await
-        .expect("Failed to install CTRL+C signal handler");
+    if let Err(e) = tokio::signal::ctrl_c().await {
+        tracing::error!("Failed to install CTRL+C signal handler: {}", e);
+        // Fall back to waiting indefinitely - the app will need to be killed manually
+        std::future::pending::<()>().await;
+    }
     info!("Shutdown signal received");
 }
 

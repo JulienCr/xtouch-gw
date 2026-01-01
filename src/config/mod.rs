@@ -324,6 +324,30 @@ pub enum LcdColor {
     Named(String),
 }
 
+impl LcdColor {
+    /// Convert LCD color to X-Touch color value (0-7)
+    /// Colors: 0=black, 1=red, 2=green, 3=yellow, 4=blue, 5=magenta, 6=cyan, 7=white
+    pub fn to_u8(&self) -> u8 {
+        match self {
+            LcdColor::Numeric(n) => (*n as u8).min(7),
+            LcdColor::Named(name) => match name.to_lowercase().as_str() {
+                "black" | "off" => 0,
+                "red" => 1,
+                "green" => 2,
+                "yellow" => 3,
+                "blue" => 4,
+                "magenta" | "pink" | "purple" => 5,
+                "cyan" | "aqua" => 6,
+                "white" => 7,
+                _ => {
+                    tracing::warn!("Unknown LCD color '{}', defaulting to black", name);
+                    0
+                }
+            },
+        }
+    }
+}
+
 /// MIDI passthrough configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PassthroughConfig {
@@ -480,10 +504,18 @@ impl AppConfig {
         &self,
         control_id: &str,
         mapping: &ControlMapping,
-        _midi_app_names: &std::collections::HashSet<&String>,
+        midi_app_names: &std::collections::HashSet<&String>,
     ) -> Result<()> {
         if mapping.app.is_empty() {
             anyhow::bail!("Control '{}' app name cannot be empty", control_id);
+        }
+
+        // Validate app name references a configured app (obs is special)
+        if mapping.app != "obs" && !midi_app_names.contains(&mapping.app) {
+            anyhow::bail!(
+                "Control '{}' references unknown app '{}'. Available apps: {:?}",
+                control_id, mapping.app, midi_app_names
+            );
         }
 
         // Validate MIDI specification if present

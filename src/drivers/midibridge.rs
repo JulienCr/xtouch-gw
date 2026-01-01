@@ -232,13 +232,10 @@ impl MidiBridgeDriver {
 
         match self.try_open_out() {
             Ok(_) => {},
-            Err(e) if self.optional => {
-                warn!("MIDI Bridge OUT reconnect failed (optional): {}", e);
-                // TODO: Implement automatic reconnection
-                // Currently skipped due to Send trait complexity with MIDI connections
-            },
             Err(e) => {
                 warn!("MIDI Bridge OUT reconnect failed: {}", e);
+                // Schedule another retry using Box::pin for recursive async
+                Box::pin(self.schedule_out_reconnect()).await;
             }
         }
     }
@@ -276,13 +273,10 @@ impl MidiBridgeDriver {
 
         match self.try_open_in() {
             Ok(_) => {},
-            Err(e) if self.optional => {
-                warn!("MIDI Bridge IN reconnect failed (optional): {}", e);
-                // TODO: Implement automatic reconnection
-                // Currently skipped due to Send trait complexity with MIDI connections
-            },
             Err(e) => {
                 warn!("MIDI Bridge IN reconnect failed: {}", e);
+                // Schedule another retry using Box::pin for recursive async
+                Box::pin(self.schedule_in_reconnect()).await;
             }
         }
     }
@@ -446,7 +440,7 @@ impl MidiBridgeDriver {
                 },
                 None => {
                     trace!("Bridge TX skipped (not connected): {}", self.to_port);
-                    Ok(())
+                    Err(anyhow!("MIDI Bridge '{}' not connected", self.to_port))
                 }
             }
         } else {
@@ -475,7 +469,27 @@ impl Driver for MidiBridgeDriver {
             Ok(_) => {},
             Err(e) if self.optional => {
                 warn!("MIDI Bridge OUT open failed (optional): {}", e);
-                // TODO: Implement background reconnection task
+                // Spawn background reconnection task
+                let self_clone = Self {
+                    name: self.name.clone(),
+                    to_port: self.to_port.clone(),
+                    from_port: self.from_port.clone(),
+                    filter: self.filter.clone(),
+                    transform: self.transform.clone(),
+                    optional: self.optional,
+                    midi_out: self.midi_out.clone(),
+                    midi_in: self.midi_in.clone(),
+                    feedback_callback: self.feedback_callback.clone(),
+                    status_callbacks: self.status_callbacks.clone(),
+                    current_status: self.current_status.clone(),
+                    activity_tracker: self.activity_tracker.clone(),
+                    reconnect_count_out: self.reconnect_count_out.clone(),
+                    reconnect_count_in: self.reconnect_count_in.clone(),
+                    shutdown_flag: self.shutdown_flag.clone(),
+                };
+                tokio::spawn(async move {
+                    self_clone.schedule_out_reconnect().await;
+                });
             },
             Err(e) => return Err(e),
         }
@@ -485,7 +499,27 @@ impl Driver for MidiBridgeDriver {
             Ok(_) => {},
             Err(e) if self.optional => {
                 warn!("MIDI Bridge IN open failed (optional): {}", e);
-                // TODO: Implement background reconnection task
+                // Spawn background reconnection task
+                let self_clone = Self {
+                    name: self.name.clone(),
+                    to_port: self.to_port.clone(),
+                    from_port: self.from_port.clone(),
+                    filter: self.filter.clone(),
+                    transform: self.transform.clone(),
+                    optional: self.optional,
+                    midi_out: self.midi_out.clone(),
+                    midi_in: self.midi_in.clone(),
+                    feedback_callback: self.feedback_callback.clone(),
+                    status_callbacks: self.status_callbacks.clone(),
+                    current_status: self.current_status.clone(),
+                    activity_tracker: self.activity_tracker.clone(),
+                    reconnect_count_out: self.reconnect_count_out.clone(),
+                    reconnect_count_in: self.reconnect_count_in.clone(),
+                    shutdown_flag: self.shutdown_flag.clone(),
+                };
+                tokio::spawn(async move {
+                    self_clone.schedule_in_reconnect().await;
+                });
             },
             Err(e) => return Err(e),
         }
