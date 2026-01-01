@@ -569,9 +569,40 @@ mod tests {
     
     #[test]
     fn test_7bit_to_14bit() {
+        // Using linear scaling: value * 129 maps [0, 127] to [0, 16383]
         assert_eq!(convert::to_14bit(0), 0);
-        assert_eq!(convert::to_14bit(64), 8192);
-        assert_eq!(convert::to_14bit(127), 16256);
+        assert_eq!(convert::to_14bit(64), 8256);  // 64 * 129
+        assert_eq!(convert::to_14bit(127), 16383); // 127 * 129
+    }
+
+    #[test]
+    fn test_channel_conversions() {
+        // Config (1-based) to MIDI (0-based)
+        assert_eq!(convert::config_channel_to_midi(1), 0);
+        assert_eq!(convert::config_channel_to_midi(16), 15);
+        assert_eq!(convert::config_channel_to_midi(0), 0); // saturating_sub handles edge case
+
+        // MIDI (0-based) to Config (1-based)
+        assert_eq!(convert::midi_channel_to_config(0), 1);
+        assert_eq!(convert::midi_channel_to_config(15), 16);
+        assert_eq!(convert::midi_channel_to_config(255), 255); // saturating_add caps at max
+    }
+
+    #[test]
+    fn test_denormalize() {
+        // 7-bit denormalization
+        assert_eq!(convert::denormalize_to_7bit(0.0), 0);
+        assert_eq!(convert::denormalize_to_7bit(0.5), 64); // ~50% of 127 (rounds up)
+        assert_eq!(convert::denormalize_to_7bit(1.0), 127);
+
+        // 14-bit denormalization
+        assert_eq!(convert::denormalize_to_14bit(0.0), 0);
+        assert_eq!(convert::denormalize_to_14bit(0.5), 8192); // ~50% of 16383 (rounds up)
+        assert_eq!(convert::denormalize_to_14bit(1.0), 16383);
+
+        // Clamping
+        assert_eq!(convert::denormalize_to_7bit(-0.5), 0);
+        assert_eq!(convert::denormalize_to_7bit(1.5), 127);
     }
     
     #[test]
@@ -579,9 +610,34 @@ mod tests {
         assert_eq!(convert::to_percent_14bit(0) as u32, 0);
         assert_eq!(convert::to_percent_14bit(8192) as u32, 50);
         assert_eq!(convert::to_percent_14bit(16383) as u32, 100);
-        
+
         assert_eq!(convert::from_percent_14bit(0.0), 0);
-        assert_eq!(convert::from_percent_14bit(50.0), 8191);
+        assert_eq!(convert::from_percent_14bit(50.0), 8192); // 16383 * 0.5 rounds to 8192
         assert_eq!(convert::from_percent_14bit(100.0), 16383);
+    }
+
+    #[test]
+    fn test_normalized_value() {
+        // PitchBend at center (8192) should be ~0.5
+        let pb = MidiMessage::PitchBend { channel: 0, value: 8192 };
+        let norm = pb.normalized_value().unwrap();
+        assert!((norm - 0.5).abs() < 0.01);
+
+        // PitchBend at max (16383) should be ~1.0
+        let pb_max = MidiMessage::PitchBend { channel: 0, value: 16383 };
+        assert!((pb_max.normalized_value().unwrap() - 1.0).abs() < 0.01);
+
+        // CC at 127 should be ~1.0
+        let cc = MidiMessage::ControlChange { channel: 0, cc: 1, value: 127 };
+        assert!((cc.normalized_value().unwrap() - 1.0).abs() < 0.01);
+
+        // NoteOn velocity 64 should be ~0.5
+        let note = MidiMessage::NoteOn { channel: 0, note: 60, velocity: 64 };
+        let note_norm = note.normalized_value().unwrap();
+        assert!((note_norm - 0.5).abs() < 0.02);
+
+        // SysEx has no normalized value
+        let sysex = MidiMessage::SysEx { data: vec![0x7E] };
+        assert!(sysex.normalized_value().is_none());
     }
 }

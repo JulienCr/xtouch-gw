@@ -231,7 +231,6 @@ impl SlotManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gilrs::GamepadId;
 
     #[test]
     fn test_slot_matching() {
@@ -253,27 +252,29 @@ mod tests {
 
     #[test]
     fn test_slot_manager_assignment() {
+        // Note: Using only XInput IDs for testing since GamepadId cannot be
+        // constructed directly in newer gilrs versions.
         let mut manager = SlotManager::new(vec![
             ("Xbox".to_string(), None),
-            ("Nintendo".to_string(), None),
+            ("PlayStation".to_string(), None),
         ]);
 
-        // Simulate hybrid gamepad IDs
+        // Simulate gamepad IDs
         let xbox_id = HybridControllerId::from_xinput(0);
-        let switch_id = HybridControllerId::from_gilrs(GamepadId::from(0));
-        let ps_id = HybridControllerId::from_gilrs(GamepadId::from(1));
+        let ps_id = HybridControllerId::from_xinput(1);
+        let switch_id = HybridControllerId::from_xinput(2);
 
-        // Xbox should match slot 0
-        let (slot_idx, _) = manager.find_slot_for_gamepad(xbox_id, "XInput Controller 1").unwrap();
+        // Xbox controller should match slot 0 (pattern "Xbox")
+        let (slot_idx, _) = manager.find_slot_for_gamepad(xbox_id, "Xbox Wireless Controller").unwrap();
         assert_eq!(slot_idx, 0);
-        manager.get_slot_mut(slot_idx).unwrap().connect(xbox_id, "XInput Controller 1".to_string());
+        manager.get_slot_mut(slot_idx).unwrap().connect(xbox_id, "Xbox Wireless Controller".to_string());
 
-        // Switch should match slot 1
-        let (slot_idx, _) = manager.find_slot_for_gamepad(switch_id, "Nintendo Switch Pro").unwrap();
+        // PlayStation controller should match slot 1 (pattern "PlayStation")
+        let (slot_idx, _) = manager.find_slot_for_gamepad(ps_id, "PlayStation DualSense").unwrap();
         assert_eq!(slot_idx, 1);
 
-        // PS4 should find no slot
-        assert!(manager.find_slot_for_gamepad(ps_id, "PS4 Controller").is_none());
+        // Nintendo controller should find no slot (no "Nintendo" pattern configured)
+        assert!(manager.find_slot_for_gamepad(switch_id, "Nintendo Switch Pro").is_none());
     }
 
     #[test]

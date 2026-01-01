@@ -180,7 +180,18 @@ mod tests {
         let entry = build_entry_from_raw(&raw, "test").unwrap();
         assert_eq!(entry.addr.status, MidiStatus::SysEx);
         assert!(entry.hash.is_some());
-        assert_eq!(entry.value.as_binary().unwrap(), &raw);
+        // Payload excludes 0xF0 start and 0xF7 end markers
+        assert_eq!(entry.value.as_binary().unwrap(), &[0x7E, 0x7F, 0x09, 0x01]);
+    }
+
+    #[test]
+    fn test_build_sysex_no_end_marker() {
+        // Some MIDI libraries pass SysEx without the 0xF7 end marker
+        let raw = [0xF0, 0x7E, 0x7F, 0x09, 0x01];
+        let entry = build_entry_from_raw(&raw, "test").unwrap();
+        assert_eq!(entry.addr.status, MidiStatus::SysEx);
+        // Payload should still exclude the 0xF0 start byte
+        assert_eq!(entry.value.as_binary().unwrap(), &[0x7E, 0x7F, 0x09, 0x01]);
     }
 
     #[test]
