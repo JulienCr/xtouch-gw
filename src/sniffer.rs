@@ -298,12 +298,18 @@ async fn websocket_handler(ws: WebSocketUpgrade) -> impl IntoResponse {
     ws.on_upgrade(handle_websocket)
 }
 
-async fn handle_websocket(_socket: WebSocket) {
-    // This would implement real-time MIDI streaming over WebSocket
-    // For now, just a placeholder
-    loop {
-        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-        // Send MIDI events over WebSocket
+async fn handle_websocket(mut socket: WebSocket) {
+    use axum::extract::ws::Message;
+
+    // WebSocket MIDI streaming is not yet implemented
+    // Close the connection gracefully with a message
+    if let Err(e) = socket.send(Message::Text(
+        r#"{"error": "WebSocket MIDI streaming not yet implemented"}"#.to_string()
+    )).await {
+        tracing::debug!("Failed to send WebSocket close message: {}", e);
+    }
+    if let Err(e) = socket.close().await {
+        tracing::debug!("Failed to close WebSocket: {}", e);
     }
 }
 

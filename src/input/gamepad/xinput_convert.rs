@@ -236,19 +236,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_normalize_stick() {
-        // Dead zone
-        assert_eq!(normalize_stick(0), 0.0);
-        assert_eq!(normalize_stick(7000), 0.0);
-        assert_eq!(normalize_stick(-7000), 0.0);
+    fn test_normalize_stick_radial() {
+        const DEADZONE: f32 = 7849.0;
 
-        // Full deflection
-        assert_eq!(normalize_stick(32767), 1.0);
-        assert_eq!(normalize_stick(-32768), -1.0);
+        // Inside deadzone - should return (0, 0)
+        let (x, y) = normalize_stick_radial(0, 0, DEADZONE);
+        assert_eq!(x, 0.0);
+        assert_eq!(y, 0.0);
 
-        // Partial deflection (above deadzone)
-        let partial = normalize_stick(16000);
-        assert!(partial > 0.0 && partial < 1.0);
+        // Inside deadzone on X axis only
+        let (x, y) = normalize_stick_radial(7000, 0, DEADZONE);
+        assert_eq!(x, 0.0);
+        assert_eq!(y, 0.0);
+
+        // Inside deadzone diagonally (7000^2 + 7000^2 = ~9899 magnitude > 7849, so NOT in deadzone)
+        let (x, y) = normalize_stick_radial(7000, 7000, DEADZONE);
+        // Magnitude ~9899 > 7849, so this should be outside deadzone
+        assert!(x > 0.0 || y > 0.0);
+
+        // Full deflection on X axis
+        let (x, y) = normalize_stick_radial(32767, 0, DEADZONE);
+        assert!((x - 1.0).abs() < 0.01);
+        assert_eq!(y, 0.0);
+
+        // Full deflection on negative X axis
+        let (x, y) = normalize_stick_radial(-32768, 0, DEADZONE);
+        assert!((x + 1.0).abs() < 0.01);
+        assert_eq!(y, 0.0);
+
+        // Partial deflection above deadzone
+        let (x, y) = normalize_stick_radial(16000, 0, DEADZONE);
+        assert!(x > 0.0 && x < 1.0);
+        assert_eq!(y, 0.0);
     }
 
     #[test]

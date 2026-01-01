@@ -121,10 +121,10 @@ impl super::Router {
         // CRITICAL: Update fader setpoint for user actions (PitchBend from X-Touch)
         // This ensures the motor tracks the user's physical position
         if type_nibble == 0xE && raw.len() >= 3 {
-            // PitchBend message
-            let lsb = raw[1];
-            let msb = raw[2];
-            let value14 = (((msb as u16) << 7) | (lsb as u16)) as u16;
+            // PitchBend message - mask to 7 bits for safety
+            let lsb = raw[1] & 0x7F;
+            let msb = raw[2] & 0x7F;
+            let value14 = ((msb as u16) << 7) | (lsb as u16);
             debug!(
                 "← User moved fader: ch={} value14={}",
                 channel, value14

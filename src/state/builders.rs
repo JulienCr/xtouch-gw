@@ -33,7 +33,20 @@ pub fn build_entry_from_raw(raw: &[u8], port_id: &str) -> Option<MidiStateEntry>
 
     // SysEx (0xF0)
     if status == 0xF0 {
-        let payload = raw.to_vec();
+        // Extract payload between 0xF0 start and 0xF7 end (if present)
+        // SysEx format: F0 <manufacturer> <data...> F7
+        let end_idx = raw.len() - 1;
+        let has_end_marker = raw.len() > 1 && raw[end_idx] == 0xF7;
+
+        // Payload excludes start byte (0xF0) and end byte (0xF7 if present)
+        let payload = if has_end_marker && raw.len() > 2 {
+            raw[1..end_idx].to_vec()
+        } else if raw.len() > 1 {
+            raw[1..].to_vec()
+        } else {
+            Vec::new()
+        };
+
         let hash = compute_hash(&payload);
         return Some(MidiStateEntry {
             addr: MidiAddr {
@@ -167,7 +180,18 @@ mod tests {
         let entry = build_entry_from_raw(&raw, "test").unwrap();
         assert_eq!(entry.addr.status, MidiStatus::SysEx);
         assert!(entry.hash.is_some());
-        assert_eq!(entry.value.as_binary().unwrap(), &raw);
+        // Payload excludes 0xF0 start and 0xF7 end markers
+        assert_eq!(entry.value.as_binary().unwrap(), &[0x7E, 0x7F, 0x09, 0x01]);
+    }
+
+    #[test]
+    fn test_build_sysex_no_end_marker() {
+        // Some MIDI libraries pass SysEx without the 0xF7 end marker
+        let raw = [0xF0, 0x7E, 0x7F, 0x09, 0x01];
+        let entry = build_entry_from_raw(&raw, "test").unwrap();
+        assert_eq!(entry.addr.status, MidiStatus::SysEx);
+        // Payload should still exclude the 0xF0 start byte
+        assert_eq!(entry.value.as_binary().unwrap(), &[0x7E, 0x7F, 0x09, 0x01]);
     }
 
     #[test]

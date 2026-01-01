@@ -144,7 +144,7 @@ impl XTouchDriver {
         // Disconnect existing connections
         self.disconnect();
 
-        info!(
+        debug!(
             "Connecting to X-Touch - Input: '{}', Output: '{}'",
             self.input_port_name, self.output_port_name
         );
@@ -158,7 +158,7 @@ impl XTouchDriver {
         let (in_port, port_name) = Self::find_input_port(&midi_in, &self.input_port_name)
             .ok_or_else(|| anyhow::anyhow!("Input port '{}' not found", self.input_port_name))?;
 
-        info!("Connecting to input port: {}", port_name);
+        debug!("Connecting to input port: {}", port_name);
 
         // Set up callback for incoming MIDI
         let event_tx = self.event_tx.clone();
@@ -217,7 +217,7 @@ impl XTouchDriver {
         let (out_port, port_name) = Self::find_output_port(&midi_out, &self.output_port_name)
             .ok_or_else(|| anyhow::anyhow!("Output port '{}' not found", self.output_port_name))?;
 
-        info!("Connecting to output port: {}", port_name);
+        debug!("Connecting to output port: {}", port_name);
 
         let output_conn = midi_out
             .connect(&out_port, "XTouch-GW")
@@ -225,7 +225,7 @@ impl XTouchDriver {
 
         self.output_conn = Some(Arc::new(Mutex::new(output_conn)));
 
-        info!("X-Touch connected successfully in {:?} mode", self.mode);
+        debug!("X-Touch connected successfully in {:?} mode", self.mode);
 
         // Send initialization sequence if in MCU mode
         if self.mode == XTouchMode::Mcu {
@@ -239,7 +239,7 @@ impl XTouchDriver {
     pub fn disconnect(&mut self) {
         self.input_conn = None;
         self.output_conn = None;
-        info!("X-Touch disconnected");
+        debug!("X-Touch disconnected");
     }
 
     /// Check if connected
@@ -304,7 +304,7 @@ impl XTouchDriver {
 
     /// Initialize MCU mode
     async fn init_mcu_mode(&self) -> Result<()> {
-        info!("Initializing MCU mode");
+        debug!("Initializing MCU mode");
 
         // Send device inquiry
         let device_inquiry = vec![0xF0, 0x00, 0x00, 0x66, 0x14, 0x00, 0xF7];
@@ -356,7 +356,7 @@ impl XTouchDriver {
             },
         };
 
-        self.send(&message).await;
+        self.send(&message).await?;
 
         Ok(())
     }
@@ -655,7 +655,7 @@ impl XTouchDriver {
     /// - Resets all faders to 0
     /// - Optionally clears LCD displays
     pub async fn reset_all(&self, clear_lcds: bool) -> Result<()> {
-        info!("🔄 Resetting X-Touch hardware...");
+        debug!("Resetting X-Touch hardware...");
 
         // Turn off all button LEDs (notes 0-101 on channel 1)
         // Matches TypeScript setAllButtonsVelocity(driver, 1, 0, 101, 0, 2)
@@ -665,7 +665,7 @@ impl XTouchDriver {
                 note,
                 velocity: 0, // Velocity 0 turns off LED
             };
-            self.send(&message).await;
+            self.send(&message).await?;
             // Small delay between messages to avoid overwhelming MIDI buffer
             tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
         }
@@ -681,7 +681,7 @@ impl XTouchDriver {
             self.clear_all_lcds().await?;
         }
 
-        info!("✅ X-Touch hardware reset complete");
+        debug!("X-Touch hardware reset complete");
         Ok(())
     }
 }

@@ -33,7 +33,7 @@ impl super::Router {
     ///
     /// The driver will be initialized immediately upon registration
     pub async fn register_driver(&self, name: String, driver: Arc<dyn Driver>) -> Result<()> {
-        info!("Registering driver '{}'...", name);
+        debug!("Registering driver '{}'...", name);
 
         // Create execution context
         let ctx = self.create_execution_context().await;
@@ -48,7 +48,7 @@ impl super::Router {
         let mut drivers = self.drivers.write().await;
         drivers.insert(name.clone(), driver);
 
-        info!("✅ Driver '{}' registered and initialized", name);
+        debug!("Driver '{}' registered and initialized", name);
         Ok(())
     }
 
@@ -66,7 +66,7 @@ impl super::Router {
 
     /// Shutdown all registered drivers
     pub async fn shutdown_all_drivers(&self) -> Result<()> {
-        info!("Shutting down all drivers...");
+        debug!("Shutting down all drivers...");
 
         let drivers = self.drivers.read().await;
         let driver_list: Vec<_> = drivers
@@ -77,12 +77,12 @@ impl super::Router {
 
         let mut errors = Vec::new();
         for (name, driver) in driver_list {
-            info!("Shutting down driver '{}'...", name);
+            debug!("Shutting down driver '{}'...", name);
             if let Err(e) = driver.shutdown().await {
                 warn!("Failed to shutdown driver '{}': {}", name, e);
                 errors.push((name, e));
             } else {
-                info!("✅ Driver '{}' shut down", name);
+                debug!("Driver '{}' shut down", name);
             }
         }
 
@@ -101,7 +101,7 @@ impl super::Router {
 
         // Clear the driver registry
         self.drivers.write().await.clear();
-        info!("All drivers shut down successfully");
+        debug!("All drivers shut down successfully");
         Ok(())
     }
 

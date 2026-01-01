@@ -17,7 +17,7 @@ pub mod visualizer_state;
 
 // use anyhow::{Result, Context};
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::config::GamepadConfig;
 use crate::router::Router;
@@ -40,7 +40,7 @@ pub async fn init(config: &GamepadConfig, router: Arc<Router>) -> Option<Gamepad
         return None;
     }
 
-    info!("Initializing gamepad input...");
+    debug!("Initializing gamepad input...");
 
     // Build slot configurations
     let slot_configs = if let Some(gamepads) = &config.gamepads {
@@ -80,7 +80,7 @@ pub async fn init(config: &GamepadConfig, router: Arc<Router>) -> Option<Gamepad
         }
     };
 
-    info!("✅ Gamepad input initialized");
+    debug!("Gamepad input initialized");
 
     Some(mapper)
 }

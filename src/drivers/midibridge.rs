@@ -159,7 +159,7 @@ impl MidiBridgeDriver {
         // Update connection status
         self.update_status();
 
-        info!("✅ MIDI Bridge OUT opened: '{}'", self.to_port);
+        debug!("MIDI Bridge OUT opened: '{}'", self.to_port);
         Ok(())
     }
 
@@ -195,7 +195,7 @@ impl MidiBridgeDriver {
         // Update connection status
         self.update_status();
 
-        info!("✅ MIDI Bridge IN opened: '{}'", self.from_port);
+        debug!("MIDI Bridge IN opened: '{}'", self.from_port);
         Ok(())
     }
 
@@ -216,7 +216,7 @@ impl MidiBridgeDriver {
         };
 
         let delay_ms = std::cmp::min(10_000, 250 * retry_count);
-        info!("⏳ MIDI Bridge OUT reconnect #{} for '{}' in {}ms", retry_count, self.to_port, delay_ms);
+        debug!("MIDI Bridge OUT reconnect #{} for '{}' in {}ms", retry_count, self.to_port, delay_ms);
 
         // Update reconnecting status
         self.update_status();
@@ -232,13 +232,10 @@ impl MidiBridgeDriver {
 
         match self.try_open_out() {
             Ok(_) => {},
-            Err(e) if self.optional => {
-                warn!("MIDI Bridge OUT reconnect failed (optional): {}", e);
-                // TODO: Implement automatic reconnection
-                // Currently skipped due to Send trait complexity with MIDI connections
-            },
             Err(e) => {
                 warn!("MIDI Bridge OUT reconnect failed: {}", e);
+                // Schedule another retry using Box::pin for recursive async
+                Box::pin(self.schedule_out_reconnect()).await;
             }
         }
     }
@@ -260,7 +257,7 @@ impl MidiBridgeDriver {
         };
 
         let delay_ms = std::cmp::min(10_000, 250 * retry_count);
-        info!("⏳ MIDI Bridge IN reconnect #{} for '{}' in {}ms", retry_count, self.from_port, delay_ms);
+        debug!("MIDI Bridge IN reconnect #{} for '{}' in {}ms", retry_count, self.from_port, delay_ms);
 
         // Update reconnecting status
         self.update_status();
@@ -276,13 +273,10 @@ impl MidiBridgeDriver {
 
         match self.try_open_in() {
             Ok(_) => {},
-            Err(e) if self.optional => {
-                warn!("MIDI Bridge IN reconnect failed (optional): {}", e);
-                // TODO: Implement automatic reconnection
-                // Currently skipped due to Send trait complexity with MIDI connections
-            },
             Err(e) => {
                 warn!("MIDI Bridge IN reconnect failed: {}", e);
+                // Schedule another retry using Box::pin for recursive async
+                Box::pin(self.schedule_in_reconnect()).await;
             }
         }
     }
@@ -446,7 +440,7 @@ impl MidiBridgeDriver {
                 },
                 None => {
                     trace!("Bridge TX skipped (not connected): {}", self.to_port);
-                    Ok(())
+                    Err(anyhow!("MIDI Bridge '{}' not connected", self.to_port))
                 }
             }
         } else {
@@ -463,7 +457,7 @@ impl Driver for MidiBridgeDriver {
     }
 
     async fn init(&self, ctx: ExecutionContext) -> Result<()> {
-        info!("🌉 Initializing MIDI Bridge: '{}' ⇄ '{}'", self.to_port, self.from_port);
+        debug!("Initializing MIDI Bridge: '{}' ⇄ '{}'", self.to_port, self.from_port);
 
         // Store activity tracker if available
         if let Some(tracker) = ctx.activity_tracker {
@@ -475,7 +469,27 @@ impl Driver for MidiBridgeDriver {
             Ok(_) => {},
             Err(e) if self.optional => {
                 warn!("MIDI Bridge OUT open failed (optional): {}", e);
-                // TODO: Implement background reconnection task
+                // Spawn background reconnection task
+                let self_clone = Self {
+                    name: self.name.clone(),
+                    to_port: self.to_port.clone(),
+                    from_port: self.from_port.clone(),
+                    filter: self.filter.clone(),
+                    transform: self.transform.clone(),
+                    optional: self.optional,
+                    midi_out: self.midi_out.clone(),
+                    midi_in: self.midi_in.clone(),
+                    feedback_callback: self.feedback_callback.clone(),
+                    status_callbacks: self.status_callbacks.clone(),
+                    current_status: self.current_status.clone(),
+                    activity_tracker: self.activity_tracker.clone(),
+                    reconnect_count_out: self.reconnect_count_out.clone(),
+                    reconnect_count_in: self.reconnect_count_in.clone(),
+                    shutdown_flag: self.shutdown_flag.clone(),
+                };
+                tokio::spawn(async move {
+                    self_clone.schedule_out_reconnect().await;
+                });
             },
             Err(e) => return Err(e),
         }
@@ -485,12 +499,32 @@ impl Driver for MidiBridgeDriver {
             Ok(_) => {},
             Err(e) if self.optional => {
                 warn!("MIDI Bridge IN open failed (optional): {}", e);
-                // TODO: Implement background reconnection task
+                // Spawn background reconnection task
+                let self_clone = Self {
+                    name: self.name.clone(),
+                    to_port: self.to_port.clone(),
+                    from_port: self.from_port.clone(),
+                    filter: self.filter.clone(),
+                    transform: self.transform.clone(),
+                    optional: self.optional,
+                    midi_out: self.midi_out.clone(),
+                    midi_in: self.midi_in.clone(),
+                    feedback_callback: self.feedback_callback.clone(),
+                    status_callbacks: self.status_callbacks.clone(),
+                    current_status: self.current_status.clone(),
+                    activity_tracker: self.activity_tracker.clone(),
+                    reconnect_count_out: self.reconnect_count_out.clone(),
+                    reconnect_count_in: self.reconnect_count_in.clone(),
+                    shutdown_flag: self.shutdown_flag.clone(),
+                };
+                tokio::spawn(async move {
+                    self_clone.schedule_in_reconnect().await;
+                });
             },
             Err(e) => return Err(e),
         }
 
-        info!("✅ MIDI Bridge active: '{}' ⇄ '{}'", self.to_port, self.from_port);
+        debug!("MIDI Bridge active: '{}' ⇄ '{}'", self.to_port, self.from_port);
         Ok(())
     }
 
@@ -545,7 +579,7 @@ impl Driver for MidiBridgeDriver {
     }
 
     async fn shutdown(&self) -> Result<()> {
-        info!("Shutting down MIDI Bridge: '{}'", self.to_port);
+        debug!("Shutting down MIDI Bridge: '{}'", self.to_port);
         
         *self.shutdown_flag.lock() = true;
 
@@ -556,7 +590,7 @@ impl Driver for MidiBridgeDriver {
         // Update status to disconnected
         self.update_status();
 
-        info!("✅ MIDI Bridge shutdown complete");
+        debug!("MIDI Bridge shutdown complete");
         Ok(())
     }
 

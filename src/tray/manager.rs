@@ -47,8 +47,8 @@ impl TrayManager {
     ///
     /// This runs the Win32 message loop on the current thread.
     pub fn run(mut self) -> anyhow::Result<()> {
-        info!("Starting system tray manager...");
-        info!("Configuration: activity_leds={}, connection_status={}, led_duration={}ms, poll_interval={}ms",
+        debug!("Starting system tray manager...");
+        debug!("Configuration: activity_leds={}, connection_status={}, led_duration={}ms, poll_interval={}ms",
               self.config.show_activity_leds,
               self.config.show_connection_status,
               self.config.activity_led_duration_ms,
@@ -67,14 +67,14 @@ impl TrayManager {
             .build()
             .map_err(|e| anyhow::anyhow!("Failed to create tray icon: {}", e))?;
 
-        info!("✅ System tray icon created");
+        debug!("System tray icon created");
 
         // Create menu
         let menu = self.build_menu()?;
-        info!("Menu created with {} items", menu.items().len());
+        debug!("Menu created with {} items", menu.items().len());
 
         tray_icon.set_menu(Some(Box::new(menu.clone())));
-        info!("Menu attached to tray icon");
+        debug!("Menu attached to tray icon");
 
         // Store menu for later updates
         let menu = Arc::new(parking_lot::Mutex::new(menu));
@@ -86,7 +86,7 @@ impl TrayManager {
         let menu_channel = muda::MenuEvent::receiver();
 
         // Process updates from Tokio runtime
-        info!("Tray manager ready, processing updates...");
+        debug!("Tray manager ready, processing updates...");
 
         // Main event loop - handle both menu events and tray updates
         loop {
@@ -99,7 +99,7 @@ impl TrayManager {
 
                 match event.id.as_ref() {
                     "quit" => {
-                        info!("Quit selected from tray menu");
+                        debug!("Quit selected from tray menu");
                         let _ = self.command_tx.try_send(TrayCommand::Shutdown);
                         // Exit the loop to shut down
                         return Ok(());
@@ -115,7 +115,7 @@ impl TrayManager {
                     "toggle_activity_leds" => {
                         debug!("Toggle activity LEDs");
                         self.config.show_activity_leds = !self.config.show_activity_leds;
-                        info!("Activity LEDs {}", if self.config.show_activity_leds { "enabled" } else { "disabled" });
+                        debug!("Activity LEDs {}", if self.config.show_activity_leds { "enabled" } else { "disabled" });
 
                         // Rebuild menu to reflect new setting
                         if let Ok(new_menu) = self.build_menu_with_all_statuses() {
@@ -126,7 +126,7 @@ impl TrayManager {
                     "toggle_connection_status" => {
                         debug!("Toggle connection status");
                         self.config.show_connection_status = !self.config.show_connection_status;
-                        info!("Connection status {}", if self.config.show_connection_status { "enabled" } else { "disabled" });
+                        debug!("Connection status {}", if self.config.show_connection_status { "enabled" } else { "disabled" });
 
                         // Rebuild menu to reflect new setting
                         if let Ok(new_menu) = self.build_menu_with_all_statuses() {
@@ -135,7 +135,7 @@ impl TrayManager {
                         }
                     }
                     "about" => {
-                        info!("About selected");
+                        debug!("About selected");
                         // Note: In a real implementation, this would show a dialog
                         // For now, we just log it
                     }
@@ -153,7 +153,7 @@ impl TrayManager {
             };
             match update {
                 TrayUpdate::DriverStatus { name, status } => {
-                    info!("Tray: driver {} status changed to {:?}", name, status);
+                    debug!("Tray: driver {} status changed to {:?}", name, status);
 
                     // Update our tracking
                     self.driver_statuses.insert(name.clone(), status.clone());
@@ -205,7 +205,7 @@ impl TrayManager {
             }
         }
 
-        info!("Tray manager shutting down, removing icon...");
+        debug!("Tray manager shutting down, removing icon...");
 
         // Explicitly remove the tray icon to prevent ghost icons
         if let Err(e) = tray_icon.set_visible(false) {
@@ -213,7 +213,7 @@ impl TrayManager {
         }
 
         drop(tray_icon);
-        info!("Tray icon removed");
+        debug!("Tray icon removed");
 
         Ok(())
     }
