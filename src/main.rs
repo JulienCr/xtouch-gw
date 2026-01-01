@@ -366,14 +366,24 @@ async fn run_app(
     drop(feedback_tx);
 
     // Load control database for LED indicator mapping
+    // Try external file first for hot-reload, fall back to embedded CSV
     let control_db = match ControlMappingDB::load_from_csv("docs/xtouch-matching.csv").await {
         Ok(db) => {
             info!("✅ Loaded control database ({} controls)", db.mappings.len());
             Arc::new(db)
         },
-        Err(e) => {
-            warn!("⚠️  Failed to load control database: {}", e);
-            Arc::new(ControlMappingDB { mappings: Default::default(), groups: Default::default() })
+        Err(_) => {
+            // Use embedded CSV (always available)
+            match control_mapping::load_default_mappings() {
+                Ok(db) => {
+                    info!("✅ Loaded embedded control database ({} controls)", db.mappings.len());
+                    Arc::new(db)
+                },
+                Err(e) => {
+                    warn!("⚠️  Failed to load control database: {}", e);
+                    Arc::new(ControlMappingDB { mappings: Default::default(), groups: Default::default() })
+                },
+            }
         },
     };
 
