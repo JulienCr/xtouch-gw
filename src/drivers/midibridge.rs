@@ -159,7 +159,7 @@ impl MidiBridgeDriver {
         // Update connection status
         self.update_status();
 
-        info!("✅ MIDI Bridge OUT opened: '{}'", self.to_port);
+        debug!("MIDI Bridge OUT opened: '{}'", self.to_port);
         Ok(())
     }
 
@@ -195,7 +195,7 @@ impl MidiBridgeDriver {
         // Update connection status
         self.update_status();
 
-        info!("✅ MIDI Bridge IN opened: '{}'", self.from_port);
+        debug!("MIDI Bridge IN opened: '{}'", self.from_port);
         Ok(())
     }
 
@@ -216,7 +216,7 @@ impl MidiBridgeDriver {
         };
 
         let delay_ms = std::cmp::min(10_000, 250 * retry_count);
-        info!("⏳ MIDI Bridge OUT reconnect #{} for '{}' in {}ms", retry_count, self.to_port, delay_ms);
+        debug!("MIDI Bridge OUT reconnect #{} for '{}' in {}ms", retry_count, self.to_port, delay_ms);
 
         // Update reconnecting status
         self.update_status();
@@ -257,7 +257,7 @@ impl MidiBridgeDriver {
         };
 
         let delay_ms = std::cmp::min(10_000, 250 * retry_count);
-        info!("⏳ MIDI Bridge IN reconnect #{} for '{}' in {}ms", retry_count, self.from_port, delay_ms);
+        debug!("MIDI Bridge IN reconnect #{} for '{}' in {}ms", retry_count, self.from_port, delay_ms);
 
         // Update reconnecting status
         self.update_status();
@@ -457,7 +457,7 @@ impl Driver for MidiBridgeDriver {
     }
 
     async fn init(&self, ctx: ExecutionContext) -> Result<()> {
-        info!("🌉 Initializing MIDI Bridge: '{}' ⇄ '{}'", self.to_port, self.from_port);
+        debug!("Initializing MIDI Bridge: '{}' ⇄ '{}'", self.to_port, self.from_port);
 
         // Store activity tracker if available
         if let Some(tracker) = ctx.activity_tracker {
@@ -524,7 +524,7 @@ impl Driver for MidiBridgeDriver {
             Err(e) => return Err(e),
         }
 
-        info!("✅ MIDI Bridge active: '{}' ⇄ '{}'", self.to_port, self.from_port);
+        debug!("MIDI Bridge active: '{}' ⇄ '{}'", self.to_port, self.from_port);
         Ok(())
     }
 
@@ -579,7 +579,7 @@ impl Driver for MidiBridgeDriver {
     }
 
     async fn shutdown(&self) -> Result<()> {
-        info!("Shutting down MIDI Bridge: '{}'", self.to_port);
+        debug!("Shutting down MIDI Bridge: '{}'", self.to_port);
         
         *self.shutdown_flag.lock() = true;
 
@@ -590,7 +590,7 @@ impl Driver for MidiBridgeDriver {
         // Update status to disconnected
         self.update_status();
 
-        info!("✅ MIDI Bridge shutdown complete");
+        debug!("MIDI Bridge shutdown complete");
         Ok(())
     }
 

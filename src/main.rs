@@ -5,7 +5,7 @@
 use anyhow::Result;
 use clap::Parser;
 use tokio::sync::mpsc;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod config;
@@ -114,7 +114,7 @@ async fn main() -> Result<()> {
 
     // Load configuration with hot-reload watcher
     let (config_watcher, initial_config) = ConfigWatcher::new(args.config.clone()).await?;
-    info!("Configuration loaded successfully with hot-reload enabled");
+    debug!("Configuration loaded successfully with hot-reload enabled");
 
     // Create .state directory for persistence
     tokio::fs::create_dir_all(".state").await?;
@@ -131,7 +131,7 @@ async fn main() -> Result<()> {
 
     // Spawn tray manager on dedicated OS thread
     let tray_handle = if initial_config.tray.as_ref().map(|t| t.enabled).unwrap_or(true) {
-        info!("Starting system tray...");
+        debug!("Starting system tray...");
         let tray_config = initial_config.tray.clone().unwrap_or_else(|| crate::config::TrayConfig {
             enabled: true,
             activity_led_duration_ms: 200,
@@ -156,7 +156,7 @@ async fn main() -> Result<()> {
     let mut router = Router::new((*initial_config).clone());
     router.set_activity_tracker(Arc::clone(&activity_tracker));
     let router = Arc::new(router);
-    info!("Router initialized with activity tracking");
+    debug!("Router initialized with activity tracking");
 
     // Load state snapshot from disk if it exists
     let snapshot_path = std::path::PathBuf::from(".state/snapshot.json");
@@ -195,7 +195,7 @@ async fn main() -> Result<()> {
         if join_result.is_err() {
             warn!("Tray thread did not exit cleanly");
         } else {
-            info!("Tray thread exited");
+            debug!("Tray thread exited");
         }
     }
 
@@ -214,7 +214,7 @@ async fn run_app(
 ) -> Result<()> {
     use tracing::{debug, trace, warn};
 
-    info!("Starting main application loop...");
+    debug!("Starting main application loop...");
 
     // Create tray message handler for driver status updates
     let activity_poll_interval = config.tray.as_ref()
@@ -234,17 +234,17 @@ async fn run_app(
             handler.run().await;
         }
     });
-    info!("TrayMessageHandler spawned with {}ms activity polling", activity_poll_interval);
+    debug!("TrayMessageHandler spawned with {}ms activity polling", activity_poll_interval);
 
     // Create and connect X-Touch driver
     let mut xtouch = XTouchDriver::new(&config)?;
-    info!("X-Touch driver created");
+    debug!("X-Touch driver created");
 
     xtouch.connect().await?;
     info!("X-Touch connected successfully");
 
     // Initialize LCD and LEDs for the active page
-    info!("Initializing X-Touch display...");
+    debug!("Initializing X-Touch display...");
 
     // Clear all displays first
     if let Err(e) = xtouch.clear_all_lcds().await {
@@ -296,9 +296,9 @@ async fn run_app(
     info!("✅ X-Touch display initialized");
 
     // Apply loaded state snapshot to X-Touch (restore fader positions, LEDs, etc.)
-    info!("Applying loaded state to X-Touch...");
+    debug!("Applying loaded state to X-Touch...");
     router.refresh_page().await;
-    info!("✅ Initial state applied to X-Touch");
+    debug!("Initial state applied to X-Touch");
 
     // Create a channel for feedback from apps to X-Touch
     let (feedback_tx, mut feedback_rx) = mpsc::channel::<(String, Vec<u8>)>(1000);
@@ -326,7 +326,7 @@ async fn run_app(
         .take_setpoint_receiver()
         .await
         .ok_or_else(|| anyhow::anyhow!("Failed to get setpoint receiver"))?;
-    info!("FaderSetpoint receiver initialized");
+    debug!("FaderSetpoint receiver initialized");
 
     // Register MIDI bridge drivers for each configured app
     if let Some(apps) = &config.midi.apps {
@@ -432,7 +432,7 @@ async fn run_app(
         });
 
         obs_driver.subscribe_indicators(indicator_callback);
-        info!("✅ Subscribed to OBS indicator signals");
+        debug!("Subscribed to OBS indicator signals");
 
         // Subscribe to connection status for tray display
         let status_callback = tray_handler.subscribe_driver("OBS".to_string());
@@ -461,10 +461,10 @@ async fn run_app(
             Err(e) => warn!("⚠️  Failed to register QLC+ driver (will continue without it): {}", e),
         }
     } else {
-        info!("Skipping QLC+ stub driver registration (MIDI bridge 'qlc' already active)");
+        debug!("Skipping QLC+ stub driver registration (MIDI bridge 'qlc' already active)");
     }
 
-    info!("All drivers registered and initialized");
+    debug!("All drivers registered and initialized");
 
     // Initialize gamepad if enabled
     let _gamepad_mapper = if let Some(gamepad_config) = &config.gamepad {
@@ -514,7 +514,7 @@ async fn run_app(
 
                 // Check if page changed and display needs update
                 if router.check_and_clear_display_update().await {
-                    info!("📺 Updating display after page change...");
+                    debug!("Updating display after page change...");
 
                     // Send pending MIDI messages to X-Touch (e.g., Note Off for unmapped buttons)
                     let pending_midi = router.take_pending_midi().await;
@@ -558,7 +558,7 @@ async fn run_app(
                         }
                     }
 
-                    info!("✅ Display updated for page: {}", active_page_name);
+                    debug!("Display updated for page: {}", active_page_name);
                 }
             }
 
@@ -634,20 +634,20 @@ async fn run_app(
 
             // Handle tray commands
             Some(cmd) = tray_cmd_rx.recv() => {
-                info!("Tray command received: {:?}", cmd);
+                debug!("Tray command received: {:?}", cmd);
                 match cmd {
                     crate::tray::TrayCommand::ConnectObs => {
-                        info!("Attempting to reconnect OBS from tray command...");
+                        debug!("Attempting to reconnect OBS from tray command...");
                         if let Some(obs_driver) = router.get_driver("obs").await {
                             if let Err(e) = obs_driver.sync().await {
                                 warn!("Failed to reconnect OBS: {}", e);
                             } else {
-                                info!("OBS sync initiated");
+                                debug!("OBS sync initiated");
                             }
                         }
                     }
                     crate::tray::TrayCommand::RecheckAll => {
-                        info!("Rechecking all drivers from tray command...");
+                        debug!("Rechecking all drivers from tray command...");
                         for driver_name in router.list_drivers().await {
                             if let Some(driver) = router.get_driver(&driver_name).await {
                                 if let Err(e) = driver.sync().await {
@@ -674,7 +674,7 @@ async fn run_app(
     // Cleanup
     info!("Shutting down...");
     router.shutdown_all_drivers().await?;
-    info!("All drivers shut down");
+    debug!("All drivers shut down");
 
     // Save final state snapshot
     //info!("Saving final state snapshot...");

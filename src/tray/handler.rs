@@ -160,11 +160,11 @@ impl TrayMessageHandler {
     /// and sends activity snapshots to the tray UI for LED visualization.
     /// Handles channel disconnection gracefully.
     pub async fn run(self: Arc<Self>) {
-        info!("TrayMessageHandler started (poll interval: {}ms, rate limit: {}ms)",
+        debug!("TrayMessageHandler started (poll interval: {}ms, rate limit: {}ms)",
               self.activity_poll_interval_ms, self.rate_limit_ms);
 
         if self.activity_tracker.is_none() {
-            info!("Activity tracking disabled, handler running in minimal mode");
+            debug!("Activity tracking disabled, handler running in minimal mode");
             // Just keep alive without polling
             loop {
                 tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
@@ -174,7 +174,7 @@ impl TrayMessageHandler {
         let activity_tracker = self.activity_tracker.as_ref().unwrap();
         let poll_interval = tokio::time::Duration::from_millis(self.activity_poll_interval_ms);
 
-        info!("Activity polling enabled ({}ms interval)", self.activity_poll_interval_ms);
+        debug!("Activity polling enabled ({}ms interval)", self.activity_poll_interval_ms);
 
         let mut iteration_count = 0u64;
 
