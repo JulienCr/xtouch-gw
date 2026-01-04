@@ -247,7 +247,20 @@ impl super::Router {
             },
         };
 
-        // Update state store
+        // BUG-001 FIX: Check anti-echo BEFORE updating state
+        // If this is an echo of a value we recently sent, suppress it entirely
+        if self.should_suppress_anti_echo(app_key, &entry) {
+            trace!(
+                "Anti-echo: suppressing feedback from {} (status={:?} ch={:?} d1={:?})",
+                app_key,
+                entry.addr.status,
+                entry.addr.channel,
+                entry.addr.data1
+            );
+            return;
+        }
+
+        // Not an echo - update state store
         self.state.update_from_feedback(app, entry.clone());
 
         // Log for debugging
@@ -260,7 +273,7 @@ impl super::Router {
             entry.value
         );
 
-        // Mark this as sent to app (for anti-echo)
+        // Mark this as sent to app (for anti-echo) AFTER state update
         self.update_app_shadow(app_key, &entry);
 
         // TODO: Forward to X-Touch if relevant for active page

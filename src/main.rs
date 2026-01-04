@@ -5,7 +5,7 @@
 use anyhow::Result;
 use clap::Parser;
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod config;
@@ -567,10 +567,32 @@ async fn run_app(
                 // Record activity from application
                 activity_tracker.record(&app_name, crate::tray::ActivityDirection::Inbound);
 
-                // ALWAYS update state (even if app not on active page)
-                // This ensures StateStore tracks all app values for page refresh
-                // (matches TypeScript onMidiFromApp behavior)
-                router.on_midi_from_app(&app_name, &feedback_data, &app_name);
+                // BUG-002 FIX: Activate squelch BEFORE state update to prevent race condition
+                // The race was: state update -> user moves fader -> squelch check (not yet active) -> echo
+                // Now: squelch activate -> state update -> user moves fader -> squelch check (active) -> suppressed
+                //
+                // Extract PitchBend channel/value from feedback FIRST to activate squelch early
+                let pb_info = extract_pitchbend_from_feedback(&feedback_data);
+                if pb_info.is_some() {
+                    // Activate 120ms squelch BEFORE state update (matches TypeScript emit.ts timing)
+                    // This prevents the motor movement echo from passing through during state update
+                    xtouch.activate_squelch(120);
+                    debug!("📤 Squelch activated early for PitchBend feedback");
+                }
+
+                // BUG-003 FIX: Only update state if app is on active page
+                // This ensures StateStore and X-Touch forwarding are symmetric.
+                // Off-page app feedback is now fully ignored (not stored, not forwarded).
+                let apps_on_page = router.get_apps_for_active_page().await;
+                if apps_on_page.contains(&app_name) {
+                    // Update state store (only for apps on active page)
+                    router.on_midi_from_app(&app_name, &feedback_data, &app_name);
+                } else {
+                    trace!(
+                        "App '{}' not on active page, skipping state update",
+                        app_name
+                    );
+                }
 
                 // Conditionally forward to X-Touch (only if app mapped on active page)
                 // This prevents off-page apps from moving faders
@@ -578,20 +600,11 @@ async fn run_app(
                 if let Some(transformed) = router.process_feedback(&app_name, &feedback_data).await {
                     debug!("📤 Forwarding feedback to X-Touch: {:02X?}", transformed);
 
-                    // Check if this is a PitchBend message - use set_fader with squelch
-                    if transformed.len() == 3 && (transformed[0] & 0xF0) == 0xE0 {
-                        // PitchBend message: status byte Exch, LSB, MSB
-                        let channel = (transformed[0] & 0x0F);
-                        let lsb = transformed[1];
-                        let msb = transformed[2];
-                        let value14 = ((msb as u16) << 7) | (lsb as u16);
-
+                    // Check if this is a PitchBend message - use set_fader
+                    if let Some((channel, value14)) = pb_info {
                         debug!("📤 Using set_fader for feedback: ch={} value={}", channel, value14);
 
-                        // Activate 120ms squelch BEFORE sending (matches TypeScript emit.ts)
-                        // This prevents the motor movement from being echoed back to the app
-                        xtouch.activate_squelch(120);
-
+                        // Squelch was already activated above before state update
                         if let Err(e) = xtouch.set_fader(channel, value14).await {
                             warn!("Failed to set fader from feedback: {}", e);
                         } else {
@@ -789,4 +802,27 @@ async fn test_control_mappings() -> Result<()> {
     println!("\n{}", "✅ Control mapping test complete!".green().bold());
 
     Ok(())
+}
+
+/// Extract PitchBend channel and 14-bit value from raw MIDI feedback data.
+///
+/// This helper is used to detect PitchBend messages early in the feedback handling
+/// path so that squelch can be activated BEFORE state updates (BUG-002 fix).
+///
+/// Returns `Some((channel, value14))` if the data is a valid PitchBend message,
+/// or `None` for all other message types.
+fn extract_pitchbend_from_feedback(data: &[u8]) -> Option<(u8, u16)> {
+    // PitchBend message format: [0xE0-0xEF, LSB, MSB]
+    // Status byte: 0xEn where n is the channel (0-15)
+    if data.len() >= 3 {
+        let status = data[0];
+        if (status & 0xF0) == 0xE0 {
+            let channel = status & 0x0F;
+            let lsb = data[1] & 0x7F; // 7-bit LSB
+            let msb = data[2] & 0x7F; // 7-bit MSB
+            let value14 = ((msb as u16) << 7) | (lsb as u16);
+            return Some((channel, value14));
+        }
+    }
+    None
 }

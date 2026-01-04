@@ -448,6 +448,27 @@ impl AppConfig {
                     anyhow::bail!("MIDI app name cannot be empty");
                 }
                 midi_app_names.insert(&app.name);
+
+                // Warn about MIDI app port configuration issues
+                let has_output = app.output_port.is_some();
+                let has_input = app.input_port.is_some();
+
+                if !has_output && !has_input {
+                    tracing::warn!(
+                        "MIDI app '{}' has no ports configured - bidirectional communication will not work",
+                        app.name
+                    );
+                } else if has_output && !has_input {
+                    tracing::warn!(
+                        "MIDI app '{}' has output but no input port - feedback will not be received",
+                        app.name
+                    );
+                } else if has_input && !has_output {
+                    tracing::warn!(
+                        "MIDI app '{}' has input but no output port - commands will not be sent",
+                        app.name
+                    );
+                }
             }
         }
 
