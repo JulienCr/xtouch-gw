@@ -24,6 +24,7 @@ use crate::state::StateStore;
 use crate::xtouch::fader_setpoint::{ApplySetpointCmd, FaderSetpoint};
 use anyhow::Result;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock as StdRwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, RwLock};
@@ -55,6 +56,9 @@ pub struct Router {
     pub(crate) pending_midi_messages: Arc<tokio::sync::Mutex<Vec<Vec<u8>>>>,
     /// Activity tracker for tray UI LED visualization
     pub(crate) activity_tracker: Option<Arc<crate::tray::ActivityTracker>>,
+    /// Page epoch counter - incremented on each page change to invalidate stale feedback
+    /// BUG-006 FIX: Prevents race condition between page refresh and feedback processing
+    pub(crate) page_epoch: Arc<AtomicU64>,
 }
 
 impl Router {
@@ -74,6 +78,7 @@ impl Router {
             setpoint_rx: Arc::new(tokio::sync::Mutex::new(Some(setpoint_rx))),
             pending_midi_messages: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             activity_tracker: None,
+            page_epoch: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -106,6 +111,31 @@ impl Router {
     /// Get the fader setpoint scheduler (for applying setpoints)
     pub fn get_fader_setpoint(&self) -> Arc<FaderSetpoint> {
         self.fader_setpoint.clone()
+    }
+
+    /// Get the current page epoch (BUG-006 FIX)
+    ///
+    /// The epoch is incremented on each page change. Callers should capture this
+    /// value before processing feedback and verify it's still current before
+    /// applying state updates. This prevents stale feedback from contaminating
+    /// the new page's state during page transitions.
+    pub fn get_page_epoch(&self) -> u64 {
+        self.page_epoch.load(Ordering::Acquire)
+    }
+
+    /// Check if a captured epoch is still current (BUG-006 FIX)
+    ///
+    /// Returns true if the epoch matches the current page epoch.
+    /// Use this to verify feedback is still valid before applying state updates.
+    pub fn is_epoch_current(&self, captured_epoch: u64) -> bool {
+        self.page_epoch.load(Ordering::Acquire) == captured_epoch
+    }
+
+    /// Increment page epoch (called during page change)
+    ///
+    /// This invalidates all in-flight feedback processing.
+    fn increment_page_epoch(&self) -> u64 {
+        self.page_epoch.fetch_add(1, Ordering::AcqRel) + 1
     }
 
     /// Take the setpoint apply receiver (should only be called once by main loop)

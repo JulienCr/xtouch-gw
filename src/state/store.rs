@@ -101,6 +101,14 @@ impl StateStore {
     }
 
     /// Get the latest known value for (status, channel, data1) regardless of port
+    ///
+    /// BUG-005 FIX: Prioritizes non-stale entries over stale ones.
+    /// Entries restored from snapshot are marked `stale: true` and will be
+    /// superseded by fresh feedback from the application.
+    ///
+    /// Priority order:
+    /// 1. Non-stale (fresh feedback) with most recent timestamp
+    /// 2. Stale (from snapshot) with most recent timestamp
     pub fn get_known_latest_for_app(
         &self,
         app: AppKey,
@@ -139,8 +147,23 @@ impl StateStore {
                 continue;
             }
 
-            // Keep the most recent
-            if best.is_none() || entry.ts > best.unwrap().ts {
+            // BUG-005 FIX: Prefer non-stale over stale, then most recent timestamp
+            let dominated = match best {
+                None => false,
+                Some(current) => {
+                    // Prefer non-stale over stale
+                    if entry.stale && !current.stale {
+                        true // current is non-stale, entry is stale -> current wins
+                    } else if !entry.stale && current.stale {
+                        false // entry is non-stale, current is stale -> entry should win
+                    } else {
+                        // Same stale status: prefer more recent timestamp
+                        entry.ts <= current.ts
+                    }
+                }
+            };
+
+            if !dominated {
                 best = Some(entry);
             }
         }
@@ -304,6 +327,69 @@ mod tests {
 
         store.clear_states_for_app(AppKey::Voicemeeter);
         assert_eq!(store.list_states_for_app(AppKey::Voicemeeter).len(), 0);
+    }
+
+    /// BUG-005 test: Verify that non-stale entries are preferred over stale ones
+    #[test]
+    fn test_stale_flag_priority() {
+        let store = StateStore::new();
+
+        // First, hydrate a stale entry from snapshot (ts=1000, value=50)
+        let mut stale_entry = make_test_entry(MidiStatus::CC, 1, 7, 50);
+        stale_entry.ts = 1000;
+        store.hydrate_from_snapshot(AppKey::Voicemeeter, vec![stale_entry.clone()]);
+
+        // Verify stale entry is returned when no fresh data exists
+        let result = store
+            .get_known_latest_for_app(AppKey::Voicemeeter, MidiStatus::CC, Some(1), Some(7))
+            .unwrap();
+        assert!(result.stale, "Hydrated entry should be stale");
+        assert_eq!(result.value.as_number(), Some(50));
+
+        // Now add fresh feedback with OLDER timestamp (ts=500, value=100)
+        // Fresh should win even with older timestamp
+        let mut fresh_entry = make_test_entry(MidiStatus::CC, 1, 7, 100);
+        fresh_entry.ts = 500; // Older than stale entry!
+        store.update_from_feedback(AppKey::Voicemeeter, fresh_entry);
+
+        let result = store
+            .get_known_latest_for_app(AppKey::Voicemeeter, MidiStatus::CC, Some(1), Some(7))
+            .unwrap();
+        assert!(!result.stale, "Fresh feedback should not be stale");
+        assert_eq!(
+            result.value.as_number(),
+            Some(100),
+            "Fresh entry should win over stale even with older timestamp"
+        );
+    }
+
+    /// BUG-005 test: Among same stale status, prefer most recent timestamp
+    #[test]
+    fn test_stale_flag_same_status_uses_timestamp() {
+        let store = StateStore::new();
+
+        // Hydrate two stale entries with different timestamps
+        let mut stale1 = make_test_entry(MidiStatus::CC, 1, 7, 50);
+        stale1.ts = 1000;
+        stale1.addr.port_id = "port1".to_string();
+
+        let mut stale2 = make_test_entry(MidiStatus::CC, 1, 7, 100);
+        stale2.ts = 2000; // More recent
+        stale2.addr.port_id = "port2".to_string();
+
+        store.hydrate_from_snapshot(AppKey::Voicemeeter, vec![stale1, stale2]);
+
+        // Should get the more recent stale entry
+        let result = store
+            .get_known_latest_for_app(AppKey::Voicemeeter, MidiStatus::CC, Some(1), Some(7))
+            .unwrap();
+        assert!(result.stale);
+        assert_eq!(
+            result.value.as_number(),
+            Some(100),
+            "More recent stale entry should win"
+        );
+        assert_eq!(result.ts, 2000);
     }
 }
 

@@ -69,10 +69,18 @@ impl super::Router {
 
     /// Check if a value should be suppressed due to anti-echo
     pub(crate) fn should_suppress_anti_echo(&self, app_key: &str, entry: &MidiStateEntry) -> bool {
-        let app_shadows = match self.app_shadows.try_read() {
-            Ok(shadows) => shadows,
-            Err(_) => return false,
-        };
+        // BUG-004 FIX: Use blocking read() instead of try_read() to avoid
+        // silently disabling anti-echo when lock is contended.
+        // This is acceptable since reads are fast and correctness is critical.
+        let app_shadows = self.app_shadows.read().unwrap_or_else(|poisoned| {
+            // Log the poisoned lock but continue with the guard
+            // A poisoned lock means a panic occurred while holding the lock,
+            // but we can still safely read the data
+            tracing::warn!(
+                "app_shadows lock was poisoned, recovering for anti-echo check"
+            );
+            poisoned.into_inner()
+        });
 
         let app_shadow = match app_shadows.get(app_key) {
             Some(shadow) => shadow,

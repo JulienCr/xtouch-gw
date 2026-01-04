@@ -21,6 +21,22 @@ impl super::Router {
             .unwrap_or_else(|| "(none)".to_string())
     }
 
+    /// Get all apps that are active on the current page
+    ///
+    /// This is a convenience wrapper around `get_apps_for_page` that uses
+    /// the currently active page. Returns an empty set if no page is active.
+    ///
+    /// Used by main.rs to filter state updates to only apps on the active page.
+    pub async fn get_apps_for_active_page(&self) -> HashSet<String> {
+        let config = self.config.read().await;
+        let index = *self.active_page_index.read().await;
+
+        match config.pages.get(index) {
+            Some(page) => self.get_apps_for_page(page, &config),
+            None => HashSet::new(),
+        }
+    }
+
     /// List all page names
     pub async fn list_pages(&self) -> Vec<String> {
         let config = self.config.read().await;
