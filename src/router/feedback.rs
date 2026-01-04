@@ -7,6 +7,16 @@ use tracing::{debug, trace, warn};
 impl super::Router {
     /// Process feedback from an application (reverse transformation)
     pub async fn process_feedback(&self, app_name: &str, raw_data: &[u8]) -> Option<Vec<u8>> {
+        // BUG-007 FIX: Capture config snapshot at the start to ensure consistency
+        // If hot-reload happens during this function, we use a consistent view throughout.
+        // We clone the Arc's inner value to get an owned copy that won't change.
+        let (config_snapshot, active_page_idx) = {
+            let config = self.config.read().await;
+            let idx = *self.active_page_index.read().await;
+            (config.clone(), idx)
+        };
+        // Guards are now dropped, freeing the locks for hot-reload if needed
+
         // Parse incoming MIDI from app
         let input_msg = match crate::midi::MidiMessage::parse(raw_data) {
             Some(msg) => msg,
@@ -30,10 +40,8 @@ impl super::Router {
 
         // PAGE-AWARE FILTERING: Check if app is mapped on active page BEFORE scheduling setpoints
         // This prevents faders from moving on Page 2 when Voicemeeter sends feedback
-        let config = self.config.read().await;
-        let active_page_idx = *self.active_page_index.read().await;
-
-        let active_page = match config.pages.get(active_page_idx) {
+        // BUG-007 FIX: Use config_snapshot instead of holding lock
+        let active_page = match config_snapshot.pages.get(active_page_idx) {
             Some(page) => page,
             None => {
                 trace!("No active page, skipping feedback forward to X-Touch");
@@ -41,7 +49,7 @@ impl super::Router {
             }
         };
 
-        let apps_on_page = self.get_apps_for_page(active_page, &config);
+        let apps_on_page = self.get_apps_for_page(active_page, &config_snapshot);
         if !apps_on_page.contains(app_name) {
             trace!(
                 "App '{}' not mapped on active page '{}', skipping X-Touch forward",
@@ -127,8 +135,9 @@ impl super::Router {
         }
 
         // If not found, search in global controls
+        // BUG-007 FIX: Use config_snapshot consistently
         if found_control_id.is_none() {
-            if let Some(global) = &config.pages_global {
+            if let Some(global) = &config_snapshot.pages_global {
                 if let Some(controls) = &global.controls {
                     for (id, mapping) in controls {
                         if matches_mapping(mapping) {
@@ -141,13 +150,13 @@ impl super::Router {
         }
 
         // Also check X-Touch mode
-        let is_mcu_mode = config
+        // BUG-007 FIX: Use config_snapshot consistently
+        let is_mcu_mode = config_snapshot
             .xtouch
             .as_ref()
             .map(|x| matches!(x.mode, crate::config::XTouchMode::Mcu))
             .unwrap_or(true);
-
-        drop(config);
+        // Note: No need for drop() - config_snapshot is owned, not a guard
 
         if let Some(control_id) = found_control_id {
             // Load hardware mapping to find native message

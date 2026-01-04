@@ -76,32 +76,56 @@
   - Added 2 unit tests: `test_stale_flag_priority` and `test_stale_flag_same_status_uses_timestamp`
 
 ### BUG-006: Race Page Change vs State Update
-- **Fichier**: `src/main.rs`, `src/router/refresh.rs`
-- **Status**: [ ] PENDING
+- **Fichier**: `src/main.rs`, `src/router/refresh.rs`, `src/router/mod.rs`
+- **Status**: [x] DONE
 - **Assigné à**: Agent router-expert
 - **Notes**:
   - Ajouter synchronisation entre page change et feedback
+- **Fix appliqué**:
+  - Implémentation d'un Page Epoch Counter (`AtomicU64`) lock-free
+  - L'epoch est incrémenté au début de chaque `refresh_page()` AVANT de vider le shadow
+  - Le feedback capture l'epoch à la réception et le vérifie à chaque étape critique
+  - Si l'epoch a changé pendant le traitement, le feedback est ignoré (page change en cours)
+  - 3 tests unitaires ajoutés pour valider le comportement
 
 ### BUG-007: Context Config Stale
 - **Fichier**: `src/router/feedback.rs`
-- **Status**: [ ] PENDING
+- **Status**: [x] DONE
 - **Assigné à**: Agent router-expert
 - **Notes**:
   - Capturer config snapshot au début de process_feedback
+- **Fix appliqué**:
+  - Capture atomique de config + active_page_index dans un seul bloc au début de process_feedback()
+  - Les guards sont libérés immédiatement après la capture
+  - Toutes les références utilisent maintenant config_snapshot (owned value)
+  - Garantit la cohérence même si hot-reload survient pendant le traitement
 
 ### BUG-008: Snapshot Prioritaire au Démarrage
-- **Fichier**: `src/main.rs`
-- **Status**: [ ] PENDING
+- **Fichier**: `src/main.rs`, `src/config/mod.rs`
+- **Status**: [x] DONE
 - **Assigné à**: Agent rust-engineer
 - **Notes**:
   - Attendre connexion drivers avant refresh initial
+- **Fix appliqué**:
+  - Supprimé le refresh_page() prématuré (avant l'enregistrement des drivers)
+  - Ajouté un délai configurable `startup_refresh_delay_ms` (défaut: 500ms)
+  - Le refresh est maintenant différé jusqu'APRÈS l'enregistrement de tous les drivers
+  - Permet aux drivers de se connecter et d'envoyer du feedback frais avant le refresh
+  - Combiné avec BUG-005 (stale priority), les valeurs fraîches prennent le dessus
 
 ### BUG-009: Epoch Non Vérifié dans Refresh
-- **Fichier**: `src/router/refresh.rs`
-- **Status**: [ ] PENDING
+- **Fichier**: `src/router/refresh.rs`, `src/xtouch/fader_setpoint.rs`
+- **Status**: [x] DONE
 - **Assigné à**: Agent router-expert
 - **Notes**:
   - Intégrer vérification epoch dans plan_page_refresh
+- **Fix appliqué**:
+  - Ajouté `page_epoch` dans `ChannelState` pour tracker quelle page a créé chaque setpoint
+  - Ajouté `set_page_epoch()` pour synchroniser avec le page epoch du Router
+  - `get_desired()` vérifie maintenant que le setpoint appartient à l'epoch courant
+  - Les setpoints obsolètes (d'une page précédente) retournent `None`
+  - L'epoch est mis à jour dans `refresh_page()` juste après l'incrément
+  - 2 tests unitaires ajoutés pour valider le comportement
 
 ---
 
@@ -163,6 +187,10 @@
 | 2026-01-04 | BUG-002 | Fix: squelch activated before state update | rust-engineer | pending |
 | 2026-01-04 | BUG-003 | Fix: page-aware state filtering | router-expert | pending |
 | 2026-01-04 | BUG-005 | Fix: stale flag priority in get_known_latest_for_app | router-expert | pending |
+| 2026-01-04 | BUG-006 | Fix: page epoch counter for race condition protection | router-expert | pending |
+| 2026-01-04 | BUG-007 | Fix: config snapshot capture in process_feedback | router-expert | pending |
+| 2026-01-04 | BUG-008 | Fix: deferred startup refresh with configurable delay | rust-engineer | pending |
+| 2026-01-04 | BUG-009 | Fix: page epoch integration in FaderSetpoint | router-expert | pending |
 
 ---
 
@@ -177,9 +205,10 @@
 
 ## Pour Reprendre (utilisé par /continue-fix)
 
-**Dernier bug traité**: BUG-005
-**Prochain bug à traiter**: BUG-006
+**Dernier bug traité**: BUG-009
+**Prochain bug à traiter**: QLC-001 (ou RACE-001)
 **Contexte important**:
-- BUG-003 and BUG-005 fixed together as they both relate to state filtering
-- All P0 bugs (BUG-001 to BUG-004) are now DONE
-- BUG-005 (P1) is also DONE - stale flag now properly checked in state queries
+- All P0 bugs (BUG-001 to BUG-004) are DONE ✅
+- All P1 bugs (BUG-005 to BUG-009) are DONE ✅
+- Next: P2 bugs (QLC-001 to QLC-003) or P3 (RACE-001)
+- Note: QLC-004 was already fixed earlier

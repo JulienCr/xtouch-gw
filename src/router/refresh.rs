@@ -8,12 +8,25 @@ use tracing::{debug, info, trace};
 impl super::Router {
     /// Refresh the active page (replay all known states to X-Touch)
     pub async fn refresh_page(&self) {
+        // BUG-006 FIX: Increment epoch FIRST to invalidate any in-flight feedback
+        // This must happen BEFORE clearing shadow state to prevent race conditions
+        // where feedback arrives after shadow clear but before refresh completes.
+        let new_epoch = self.increment_page_epoch();
+
+        // BUG-009 FIX: Update fader setpoint's page epoch to invalidate stale setpoints
+        // This must happen AFTER incrementing page_epoch so that old setpoints are
+        // rejected when plan_page_refresh() calls get_desired()
+        self.fader_setpoint.set_page_epoch(new_epoch);
+
         let page = match self.get_active_page().await {
             Some(p) => p,
             None => return,
         };
 
-        debug!("Refreshing page '{}'", page.name);
+        debug!(
+            "Refreshing page '{}' (epoch={})",
+            page.name, new_epoch
+        );
 
         // Clear X-Touch shadow state to allow re-emission
         self.clear_xtouch_shadow();

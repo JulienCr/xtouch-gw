@@ -93,6 +93,12 @@ pub struct XTouchConfig {
     pub overlay: Option<OverlayConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overlay_per_app: Option<HashMap<String, OverlayConfig>>,
+    /// Delay in milliseconds before applying initial page refresh after drivers are registered.
+    /// This allows drivers time to connect and send fresh feedback before stale snapshot
+    /// values are applied to the X-Touch. Default: 500ms.
+    /// BUG-008 FIX: Prevents stale snapshot values from overriding fresh app feedback.
+    #[serde(default = "default_startup_refresh_delay")]
+    pub startup_refresh_delay_ms: u64,
 }
 
 /// X-Touch operation mode
@@ -604,6 +610,7 @@ impl AppConfig {
 fn default_obs_host() -> String { "localhost".to_string() }
 fn default_obs_port() -> u16 { 4455 }
 fn default_xtouch_mode() -> XTouchMode { XTouchMode::Mcu }
+fn default_startup_refresh_delay() -> u64 { 500 } // 500ms default delay for BUG-008 fix
 fn default_true() -> bool { true }
 fn default_paging_channel() -> u8 { 1 }
 fn default_prev_note() -> u8 { 46 }

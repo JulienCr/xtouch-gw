@@ -295,10 +295,10 @@ async fn run_app(
 
     info!("✅ X-Touch display initialized");
 
-    // Apply loaded state snapshot to X-Touch (restore fader positions, LEDs, etc.)
-    debug!("Applying loaded state to X-Touch...");
-    router.refresh_page().await;
-    debug!("Initial state applied to X-Touch");
+    // NOTE: Initial state refresh is DEFERRED until after drivers are registered.
+    // BUG-008 FIX: Snapshot values are marked `stale: true` and should not be sent
+    // to X-Touch until drivers have had a chance to connect and send fresh feedback.
+    // See the refresh call after "All drivers registered and initialized".
 
     // Create a channel for feedback from apps to X-Touch
     let (feedback_tx, mut feedback_rx) = mpsc::channel::<(String, Vec<u8>)>(1000);
@@ -466,6 +466,37 @@ async fn run_app(
 
     debug!("All drivers registered and initialized");
 
+    // BUG-008 FIX: Wait for configurable delay before initial refresh.
+    // This allows drivers time to:
+    // 1. Complete their connection handshakes (WebSocket for OBS, MIDI port open)
+    // 2. Receive and forward initial state feedback from applications
+    // 3. Update StateStore with fresh values (stale=false) that supersede snapshot values
+    //
+    // The delay is configurable via xtouch.startup_refresh_delay_ms (default: 500ms).
+    // Fresh feedback arriving during this delay will be stored with stale=false,
+    // which takes priority over snapshot values (stale=true) per BUG-005 fix.
+    let startup_delay_ms = config.xtouch.as_ref()
+        .map(|x| x.startup_refresh_delay_ms)
+        .unwrap_or(500);
+
+    if startup_delay_ms > 0 {
+        debug!("Waiting {}ms for drivers to sync before initial refresh (BUG-008 fix)...", startup_delay_ms);
+        tokio::time::sleep(std::time::Duration::from_millis(startup_delay_ms)).await;
+    }
+
+    debug!("Applying initial state to X-Touch (post-driver registration)...");
+    router.refresh_page().await;
+
+    // Send pending MIDI messages from refresh to X-Touch
+    let pending_midi = router.take_pending_midi().await;
+    for msg in pending_midi {
+        trace!("  -> Sending initial MIDI: {:02X?}", msg);
+        if let Err(e) = xtouch.send_raw(&msg).await {
+            warn!("Failed to send initial refresh MIDI: {}", e);
+        }
+    }
+    debug!("Initial state applied to X-Touch");
+
     // Initialize gamepad if enabled
     let _gamepad_mapper = if let Some(gamepad_config) = &config.gamepad {
         input::gamepad::init(gamepad_config, router.clone()).await
@@ -564,6 +595,10 @@ async fn run_app(
 
             // Handle feedback from applications → X-Touch
             Some((app_name, feedback_data)) = feedback_rx.recv() => {
+                // BUG-006 FIX: Capture epoch IMMEDIATELY on receive, before any async operations
+                // This prevents race conditions where a page change occurs while processing feedback.
+                let captured_epoch = router.get_page_epoch();
+
                 // Record activity from application
                 activity_tracker.record(&app_name, crate::tray::ActivityDirection::Inbound);
 
@@ -580,11 +615,32 @@ async fn run_app(
                     debug!("📤 Squelch activated early for PitchBend feedback");
                 }
 
+                // BUG-006 FIX: Re-verify epoch is still current before state update
+                // If epoch changed, a page transition occurred and this feedback is stale
+                if !router.is_epoch_current(captured_epoch) {
+                    trace!(
+                        "Epoch changed ({} -> current), discarding stale feedback from '{}'",
+                        captured_epoch,
+                        app_name
+                    );
+                    continue;
+                }
+
                 // BUG-003 FIX: Only update state if app is on active page
                 // This ensures StateStore and X-Touch forwarding are symmetric.
                 // Off-page app feedback is now fully ignored (not stored, not forwarded).
                 let apps_on_page = router.get_apps_for_active_page().await;
                 if apps_on_page.contains(&app_name) {
+                    // BUG-006 FIX: Final epoch check right before state mutation
+                    // This closes the race window between get_apps_for_active_page and on_midi_from_app
+                    if !router.is_epoch_current(captured_epoch) {
+                        trace!(
+                            "Epoch changed during page check, discarding feedback from '{}'",
+                            app_name
+                        );
+                        continue;
+                    }
+
                     // Update state store (only for apps on active page)
                     router.on_midi_from_app(&app_name, &feedback_data, &app_name);
                 } else {
@@ -594,10 +650,29 @@ async fn run_app(
                     );
                 }
 
+                // BUG-006 FIX: Check epoch again before forwarding to X-Touch
+                // process_feedback() is async and may have been preempted by a page change
+                if !router.is_epoch_current(captured_epoch) {
+                    trace!(
+                        "Epoch changed before X-Touch forward, discarding feedback from '{}'",
+                        app_name
+                    );
+                    continue;
+                }
+
                 // Conditionally forward to X-Touch (only if app mapped on active page)
                 // This prevents off-page apps from moving faders
                 // (matches TypeScript forwardFromApp behavior)
                 if let Some(transformed) = router.process_feedback(&app_name, &feedback_data).await {
+                    // BUG-006 FIX: Final epoch check after async process_feedback
+                    // This is the last line of defense before actually moving hardware
+                    if !router.is_epoch_current(captured_epoch) {
+                        trace!(
+                            "Epoch changed during process_feedback, not forwarding to X-Touch"
+                        );
+                        continue;
+                    }
+
                     debug!("📤 Forwarding feedback to X-Touch: {:02X?}", transformed);
 
                     // Check if this is a PitchBend message - use set_fader
