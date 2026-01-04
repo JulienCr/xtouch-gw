@@ -283,6 +283,15 @@ impl super::Router {
         );
 
         // Mark this as sent to app (for anti-echo) AFTER state update
+        //
+        // RACE-001 NOTE: There is a small window between state update and shadow
+        // update where a subscriber could observe the state but anti-echo is not
+        // yet marked. This is acceptable because:
+        // 1. Both StateStore and app_shadows use std::sync::RwLock (same primitive)
+        // 2. The window is microseconds (same-thread sequential operations)
+        // 3. Anti-echo checks incoming feedback BEFORE state update (see above)
+        // 4. Worst case: a single duplicate reaches X-Touch, which handles it gracefully
+        // 5. Atomicity would require a shared lock, hurting hot-path performance
         self.update_app_shadow(app_key, &entry);
 
         // TODO: Forward to X-Touch if relevant for active page

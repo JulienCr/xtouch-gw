@@ -1,4 +1,4 @@
-# Skill: /continue-fix
+# Command: /continue-fix
 
 Reprend les corrections de bugs là où les agents précédents se sont arrêtés.
 
@@ -15,6 +15,8 @@ Quand cette commande est invoquée:
    - Priorité: P0 > P1 > P2 > P3
    - Dans chaque priorité: ordre numérique (BUG-001 avant BUG-002)
    - Si un bug est `IN_PROGRESS`, le terminer d'abord
+
+Important : si possible, traiter pluseurs bugs indépendants en lançant plusieurs agents simultanément.
 
 3. **Lancer les agents appropriés**:
    - Pour bugs `feedback.rs` ou `anti_echo.rs` → Agent `rust-engineer`
