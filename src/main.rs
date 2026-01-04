@@ -23,7 +23,6 @@ use crate::config::{watcher::ConfigWatcher, AppConfig};
 use crate::control_mapping::{warm_default_mappings, ControlMappingDB, MidiSpec};
 use crate::drivers::midibridge::MidiBridgeDriver;
 use crate::drivers::obs::ObsDriver;
-use crate::drivers::qlc::QlcDriver;
 use crate::drivers::{Driver, IndicatorCallback};
 use crate::router::Router;
 use crate::xtouch::XTouchDriver;
@@ -447,22 +446,8 @@ async fn run_app(
     // Keep led_tx alive for the duration of the program
     // Don't drop it or the channel will close!
 
-    // Register QLC driver (stub - uses MIDI passthrough)
-    // Only register if not already registered (e.g. by MIDI bridge)
-    if router.get_driver("qlc").await.is_none() {
-        let qlc_driver = Arc::new(QlcDriver::new());
-
-        // Subscribe to connection status for tray display
-        let status_callback = tray_handler.subscribe_driver("QLC+".to_string());
-        qlc_driver.subscribe_connection_status(status_callback);
-
-        match router.register_driver("qlc".to_string(), qlc_driver).await {
-            Ok(_) => info!("✅ Registered QLC+ driver (stub)"),
-            Err(e) => warn!("⚠️  Failed to register QLC+ driver (will continue without it): {}", e),
-        }
-    } else {
-        debug!("Skipping QLC+ stub driver registration (MIDI bridge 'qlc' already active)");
-    }
+    // Note: QLC+ is controlled via MidiBridgeDriver configured in config.midi.apps
+    // No separate QlcDriver stub is needed - the MIDI bridge handles everything.
 
     debug!("All drivers registered and initialized");
 

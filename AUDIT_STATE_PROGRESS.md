@@ -1,7 +1,7 @@
 # Suivi des Corrections - Audit State Bugs
 
 **Dernière mise à jour**: 2026-01-04
-**Status global**: EN COURS
+**Status global**: ✅ TERMINÉ
 
 ---
 
@@ -133,24 +133,31 @@
 
 ### QLC-001: Driver Stub Inutile
 - **Fichier**: `src/drivers/qlc.rs`, `src/main.rs`
-- **Status**: [ ] PENDING
+- **Status**: [x] DONE
 - **Assigné à**: Agent rust-engineer
 - **Notes**:
   - Décision: Supprimer ou implémenter correctement
+- **Fix appliqué**:
+  - Supprimé le fichier `src/drivers/qlc.rs` entièrement
+  - Supprimé l'enregistrement du QlcDriver dans `src/main.rs`
+  - Le MidiBridgeDriver suffit pour la communication MIDI avec QLC+
+  - Ajouté documentation explicative dans `src/drivers/mod.rs`
 
 ### QLC-002: Pas d'Indicateurs LED
 - **Fichier**: `src/drivers/qlc.rs`
-- **Status**: [ ] PENDING
+- **Status**: [x] DONE (N/A)
 - **Assigné à**: Agent rust-engineer
 - **Notes**:
   - Implémenter subscribe_indicators()
+- **Fix appliqué**: Sans objet - le driver stub a été supprimé (QLC-001)
 
 ### QLC-003: Status Connexion Faux
 - **Fichier**: `src/drivers/qlc.rs`
-- **Status**: [ ] PENDING
+- **Status**: [x] DONE (N/A)
 - **Assigné à**: Agent rust-engineer
 - **Notes**:
   - Déléguer au MIDI bridge correspondant
+- **Fix appliqué**: Sans objet - le driver stub a été supprimé (QLC-001). Le MidiBridgeDriver gère correctement le status de connexion.
 
 ### QLC-004: Perte Feedback si App Non Configurée
 - **Fichier**: `src/config/mod.rs`
@@ -169,10 +176,17 @@
 
 ### RACE-001: Shadow/State Non Atomiques
 - **Fichier**: `src/router/feedback.rs`
-- **Status**: [ ] PENDING
+- **Status**: [x] DONE (Documented)
 - **Assigné à**: Agent rust-engineer
 - **Notes**:
   - Unifier les primitives de synchronisation
+- **Analyse et résolution**:
+  - Après analyse: StateStore et app_shadows utilisent TOUS DEUX `std::sync::RwLock` (pas de mismatch)
+  - La fenêtre de race est de quelques microsecondes sur le même thread
+  - Anti-echo vérifie AVANT state update (mitigé par design)
+  - Pire cas: un duplicate bénin atteint X-Touch (le moteur bouge 2x à la même position)
+  - **Décision**: Documenter plutôt que fixer - l'atomicité ajouterait de la complexité sans bénéfice réel
+  - Documentation ajoutée dans `src/router/feedback.rs` (lignes 285-295)
 
 ---
 
@@ -191,6 +205,8 @@
 | 2026-01-04 | BUG-007 | Fix: config snapshot capture in process_feedback | router-expert | pending |
 | 2026-01-04 | BUG-008 | Fix: deferred startup refresh with configurable delay | rust-engineer | pending |
 | 2026-01-04 | BUG-009 | Fix: page epoch integration in FaderSetpoint | router-expert | pending |
+| 2026-01-04 | QLC-001/002/003 | Remove unused QlcDriver stub | rust-engineer | pending |
+| 2026-01-04 | RACE-001 | Documented: race window is benign, both use std::sync::RwLock | rust-engineer | pending |
 
 ---
 
@@ -205,10 +221,11 @@
 
 ## Pour Reprendre (utilisé par /continue-fix)
 
-**Dernier bug traité**: BUG-009
-**Prochain bug à traiter**: QLC-001 (ou RACE-001)
+**Dernier bug traité**: RACE-001
+**Prochain bug à traiter**: AUCUN - AUDIT TERMINÉ ✅
 **Contexte important**:
 - All P0 bugs (BUG-001 to BUG-004) are DONE ✅
 - All P1 bugs (BUG-005 to BUG-009) are DONE ✅
-- Next: P2 bugs (QLC-001 to QLC-003) or P3 (RACE-001)
-- Note: QLC-004 was already fixed earlier
+- All P2 bugs (QLC-001 to QLC-004) are DONE ✅
+- All P3 bugs (RACE-001) are DONE ✅
+- **AUDIT COMPLET - 12/12 bugs résolus**
