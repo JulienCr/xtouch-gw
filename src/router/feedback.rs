@@ -1,7 +1,7 @@
 //! Application feedback processing and transformation
 
 use crate::control_mapping::{load_default_mappings, MidiSpec};
-use crate::state::{build_entry_from_raw, AppKey, MidiStateEntry};
+use crate::state::{build_entry_from_raw, AppKey};
 use tracing::{debug, trace, warn};
 
 impl super::Router {
@@ -237,7 +237,7 @@ impl super::Router {
     /// * `app_key` - Application identifier (e.g., "obs", "voicemeeter")
     /// * `raw` - Raw MIDI bytes from the application
     /// * `port_id` - MIDI port identifier
-    pub fn on_midi_from_app(&self, app_key: &str, raw: &[u8], port_id: &str) {
+    pub async fn on_midi_from_app(&self, app_key: &str, raw: &[u8], port_id: &str) {
         // Parse the MIDI message
         let entry = match build_entry_from_raw(raw, port_id) {
             Some(e) => e,
@@ -256,9 +256,13 @@ impl super::Router {
             },
         };
 
-        // BUG-001 FIX: Check anti-echo BEFORE updating state
+        // BUG-001 FIX: Check anti-echo BEFORE updating state (now async)
         // If this is an echo of a value we recently sent, suppress it entirely
-        if self.should_suppress_anti_echo(app_key, &entry) {
+        if self
+            .state_actor
+            .should_suppress_anti_echo(app_key.to_string(), entry.clone())
+            .await
+        {
             trace!(
                 "Anti-echo: suppressing feedback from {} (status={:?} ch={:?} d1={:?})",
                 app_key,
@@ -269,8 +273,8 @@ impl super::Router {
             return;
         }
 
-        // Not an echo - update state store
-        self.state.update_from_feedback(app, entry.clone());
+        // Not an echo - update state store (fire-and-forget)
+        self.state_actor.update_state(app, entry.clone());
 
         // Log for debugging
         trace!(
@@ -282,17 +286,10 @@ impl super::Router {
             entry.value
         );
 
-        // Mark this as sent to app (for anti-echo) AFTER state update
-        //
-        // RACE-001 NOTE: There is a small window between state update and shadow
-        // update where a subscriber could observe the state but anti-echo is not
-        // yet marked. This is acceptable because:
-        // 1. Both StateStore and app_shadows use std::sync::RwLock (same primitive)
-        // 2. The window is microseconds (same-thread sequential operations)
-        // 3. Anti-echo checks incoming feedback BEFORE state update (see above)
-        // 4. Worst case: a single duplicate reaches X-Touch, which handles it gracefully
-        // 5. Atomicity would require a shared lock, hurting hot-path performance
-        self.update_app_shadow(app_key, &entry);
+        // Mark this as sent to app (for anti-echo) - fire-and-forget
+        // Now handled by the state actor, so atomicity is guaranteed
+        self.state_actor
+            .update_shadow(app_key.to_string(), entry);
 
         // TODO: Forward to X-Touch if relevant for active page
         // This will be implemented in the forward module (Phase 6.2)

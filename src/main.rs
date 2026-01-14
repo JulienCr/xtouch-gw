@@ -157,13 +157,20 @@ async fn main() -> Result<()> {
     let router = Arc::new(router);
     debug!("Router initialized with activity tracking");
 
-    // Load state snapshot from disk if it exists
-    let snapshot_path = std::path::PathBuf::from(".state/snapshot.json");
-    if snapshot_path.exists() {
-        if let Err(e) = router.get_state_store().load_snapshot(&snapshot_path).await {
+    // Load state snapshot from sled database if it exists
+    match router.get_persistence_actor().load_snapshot().await {
+        Ok(Some(snapshot)) => {
+            // Hydrate state actor with loaded snapshot
+            for (app, entries) in snapshot.states {
+                router.get_state_actor().hydrate_from_snapshot(app, entries);
+            }
+            info!("State snapshot loaded from sled database");
+        }
+        Ok(None) => {
+            debug!("No state snapshot found in sled database");
+        }
+        Err(e) => {
             warn!("Failed to load state snapshot: {}", e);
-        } else {
-            info!("✅ State snapshot loaded from disk");
         }
     }
 
@@ -697,10 +704,9 @@ async fn run_app(
                 }
             }
 
-            // Periodic state snapshot save (every 5 seconds)
+            // Periodic state snapshot save (every 5 seconds, debounced by persistence actor)
             _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
-                let snapshot_path = std::path::PathBuf::from(".state/snapshot.json");
-                if let Err(e) = router.save_state_snapshot(&snapshot_path).await {
+                if let Err(e) = router.save_state_snapshot().await {
                     warn!("Failed to save state snapshot: {}", e);
                 }
             }
@@ -749,13 +755,14 @@ async fn run_app(
     router.shutdown_all_drivers().await?;
     debug!("All drivers shut down");
 
-    // Save final state snapshot
-    //info!("Saving final state snapshot...");
-    let snapshot_path = std::path::PathBuf::from(".state/snapshot.json");
-    if let Err(e) = router.save_state_snapshot(&snapshot_path).await {
+    // Save and flush final state snapshot
+    if let Err(e) = router.save_state_snapshot().await {
         warn!("Failed to save final state snapshot: {}", e);
+    }
+    if let Err(e) = router.flush_state_snapshot().await {
+        warn!("Failed to flush final state snapshot: {}", e);
     } else {
-        info!("✅ State snapshot saved");
+        info!("State snapshot saved");
     }
 
     // Reset X-Touch hardware to clean state before disconnecting

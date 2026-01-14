@@ -5,7 +5,17 @@ use crate::config::{ControlMapping, MidiConfig, PageConfig};
 use crate::drivers::ConsoleDriver;
 use serde_json::json;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+
+/// Counter for unique test database paths
+static TEST_DB_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+/// Create a unique database path for each test to avoid lock conflicts
+fn make_test_db_path() -> String {
+    let id = TEST_DB_COUNTER.fetch_add(1, Ordering::SeqCst);
+    format!(".state/test_sled_{}", id)
+}
 
 fn make_test_config(pages: Vec<PageConfig>) -> AppConfig {
     AppConfig {
@@ -34,6 +44,11 @@ fn make_test_page(name: &str) -> PageConfig {
     }
 }
 
+/// Create a Router with a unique test database path
+fn make_test_router(config: AppConfig) -> Router {
+    Router::with_db_path(config, &make_test_db_path())
+}
+
 #[tokio::test]
 async fn test_page_navigation() {
     let config = make_test_config(vec![
@@ -42,7 +57,7 @@ async fn test_page_navigation() {
         make_test_page("Page 3"),
     ]);
 
-    let router = Router::new(config);
+    let router = make_test_router(config);
 
     assert_eq!(router.get_active_page_name().await, "Page 1");
 
@@ -63,7 +78,7 @@ async fn test_page_navigation() {
 async fn test_set_page_by_name() {
     let config = make_test_config(vec![make_test_page("Voicemeeter"), make_test_page("OBS")]);
 
-    let router = Router::new(config);
+    let router = make_test_router(config);
 
     router.set_active_page("OBS").await.unwrap();
     assert_eq!(router.get_active_page_name().await, "OBS");
@@ -76,7 +91,7 @@ async fn test_set_page_by_name() {
 async fn test_set_page_by_index() {
     let config = make_test_config(vec![make_test_page("Page 0"), make_test_page("Page 1")]);
 
-    let router = Router::new(config);
+    let router = make_test_router(config);
 
     router.set_active_page("1").await.unwrap();
     assert_eq!(router.get_active_page_name().await, "Page 1");
@@ -93,7 +108,7 @@ async fn test_midi_note_navigation() {
         make_test_page("Page 3"),
     ]);
 
-    let router = Router::new(config);
+    let router = make_test_router(config);
 
     // Test next page (note 47 on channel 1)
     let note_on_next = [0x90, 47, 127]; // Note On, Ch1, note 47, velocity 127
@@ -115,7 +130,7 @@ async fn test_midi_note_navigation() {
 async fn test_midi_note_navigation_ignores_velocity_zero() {
     let config = make_test_config(vec![make_test_page("Page 1"), make_test_page("Page 2")]);
 
-    let router = Router::new(config);
+    let router = make_test_router(config);
 
     // Note Off (velocity 0) should be ignored
     let note_off = [0x90, 47, 0]; // Note On with velocity 0 = Note Off
@@ -128,7 +143,7 @@ async fn test_midi_note_navigation_ignores_velocity_zero() {
 #[tokio::test]
 async fn test_driver_registration_and_initialization() {
     let config = make_test_config(vec![make_test_page("Test Page")]);
-    let router = Router::new(config);
+    let router = make_test_router(config);
 
     // Create and register a console driver
     let driver = Arc::new(ConsoleDriver::new("test_console"));
@@ -151,7 +166,7 @@ async fn test_driver_registration_and_initialization() {
 #[tokio::test]
 async fn test_driver_shutdown_all() {
     let config = make_test_config(vec![make_test_page("Test Page")]);
-    let router = Router::new(config);
+    let router = make_test_router(config);
 
     // Register multiple drivers
     router
@@ -236,7 +251,7 @@ async fn test_driver_execution_with_context() {
     page.controls = Some(controls);
 
     let config = make_test_config(vec![page]);
-    let router = Router::new(config);
+    let router = make_test_router(config);
 
     // Register driver
     router
@@ -271,7 +286,7 @@ async fn test_driver_execution_missing_driver() {
     page.controls = Some(controls);
 
     let config = make_test_config(vec![page]);
-    let router = Router::new(config);
+    let router = make_test_router(config);
 
     // Attempt to execute control action (should fail)
     let result = router.handle_control("fader1", Some(json!(127))).await;
@@ -285,7 +300,7 @@ async fn test_driver_execution_missing_driver() {
 #[tokio::test]
 async fn test_driver_execution_missing_control() {
     let config = make_test_config(vec![make_test_page("Test Page")]);
-    let router = Router::new(config);
+    let router = make_test_router(config);
 
     // Register driver
     router
@@ -340,7 +355,7 @@ async fn test_multiple_drivers_execution() {
     page.controls = Some(controls);
 
     let config = make_test_config(vec![page]);
-    let router = Router::new(config);
+    let router = make_test_router(config);
 
     // Register multiple drivers
     router
@@ -380,7 +395,7 @@ async fn test_page_epoch_increments_on_page_change() {
         make_test_page("Page 3"),
     ]);
 
-    let router = Router::new(config);
+    let router = make_test_router(config);
 
     // Initial epoch should be 0
     let initial_epoch = router.get_page_epoch();
@@ -407,7 +422,7 @@ async fn test_page_epoch_is_epoch_current() {
         make_test_page("Page 2"),
     ]);
 
-    let router = Router::new(config);
+    let router = make_test_router(config);
 
     // Capture current epoch
     let captured = router.get_page_epoch();
@@ -430,7 +445,7 @@ async fn test_page_epoch_survives_set_page() {
         make_test_page("QLC"),
     ]);
 
-    let router = Router::new(config);
+    let router = make_test_router(config);
     let initial = router.get_page_epoch();
 
     // set_active_page also calls refresh_page which increments epoch

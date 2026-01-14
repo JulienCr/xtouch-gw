@@ -20,17 +20,15 @@ mod tests;
 
 use crate::config::AppConfig;
 use crate::drivers::Driver;
-use crate::state::StateStore;
+use crate::state::persistence_actor::PersistenceActor;
+use crate::state::{PersistenceActorHandle, StateActorHandle, DEFAULT_DEBOUNCE_MS};
 use crate::xtouch::fader_setpoint::{ApplySetpointCmd, FaderSetpoint};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock as StdRwLock};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, RwLock};
-
-// Re-export anti-echo types for internal use
-pub(crate) use anti_echo::ShadowEntry;
 
 /// Main router orchestrating page navigation, state management, and driver execution
 pub struct Router {
@@ -40,12 +38,10 @@ pub struct Router {
     pub(crate) drivers: Arc<RwLock<HashMap<String, Arc<dyn Driver>>>>,
     /// Active page index
     pub(crate) active_page_index: Arc<RwLock<usize>>,
-    /// MIDI state store (per application)
-    pub(crate) state: StateStore,
-    /// Shadow states per app (for anti-echo)
-    pub(crate) app_shadows: Arc<StdRwLock<HashMap<String, HashMap<String, ShadowEntry>>>>,
-    /// Last user action timestamps per X-Touch control (for Last-Write-Wins)
-    pub(crate) last_user_action_ts: Arc<StdRwLock<HashMap<String, u64>>>,
+    /// State actor handle for MIDI state management (per application)
+    pub(crate) state_actor: StateActorHandle,
+    /// Persistence actor handle for state snapshots
+    pub(crate) persistence_actor: PersistenceActorHandle,
     /// Flag indicating display needs update after page change
     pub(crate) display_needs_update: Arc<tokio::sync::Mutex<bool>>,
     /// Fader setpoint scheduler (motor position tracking)
@@ -64,15 +60,28 @@ pub struct Router {
 impl Router {
     /// Create a new Router with initial configuration
     pub fn new(config: AppConfig) -> Self {
+        Self::with_db_path(config, ".state/sled")
+    }
+
+    /// Create a new Router with a custom database path
+    ///
+    /// This is useful for testing to avoid database lock conflicts.
+    pub fn with_db_path(config: AppConfig, db_path: &str) -> Self {
         let (fader_setpoint, setpoint_rx) = FaderSetpoint::new();
+
+        // Spawn persistence actor for debounced state snapshots
+        let persistence_actor = PersistenceActor::spawn(db_path, DEFAULT_DEBOUNCE_MS)
+            .expect("Failed to create persistence actor");
+
+        // Spawn state actor with persistence channel
+        let state_actor = StateActorHandle::spawn(persistence_actor.cmd_tx());
 
         Self {
             config: Arc::new(RwLock::new(config)),
             drivers: Arc::new(RwLock::new(HashMap::new())),
             active_page_index: Arc::new(RwLock::new(0)),
-            state: StateStore::new(),
-            app_shadows: Arc::new(StdRwLock::new(HashMap::new())),
-            last_user_action_ts: Arc::new(StdRwLock::new(HashMap::new())),
+            state_actor,
+            persistence_actor,
             display_needs_update: Arc::new(tokio::sync::Mutex::new(false)),
             fader_setpoint: Arc::new(fader_setpoint),
             setpoint_rx: Arc::new(tokio::sync::Mutex::new(Some(setpoint_rx))),
@@ -144,14 +153,43 @@ impl Router {
         rx_guard.take()
     }
 
-    /// Get reference to StateStore (for loading snapshots)
-    pub fn get_state_store(&self) -> &StateStore {
-        &self.state
+    /// Get reference to StateActorHandle (for state operations)
+    pub fn get_state_actor(&self) -> &StateActorHandle {
+        &self.state_actor
     }
 
-    /// Save state snapshot to disk
-    pub async fn save_state_snapshot(&self, path: impl AsRef<std::path::Path>) -> Result<()> {
-        self.state.save_snapshot(path).await
+    /// Get reference to PersistenceActorHandle (for loading/saving snapshots)
+    pub fn get_persistence_actor(&self) -> &PersistenceActorHandle {
+        &self.persistence_actor
+    }
+
+    /// Save current state to the persistence actor (debounced)
+    ///
+    /// This collects state from all apps and sends it to the persistence actor
+    /// for debounced saving to sled.
+    pub async fn save_state_snapshot(&self) -> Result<()> {
+        use crate::state::{AppKey, StateSnapshot};
+
+        // Collect states from all apps
+        let all_apps: Vec<AppKey> = AppKey::all().iter().copied().collect();
+        let states = self.state_actor.list_states_for_apps(all_apps).await;
+
+        // Build snapshot
+        let snapshot = StateSnapshot {
+            timestamp: Self::now_ms(),
+            version: StateSnapshot::VERSION.to_string(),
+            states,
+        };
+
+        // Send to persistence actor (debounced)
+        self.persistence_actor.save_snapshot(snapshot).await
+    }
+
+    /// Flush pending state snapshot to disk immediately
+    ///
+    /// Use this before shutdown to ensure state is persisted.
+    pub async fn flush_state_snapshot(&self) -> Result<()> {
+        self.persistence_actor.flush().await
     }
 
     /// Update configuration and notify drivers (hot-reload support)
