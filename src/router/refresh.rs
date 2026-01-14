@@ -181,23 +181,36 @@ impl super::Router {
             }
         };
 
-        // 2. Get control config from page
-        let page_controls = match page.controls.as_ref() {
-            Some(controls) => controls,
-            None => {
-                trace!("  Page has no controls");
-                return None;
-            }
-        };
+        // 2. Get control config from page OR pages_global
+        // First check page-specific controls, then fall back to global controls
+        let control_config = {
+            // Try page controls first
+            let from_page = page.controls.as_ref().and_then(|c| c.get(&control_id));
 
-        let control_config = match page_controls.get(&control_id) {
-            Some(config) => {
-                trace!("  Found control config for {}: app={}", control_id, config.app);
-                config
-            }
-            None => {
-                trace!("  Control '{}' not found in page", control_id);
-                return None;
+            if let Some(config) = from_page {
+                trace!("  Found control config for {} in page: app={}", control_id, config.app);
+                config.clone()
+            } else {
+                // Fall back to global controls
+                let config_guard = self.config.try_read().expect("Config lock poisoned");
+                let from_global = config_guard
+                    .pages_global
+                    .as_ref()
+                    .and_then(|g| g.controls.as_ref())
+                    .and_then(|c| c.get(&control_id))
+                    .cloned();
+                drop(config_guard);
+
+                match from_global {
+                    Some(config) => {
+                        trace!("  Found control config for {} in pages_global: app={}", control_id, config.app);
+                        config
+                    }
+                    None => {
+                        trace!("  Control '{}' not found in page or pages_global", control_id);
+                        return None;
+                    }
+                }
             }
         };
 
