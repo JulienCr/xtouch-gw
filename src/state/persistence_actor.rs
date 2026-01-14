@@ -45,7 +45,7 @@ use super::persistence::StateSnapshot;
 use anyhow::{Context, Result};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 /// Default debounce window in milliseconds
 pub const DEFAULT_DEBOUNCE_MS: u64 = 500;
@@ -153,7 +153,7 @@ impl PersistenceActor {
                 Some(cmd) = self.command_rx.recv() => {
                     match cmd {
                         PersistenceCommand::Save(snapshot) => {
-                            debug!("Received save command, queuing snapshot");
+                            trace!("Received save command, queuing snapshot");
                             self.pending_snapshot = Some(snapshot);
                             self.last_write_ts = Instant::now();
 
@@ -163,13 +163,13 @@ impl PersistenceActor {
                             }
                         }
                         PersistenceCommand::Load(response_tx) => {
-                            debug!("Received load command");
+                            trace!("Received load command");
                             let snapshot = self.load_snapshot();
                             // Best-effort send, receiver may have dropped
                             let _ = response_tx.send(snapshot);
                         }
                         PersistenceCommand::Flush(response_tx) => {
-                            debug!("Received flush command");
+                            trace!("Received flush command");
                             self.flush_pending_snapshot().await;
                             // Best-effort send, receiver may have dropped
                             let _ = response_tx.send(Ok(()));
@@ -190,7 +190,7 @@ impl PersistenceActor {
                     if self.pending_snapshot.is_some() && self.debounce_ms > 0 {
                         let elapsed = self.last_write_ts.elapsed();
                         if elapsed >= Duration::from_millis(self.debounce_ms) {
-                            debug!(
+                            trace!(
                                 "Debounce window expired ({:?}), flushing pending snapshot",
                                 elapsed
                             );
@@ -207,7 +207,7 @@ impl PersistenceActor {
     /// Called when the debounce window expires or on explicit flush request.
     async fn flush_pending_snapshot(&mut self) {
         let Some(snapshot) = self.pending_snapshot.take() else {
-            debug!("No pending snapshot to flush");
+            trace!("No pending snapshot to flush");
             return;
         };
 
@@ -237,7 +237,7 @@ impl PersistenceActor {
             Ok(Ok(())) => {
                 self.write_count += 1;
                 self.last_write_ts = Instant::now();
-                debug!(
+                trace!(
                     "Snapshot flushed to sled (write #{})",
                     self.write_count
                 );
@@ -298,7 +298,7 @@ impl PersistenceActor {
 
         self.db.flush().context("Failed to flush sled database")?;
 
-        debug!("Snapshot written to sled directly");
+        trace!("Snapshot written to sled directly");
         Ok(())
     }
 }

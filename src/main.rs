@@ -757,8 +757,11 @@ async fn run_app(
 }
 
 fn init_logging(level: &str) -> Result<()> {
+    // Build filter with sled logs suppressed to reduce noise
+    // sled emits many DEBUG logs (advancing offset, wrote lsns, etc.)
+    let filter_str = format!("{},sled=warn", level);
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(level));
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(&filter_str));
 
     tracing_subscriber::registry()
         .with(filter)

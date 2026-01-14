@@ -153,14 +153,14 @@ impl TrayManager {
             };
             match update {
                 TrayUpdate::DriverStatus { name, status } => {
-                    debug!("Tray: driver {} status changed to {:?}", name, status);
+                    trace!("Tray: driver {} status changed to {:?}", name, status);
 
                     // Update our tracking
                     self.driver_statuses.insert(name.clone(), status.clone());
 
                     // Determine overall icon color (worst status wins)
                     let icon_color = self.calculate_overall_icon_color();
-                    debug!("Overall icon color: {:?}", icon_color);
+                    trace!("Overall icon color: {:?}", icon_color);
 
                     let icon_bytes = generate_icon_bytes(icon_color);
                     if let Ok(new_icon) = tray_icon::Icon::from_rgba(icon_bytes, 16, 16) {
@@ -171,7 +171,7 @@ impl TrayManager {
                     // Update tooltip with current status summary
                     let tooltip = self.build_tooltip();
                     let _ = tray_icon.set_tooltip(Some(&tooltip));
-                    debug!("Tooltip updated: {}", tooltip);
+                    trace!("Tooltip updated: {}", tooltip);
 
                     // Rebuild menu to show all driver statuses
                     if let Ok(new_menu) = self.build_menu_with_all_statuses() {
@@ -183,7 +183,7 @@ impl TrayManager {
                 }
                 TrayUpdate::Activity { driver, direction } => {
                     // Legacy activity update (deprecated)
-                    debug!("Tray: activity from {} {:?}", driver, direction);
+                    trace!("Tray: activity from {} {:?}", driver, direction);
                 }
                 TrayUpdate::ActivitySnapshot { activities } => {
                     // Update activity states
