@@ -157,13 +157,24 @@ async fn main() -> Result<()> {
     let router = Arc::new(router);
     debug!("Router initialized with activity tracking");
 
-    // Load state snapshot from disk if it exists
-    let snapshot_path = std::path::PathBuf::from(".state/snapshot.json");
-    if snapshot_path.exists() {
-        if let Err(e) = router.get_state_store().load_snapshot(&snapshot_path).await {
+    // Load state snapshot from sled database if it exists
+    // IMPORTANT: Use _and_wait() to ensure state is fully loaded before page refresh
+    match router.get_persistence_actor().load_snapshot().await {
+        Ok(Some(snapshot)) => {
+            // Hydrate state actor with loaded snapshot (wait for each to complete)
+            for (app, entries) in snapshot.states {
+                router
+                    .get_state_actor()
+                    .hydrate_from_snapshot_and_wait(app, entries)
+                    .await;
+            }
+            info!("State snapshot loaded from sled database");
+        }
+        Ok(None) => {
+            debug!("No state snapshot found in sled database");
+        }
+        Err(e) => {
             warn!("Failed to load state snapshot: {}", e);
-        } else {
-            info!("✅ State snapshot loaded from disk");
         }
     }
 
@@ -611,29 +622,9 @@ async fn run_app(
                     continue;
                 }
 
-                // BUG-003 FIX: Only update state if app is on active page
-                // This ensures StateStore and X-Touch forwarding are symmetric.
-                // Off-page app feedback is now fully ignored (not stored, not forwarded).
-                let apps_on_page = router.get_apps_for_active_page().await;
-                if apps_on_page.contains(&app_name) {
-                    // BUG-006 FIX: Final epoch check right before state mutation
-                    // This closes the race window between get_apps_for_active_page and on_midi_from_app
-                    if !router.is_epoch_current(captured_epoch) {
-                        trace!(
-                            "Epoch changed during page check, discarding feedback from '{}'",
-                            app_name
-                        );
-                        continue;
-                    }
-
-                    // Update state store (only for apps on active page)
-                    router.on_midi_from_app(&app_name, &feedback_data, &app_name);
-                } else {
-                    trace!(
-                        "App '{}' not on active page, skipping state update",
-                        app_name
-                    );
-                }
+                // ALWAYS store state from all apps (needed for page refresh to restore values)
+                // The X-Touch forwarding (process_feedback) will filter by active page
+                router.on_midi_from_app(&app_name, &feedback_data, &app_name).await;
 
                 // BUG-006 FIX: Check epoch again before forwarding to X-Touch
                 // process_feedback() is async and may have been preempted by a page change
@@ -697,10 +688,9 @@ async fn run_app(
                 }
             }
 
-            // Periodic state snapshot save (every 5 seconds)
+            // Periodic state snapshot save (every 5 seconds, debounced by persistence actor)
             _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
-                let snapshot_path = std::path::PathBuf::from(".state/snapshot.json");
-                if let Err(e) = router.save_state_snapshot(&snapshot_path).await {
+                if let Err(e) = router.save_state_snapshot().await {
                     warn!("Failed to save state snapshot: {}", e);
                 }
             }
@@ -749,13 +739,14 @@ async fn run_app(
     router.shutdown_all_drivers().await?;
     debug!("All drivers shut down");
 
-    // Save final state snapshot
-    //info!("Saving final state snapshot...");
-    let snapshot_path = std::path::PathBuf::from(".state/snapshot.json");
-    if let Err(e) = router.save_state_snapshot(&snapshot_path).await {
+    // Save and flush final state snapshot
+    if let Err(e) = router.save_state_snapshot().await {
         warn!("Failed to save final state snapshot: {}", e);
+    }
+    if let Err(e) = router.flush_state_snapshot().await {
+        warn!("Failed to flush final state snapshot: {}", e);
     } else {
-        info!("✅ State snapshot saved");
+        info!("State snapshot saved");
     }
 
     // Reset X-Touch hardware to clean state before disconnecting
@@ -770,8 +761,11 @@ async fn run_app(
 }
 
 fn init_logging(level: &str) -> Result<()> {
+    // Build filter with sled logs suppressed to reduce noise
+    // sled emits many DEBUG logs (advancing offset, wrote lsns, etc.)
+    let filter_str = format!("{},sled=warn", level);
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(level));
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(&filter_str));
 
     tracing_subscriber::registry()
         .with(filter)

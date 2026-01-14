@@ -28,11 +28,11 @@ impl super::Router {
             page.name, new_epoch
         );
 
-        // Clear X-Touch shadow state to allow re-emission
-        self.clear_xtouch_shadow();
+        // Clear X-Touch shadow state to allow re-emission (fire-and-forget)
+        self.state_actor.clear_shadows();
 
         // Build and execute refresh plan
-        let entries = self.plan_page_refresh(&page);
+        let entries = self.plan_page_refresh(&page).await;
 
         trace!(
             "Page refresh plan: {} Notes, {} CCs, {} PBs",
@@ -132,11 +132,11 @@ impl super::Router {
     /// will have CC values. But X-Touch faders need PB messages. This function:
     /// 1. Looks up which control uses the given PB channel
     /// 2. Checks if that control has a CC mapping in the page config
-    /// 3. Queries StateStore for the CC value
+    /// 3. Queries StateActor for the CC value
     /// 4. Transforms CC (7-bit) to PB (14-bit) using fast approximation
     ///
     /// Returns transformed PB entry if CC value found, None otherwise
-    fn try_cc_to_pb_transform(
+    async fn try_cc_to_pb_transform(
         &self,
         page: &PageConfig,
         app: &AppKey,
@@ -145,7 +145,7 @@ impl super::Router {
         use crate::control_mapping::{load_default_mappings, MidiSpec};
 
         trace!(
-            "🔄 CC→PB transform: app={:?} page={} pb_channel={}",
+            "CC->PB transform: app={:?} page={} pb_channel={}",
             app, page.name, pb_channel
         );
 
@@ -153,7 +153,7 @@ impl super::Router {
         let mapping_db = match load_default_mappings() {
             Ok(db) => db,
             Err(e) => {
-                trace!("❌ Failed to load mapping DB: {}", e);
+                trace!("Failed to load mapping DB: {}", e);
                 return None;
             }
         };
@@ -172,38 +172,51 @@ impl super::Router {
 
         let control_id = match control_id {
             Some(id) => {
-                trace!("  ✓ Found control_id: {}", id);
+                trace!("  Found control_id: {}", id);
                 id
             }
             None => {
-                trace!("  ❌ No control found for PB channel {}", pb_channel);
+                trace!("  No control found for PB channel {}", pb_channel);
                 return None;
             }
         };
 
-        // 2. Get control config from page
-        let page_controls = match page.controls.as_ref() {
-            Some(controls) => controls,
-            None => {
-                trace!("  ❌ Page has no controls");
-                return None;
-            }
-        };
+        // 2. Get control config from page OR pages_global
+        // First check page-specific controls, then fall back to global controls
+        let control_config = {
+            // Try page controls first
+            let from_page = page.controls.as_ref().and_then(|c| c.get(&control_id));
 
-        let control_config = match page_controls.get(&control_id) {
-            Some(config) => {
-                trace!("  ✓ Found control config for {}: app={}", control_id, config.app);
-                config
-            }
-            None => {
-                trace!("  ❌ Control '{}' not found in page", control_id);
-                return None;
+            if let Some(config) = from_page {
+                trace!("  Found control config for {} in page: app={}", control_id, config.app);
+                config.clone()
+            } else {
+                // Fall back to global controls
+                let config_guard = self.config.try_read().expect("Config lock poisoned");
+                let from_global = config_guard
+                    .pages_global
+                    .as_ref()
+                    .and_then(|g| g.controls.as_ref())
+                    .and_then(|c| c.get(&control_id))
+                    .cloned();
+                drop(config_guard);
+
+                match from_global {
+                    Some(config) => {
+                        trace!("  Found control config for {} in pages_global: app={}", control_id, config.app);
+                        config
+                    }
+                    None => {
+                        trace!("  Control '{}' not found in page or pages_global", control_id);
+                        return None;
+                    }
+                }
             }
         };
 
         // Ensure control's app matches the app we're querying for
         if control_config.app != app.as_str() {
-            trace!("  ❌ Control app '{}' doesn't match queried app '{:?}'", control_config.app, app);
+            trace!("  Control app '{}' doesn't match queried app '{:?}'", control_config.app, app);
             return None;
         }
 
@@ -211,49 +224,48 @@ impl super::Router {
         let midi_spec = match control_config.midi.as_ref() {
             Some(spec) => spec,
             None => {
-                trace!("  ❌ Control has no MIDI spec");
+                trace!("  Control has no MIDI spec");
                 return None;
             }
         };
 
         if !matches!(midi_spec.midi_type, crate::config::MidiType::Cc) {
-            trace!("  ❌ Control MIDI type is not CC (is {:?})", midi_spec.midi_type);
+            trace!("  Control MIDI type is not CC (is {:?})", midi_spec.midi_type);
             return None;
         }
 
-        // 4. Query StateStore for CC value
+        // 4. Query StateActor for CC value (now async)
         let cc_channel = match midi_spec.channel {
             Some(ch) => ch,
             None => {
-                trace!("  ❌ CC spec has no channel");
+                trace!("  CC spec has no channel");
                 return None;
             }
         };
         let cc_num = match midi_spec.cc {
             Some(num) => num,
             None => {
-                trace!("  ❌ CC spec has no cc number");
+                trace!("  CC spec has no cc number");
                 return None;
             }
         };
 
         trace!(
-            "  → Querying StateStore: app={:?} CC ch={} cc={}",
+            "  Querying StateActor: app={:?} CC ch={} cc={}",
             app, cc_channel, cc_num
         );
 
-        let cc_entry = match self.state.get_known_latest_for_app(
-            *app,
-            crate::state::MidiStatus::CC,
-            Some(cc_channel),
-            Some(cc_num),
-        ) {
+        let cc_entry = match self
+            .state_actor
+            .get_known_latest(*app, MidiStatus::CC, Some(cc_channel), Some(cc_num))
+            .await
+        {
             Some(entry) => {
-                trace!("  ✓ Found CC entry: value={:?}", entry.value);
+                trace!("  Found CC entry: value={:?}", entry.value);
                 entry
             }
             None => {
-                trace!("  ❌ No CC entry found in StateStore");
+                trace!("  No CC entry found in StateActor");
                 return None;
             }
         };
@@ -263,14 +275,14 @@ impl super::Router {
         let cc_value = match cc_entry.value.as_number() {
             Some(num) => num as u8,
             None => {
-                trace!("  ❌ CC value is not a number");
+                trace!("  CC value is not a number");
                 return None;
             }
         };
         let pb_value = crate::midi::convert::to_14bit(cc_value);
 
         trace!(
-            "  ✓ Transform CC {} → PB {} (0x{:04X})",
+            "  Transform CC {} -> PB {} (0x{:04X})",
             cc_value, pb_value, pb_value
         );
 
@@ -278,7 +290,7 @@ impl super::Router {
         Some(MidiStateEntry {
             addr: MidiAddr {
                 port_id: app.as_str().to_string(),
-                status: crate::state::MidiStatus::PB,
+                status: MidiStatus::PB,
                 channel: Some(pb_channel),
                 data1: Some(0),
             },
@@ -293,11 +305,11 @@ impl super::Router {
 
     /// Plan page refresh: build ordered list of MIDI entries to send
     ///
-    /// Returns entries in order: Notes → CC → SysEx → PB
+    /// Returns entries in order: Notes -> CC -> SysEx -> PB
     /// Priority for each type:
     /// - PB: Known PB = 3 > Mapped CC = 2 > Zero = 1
     /// - Notes/CC: Known value = 2 > Reset (0/OFF) = 1
-    fn plan_page_refresh(&self, _page: &PageConfig) -> Vec<MidiStateEntry> {
+    async fn plan_page_refresh(&self, _page: &PageConfig) -> Vec<MidiStateEntry> {
         #[derive(Clone)]
         struct PlanEntry {
             entry: MidiStateEntry,
@@ -382,22 +394,23 @@ impl super::Router {
             if !apps_on_page.contains(app.as_str()) {
                 continue;
             }
-            // PB plan (priority: Known PB = 3 > Mapped CC→PB = 2)
+            // PB plan (priority: Known PB = 3 > Mapped CC->PB = 2)
             // Note: Fader setpoint and zero fallbacks are handled AFTER all apps,
             // so apps don't overwrite each other's values
             for &ch in &channels {
-                // Priority 3: Try to get known PB value
-                if let Some(latest_pb) =
-                    self.state
-                        .get_known_latest_for_app(*app, MidiStatus::PB, Some(ch), Some(0))
+                // Priority 3: Try to get known PB value (async query)
+                if let Some(latest_pb) = self
+                    .state_actor
+                    .get_known_latest(*app, MidiStatus::PB, Some(ch), Some(0))
+                    .await
                 {
                     push_pb(&mut pb_plan, ch, latest_pb, 3);
                     continue;
                 }
 
-                // Priority 2: Try to transform CC to PB (for apps like QLC+)
-                if let Some(transformed_pb) = self.try_cc_to_pb_transform(_page, app, ch) {
-                    trace!("  ✅ Adding CC→PB to plan: ch={} value={:?}", ch, transformed_pb.value);
+                // Priority 2: Try to transform CC to PB (for apps like QLC+, now async)
+                if let Some(transformed_pb) = self.try_cc_to_pb_transform(_page, app, ch).await {
+                    trace!("  Adding CC->PB to plan: ch={} value={:?}", ch, transformed_pb.value);
                     push_pb(&mut pb_plan, ch, transformed_pb, 2);
                     continue;
                 }

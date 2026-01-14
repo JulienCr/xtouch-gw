@@ -63,6 +63,9 @@ axum = { version = "0.7", features = ["ws"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["fs", "cors"] }
 
+# Embedded database
+sled = "0.34"
+
 # Utilities
 dashmap = "6.0"  # Lock-free concurrent hashmap
 crossbeam = "0.8"  # Lock-free data structures
