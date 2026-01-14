@@ -618,29 +618,9 @@ async fn run_app(
                     continue;
                 }
 
-                // BUG-003 FIX: Only update state if app is on active page
-                // This ensures StateStore and X-Touch forwarding are symmetric.
-                // Off-page app feedback is now fully ignored (not stored, not forwarded).
-                let apps_on_page = router.get_apps_for_active_page().await;
-                if apps_on_page.contains(&app_name) {
-                    // BUG-006 FIX: Final epoch check right before state mutation
-                    // This closes the race window between get_apps_for_active_page and on_midi_from_app
-                    if !router.is_epoch_current(captured_epoch) {
-                        trace!(
-                            "Epoch changed during page check, discarding feedback from '{}'",
-                            app_name
-                        );
-                        continue;
-                    }
-
-                    // Update state store (only for apps on active page)
-                    router.on_midi_from_app(&app_name, &feedback_data, &app_name);
-                } else {
-                    trace!(
-                        "App '{}' not on active page, skipping state update",
-                        app_name
-                    );
-                }
+                // ALWAYS store state from all apps (needed for page refresh to restore values)
+                // The X-Touch forwarding (process_feedback) will filter by active page
+                router.on_midi_from_app(&app_name, &feedback_data, &app_name).await;
 
                 // BUG-006 FIX: Check epoch again before forwarding to X-Touch
                 // process_feedback() is async and may have been preempted by a page change
