@@ -158,11 +158,15 @@ async fn main() -> Result<()> {
     debug!("Router initialized with activity tracking");
 
     // Load state snapshot from sled database if it exists
+    // IMPORTANT: Use _and_wait() to ensure state is fully loaded before page refresh
     match router.get_persistence_actor().load_snapshot().await {
         Ok(Some(snapshot)) => {
-            // Hydrate state actor with loaded snapshot
+            // Hydrate state actor with loaded snapshot (wait for each to complete)
             for (app, entries) in snapshot.states {
-                router.get_state_actor().hydrate_from_snapshot(app, entries);
+                router
+                    .get_state_actor()
+                    .hydrate_from_snapshot_and_wait(app, entries)
+                    .await;
             }
             info!("State snapshot loaded from sled database");
         }

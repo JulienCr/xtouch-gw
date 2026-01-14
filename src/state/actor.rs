@@ -225,8 +225,12 @@ impl StateActor {
                 }
 
                 // Lifecycle commands
-                StateCommand::HydrateFromSnapshot { app, entries } => {
+                StateCommand::HydrateFromSnapshot { app, entries, response } => {
                     self.handle_hydrate(app, entries);
+                    // Send response if caller is waiting
+                    if let Some(tx) = response {
+                        let _ = tx.send(());
+                    }
                 }
                 StateCommand::ClearStatesForApp { app } => {
                     if let Some(app_state) = self.app_states.get_mut(&app) {

@@ -167,11 +167,14 @@ pub enum StateCommand {
     /// Load state from a snapshot (typically at startup)
     ///
     /// Entries are marked as stale until fresh feedback arrives.
+    /// If `response` is provided, sends `()` when hydration is complete.
     HydrateFromSnapshot {
         /// Application to hydrate
         app: AppKey,
         /// Entries to load
         entries: Vec<MidiStateEntry>,
+        /// Optional response channel for sync waiting
+        response: Option<oneshot::Sender<()>>,
     },
 
     /// Clear all state for a specific application
@@ -256,11 +259,11 @@ impl std::fmt::Debug for StateCommand {
                 .debug_struct("CheckSuppressLWW")
                 .field("entry", entry)
                 .finish_non_exhaustive(),
-            StateCommand::HydrateFromSnapshot { app, entries } => f
+            StateCommand::HydrateFromSnapshot { app, entries, .. } => f
                 .debug_struct("HydrateFromSnapshot")
                 .field("app", app)
                 .field("entries_count", &entries.len())
-                .finish(),
+                .finish_non_exhaustive(),
             StateCommand::ClearStatesForApp { app } => f
                 .debug_struct("ClearStatesForApp")
                 .field("app", app)
