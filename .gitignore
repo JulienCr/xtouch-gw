@@ -44,3 +44,4 @@ desktop.ini
 # Backup files
 *.bak
 *.orig
+.grepai/

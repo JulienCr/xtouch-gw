@@ -27,8 +27,11 @@ pub struct ApplySetpointCmd {
 struct ChannelState {
     /// Desired 14-bit position (source of truth)
     desired14: u16,
-    /// Epoch counter for anti-obsolescence
+    /// Epoch counter for anti-obsolescence (per-channel)
     epoch: u32,
+    /// Page epoch when this setpoint was last updated
+    /// Used to detect stale setpoints after page changes
+    page_epoch: u64,
 }
 
 impl Default for ChannelState {
@@ -36,6 +39,7 @@ impl Default for ChannelState {
         Self {
             desired14: 0,
             epoch: 0,
+            page_epoch: 0,
         }
     }
 }
@@ -47,6 +51,8 @@ pub struct FaderSetpoint {
     channels: Arc<RwLock<HashMap<u8, ChannelState>>>,
     /// Channel to send apply commands
     apply_tx: mpsc::UnboundedSender<ApplySetpointCmd>,
+    /// Current page epoch (updated via set_page_epoch)
+    current_page_epoch: Arc<RwLock<u64>>,
 }
 
 impl FaderSetpoint {
@@ -59,9 +65,21 @@ impl FaderSetpoint {
         let scheduler = Self {
             channels: Arc::new(RwLock::new(HashMap::new())),
             apply_tx,
+            current_page_epoch: Arc::new(RwLock::new(0)),
         };
 
         (scheduler, apply_rx)
+    }
+
+    /// Update the page epoch (call this when page changes)
+    ///
+    /// BUG-009 FIX: This invalidates all existing setpoints by changing the
+    /// reference epoch. Subsequent calls to `get_desired()` will return None
+    /// for setpoints that were stored with a different page epoch.
+    pub fn set_page_epoch(&self, epoch: u64) {
+        let mut current = self.current_page_epoch.write().unwrap();
+        *current = epoch;
+        trace!("FaderSetpoint: page epoch updated to {}", epoch);
     }
 
     /// Schedule a fader setpoint update
@@ -82,12 +100,16 @@ impl FaderSetpoint {
 
         let clamped = value14.min(16383);
 
+        // Get current page epoch for staleness tracking (BUG-009 FIX)
+        let current_page_epoch = *self.current_page_epoch.read().unwrap();
+
         // Update state and get new epoch
         let epoch_snapshot = {
             let mut channels = self.channels.write().unwrap();
             let state = channels.entry(channel).or_default();
             state.desired14 = clamped;
             state.epoch += 1;
+            state.page_epoch = current_page_epoch; // Track which page this setpoint belongs to
             state.epoch
         };
 
@@ -141,10 +163,27 @@ impl FaderSetpoint {
         });
     }
 
-    /// Get the current desired value for a channel (for debugging/inspection)
+    /// Get the current desired value for a channel if it's still valid
+    ///
+    /// BUG-009 FIX: Returns None if the stored setpoint was created for a
+    /// different page epoch, preventing stale values from being used during
+    /// rapid page changes.
     pub fn get_desired(&self, channel: u8) -> Option<u16> {
+        let current_page_epoch = *self.current_page_epoch.read().unwrap();
         let channels = self.channels.read().unwrap();
-        channels.get(&channel).map(|state| state.desired14)
+        channels.get(&channel).and_then(|state| {
+            if state.page_epoch == current_page_epoch {
+                Some(state.desired14)
+            } else {
+                trace!(
+                    "FaderSetpoint get_desired SKIPPED (stale): ch={} stored_page_epoch={} current_page_epoch={}",
+                    channel,
+                    state.page_epoch,
+                    current_page_epoch
+                );
+                None
+            }
+        })
     }
 
     /// Get the current epoch for a channel (for debugging)
@@ -206,5 +245,56 @@ mod tests {
         // Should only have one command (C)
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].value14, 300);
+    }
+
+    /// BUG-009: Test that page epoch changes invalidate stale setpoints
+    #[tokio::test]
+    async fn test_page_epoch_invalidates_stale_setpoints() {
+        let (setpoint, _rx) = FaderSetpoint::new();
+
+        // Initial page epoch is 0, schedule a setpoint
+        setpoint.schedule(1, 5000, Some(1000));
+
+        // Setpoint should be readable (same page epoch)
+        assert_eq!(setpoint.get_desired(1), Some(5000));
+
+        // Simulate page change by updating page epoch
+        setpoint.set_page_epoch(1);
+
+        // Setpoint should now be stale (different page epoch)
+        assert_eq!(setpoint.get_desired(1), None);
+
+        // Schedule new setpoint with updated page epoch
+        setpoint.schedule(1, 8000, Some(1000));
+
+        // New setpoint should be readable
+        assert_eq!(setpoint.get_desired(1), Some(8000));
+    }
+
+    /// BUG-009: Test that rapid page changes don't leak old values
+    #[tokio::test]
+    async fn test_rapid_page_changes_no_stale_values() {
+        let (setpoint, _rx) = FaderSetpoint::new();
+
+        // Page 0: Set fader 1 to 1000
+        setpoint.schedule(1, 1000, Some(1000));
+        assert_eq!(setpoint.get_desired(1), Some(1000));
+
+        // Rapid page changes: 0 -> 1 -> 2
+        setpoint.set_page_epoch(1);
+        setpoint.set_page_epoch(2);
+
+        // Old value should be stale
+        assert_eq!(setpoint.get_desired(1), None);
+
+        // Page 2: Set fader 1 to 2000
+        setpoint.schedule(1, 2000, Some(1000));
+        assert_eq!(setpoint.get_desired(1), Some(2000));
+
+        // Another page change
+        setpoint.set_page_epoch(3);
+
+        // Value from page 2 should be stale
+        assert_eq!(setpoint.get_desired(1), None);
     }
 }

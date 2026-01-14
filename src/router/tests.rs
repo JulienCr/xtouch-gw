@@ -370,3 +370,78 @@ async fn test_multiple_drivers_execution() {
     assert_eq!(router.list_drivers().await.len(), 2);
 }
 
+// ===== BUG-006: Page Epoch Tests =====
+
+#[tokio::test]
+async fn test_page_epoch_increments_on_page_change() {
+    let config = make_test_config(vec![
+        make_test_page("Page 1"),
+        make_test_page("Page 2"),
+        make_test_page("Page 3"),
+    ]);
+
+    let router = Router::new(config);
+
+    // Initial epoch should be 0
+    let initial_epoch = router.get_page_epoch();
+    assert_eq!(initial_epoch, 0);
+
+    // After refresh_page (called by next_page), epoch should increment
+    router.next_page().await;
+    let epoch_after_next = router.get_page_epoch();
+    assert_eq!(epoch_after_next, 1);
+
+    // Another page change increments again
+    router.next_page().await;
+    assert_eq!(router.get_page_epoch(), 2);
+
+    // prev_page also increments
+    router.prev_page().await;
+    assert_eq!(router.get_page_epoch(), 3);
+}
+
+#[tokio::test]
+async fn test_page_epoch_is_epoch_current() {
+    let config = make_test_config(vec![
+        make_test_page("Page 1"),
+        make_test_page("Page 2"),
+    ]);
+
+    let router = Router::new(config);
+
+    // Capture current epoch
+    let captured = router.get_page_epoch();
+    assert!(router.is_epoch_current(captured));
+
+    // After page change, captured epoch is no longer current
+    router.next_page().await;
+    assert!(!router.is_epoch_current(captured));
+
+    // But current epoch is current
+    let new_epoch = router.get_page_epoch();
+    assert!(router.is_epoch_current(new_epoch));
+}
+
+#[tokio::test]
+async fn test_page_epoch_survives_set_page() {
+    let config = make_test_config(vec![
+        make_test_page("Voicemeeter"),
+        make_test_page("OBS"),
+        make_test_page("QLC"),
+    ]);
+
+    let router = Router::new(config);
+    let initial = router.get_page_epoch();
+
+    // set_active_page also calls refresh_page which increments epoch
+    router.set_active_page("OBS").await.unwrap();
+    assert_eq!(router.get_page_epoch(), initial + 1);
+
+    router.set_active_page("QLC").await.unwrap();
+    assert_eq!(router.get_page_epoch(), initial + 2);
+
+    // Setting to same page still increments (refresh_page is called)
+    router.set_active_page("QLC").await.unwrap();
+    assert_eq!(router.get_page_epoch(), initial + 3);
+}
+
