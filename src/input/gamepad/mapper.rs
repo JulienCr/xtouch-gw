@@ -3,7 +3,8 @@
 use anyhow::{Result, anyhow};
 use std::sync::Arc;
 use std::collections::HashMap;
-use tracing::{debug, error};
+use tokio::sync::mpsc;
+use tracing::{debug, error, warn};
 use serde_json::Value;
 
 use crate::config::{GamepadConfig, AnalogConfig};
@@ -13,11 +14,13 @@ use super::hybrid_provider::{HybridGamepadProvider, EventCallback};
 use super::analog::{process_axis, apply_inversion};
 
 /// Gamepad mapper - connects provider events to router
+///
+/// Uses a dedicated channel + single task for SEQUENTIAL event processing.
+/// This eliminates race conditions that occur when spawning tasks per event.
 pub struct GamepadMapper {
     _provider: Arc<HybridGamepadProvider>,
-    router: Arc<Router>,
-    analog_config: Option<AnalogConfig>,
-    last_axis_values: Arc<std::sync::RwLock<HashMap<String, f32>>>,
+    /// Channel sender kept alive to prevent task shutdown
+    _event_tx: mpsc::UnboundedSender<GamepadEvent>,
 }
 
 impl GamepadMapper {
@@ -33,59 +36,71 @@ impl GamepadMapper {
     pub async fn attach(
         provider: Arc<HybridGamepadProvider>,
         router: Arc<Router>,
-        config: &GamepadConfig,
+        _config: &GamepadConfig,
     ) -> Result<Self> {
-        let analog_config = config.analog.clone();
-        let last_axis_values = Arc::new(std::sync::RwLock::new(HashMap::new()));
+        // Create channel for sequential event processing
+        let (event_tx, event_rx) = mpsc::unbounded_channel::<GamepadEvent>();
 
-        // Subscribe to provider events
-        let router_clone = router.clone();
-        let cache_clone = last_axis_values.clone();
+        // Spawn single task that processes events SEQUENTIALLY
+        // This guarantees order and eliminates race conditions
+        Self::spawn_event_processor(event_rx, router.clone());
 
+        // Subscribe to provider events - just forward to channel
+        let tx_clone = event_tx.clone();
         let callback: EventCallback = Arc::new(move |event| {
-            let router = router_clone.clone();
-            let cache = cache_clone.clone();
-
-            // Spawn async task to handle event
-            // Note: analog_config is now embedded in Axis events
-            tokio::spawn(async move {
-                if let Err(e) = Self::handle_event(event, &router, &cache).await {
-                    error!("Error handling gamepad event: {}", e);
-                }
-            });
+            if let Err(e) = tx_clone.send(event) {
+                warn!("Failed to send gamepad event to processor: {}", e);
+            }
         });
 
         provider.subscribe(callback).await;
 
         Ok(Self {
             _provider: provider,
-            router,
-            analog_config,
-            last_axis_values,
+            _event_tx: event_tx,
         })
     }
 
-    /// Handle a single gamepad event
-    async fn handle_event(
-        event: GamepadEvent,
-        router: &Arc<Router>,
-        cache: &Arc<std::sync::RwLock<HashMap<String, f32>>>,
-    ) -> Result<()> {
-        match event {
-            GamepadEvent::Button { control_id, pressed } => {
-                Self::handle_button(control_id, pressed, router).await?;
-            }
-            GamepadEvent::Axis { control_id, value, analog_config } => {
-                Self::handle_axis(control_id, value, router, &analog_config, cache).await?;
-            }
-        }
+    /// Spawn the sequential event processor task
+    fn spawn_event_processor(
+        mut event_rx: mpsc::UnboundedReceiver<GamepadEvent>,
+        router: Arc<Router>,
+    ) {
+        // Cache for redundant event filtering (no sequence needed - we process in order!)
+        let mut last_axis_values: HashMap<String, f32> = HashMap::new();
 
-        Ok(())
+        tokio::spawn(async move {
+            debug!("Gamepad event processor started (sequential mode)");
+
+            while let Some(event) = event_rx.recv().await {
+                match event {
+                    GamepadEvent::Button { control_id, pressed } => {
+                        if let Err(e) = Self::handle_button(&control_id, pressed, &router).await {
+                            error!("Error handling button event: {}", e);
+                        }
+                    }
+                    GamepadEvent::Axis { control_id, value, analog_config, sequence: _ } => {
+                        // sequence is ignored - we process in order!
+                        if let Err(e) = Self::handle_axis(
+                            &control_id,
+                            value,
+                            &router,
+                            &analog_config,
+                            &mut last_axis_values,
+                        ).await {
+                            error!("Error handling axis event: {}", e);
+                        }
+                    }
+                }
+            }
+
+            debug!("Gamepad event processor stopped");
+        });
     }
 
     /// Handle button event
     async fn handle_button(
-        control_id: String,
+        control_id: &str,
         pressed: bool,
         router: &Arc<Router>,
     ) -> Result<()> {
@@ -97,7 +112,7 @@ impl GamepadMapper {
         }
 
         // Send to router (router will look up mapping internally)
-        match router.handle_control(&control_id, None).await {
+        match router.handle_control(control_id, None).await {
             Ok(_) => {
                 debug!("✅ Router handled control: {}", control_id);
             }
@@ -109,18 +124,18 @@ impl GamepadMapper {
         Ok(())
     }
 
-    /// Handle axis event
+    /// Handle axis event (SEQUENTIAL - no race conditions!)
     async fn handle_axis(
-        control_id: String,
+        control_id: &str,
         raw_value: f32,
         router: &Arc<Router>,
         analog_config: &Option<AnalogConfig>,
-        cache: &Arc<std::sync::RwLock<HashMap<String, f32>>>,
+        cache: &mut HashMap<String, f32>,
     ) -> Result<()> {
         // Extract axis name (e.g., "lx" from "gamepad1.axis.lx" or "gamepad.axis.lx")
         let axis_name = control_id
             .rsplit_once(".axis.")
-            .and_then(|(_, name)| Some(name))
+            .map(|(_, name)| name)
             .ok_or_else(|| anyhow!("Invalid axis control ID: {}", control_id))?;
 
         // Check if this is XInput (gamepad2) - skip software deadzone for XInput
@@ -159,46 +174,33 @@ impl GamepadMapper {
                 }
             }
             None => {
-                // Within deadzone (gilrs only) - check cache before sending 0.0
-                let should_send_zero = {
-                    let cache_read = cache.read().unwrap();
-                    cache_read.get(&control_id).map_or(true, |&last| last != 0.0)
-                };
-
-                if should_send_zero {
+                // Within deadzone (gilrs only) - send 0.0 if last value was non-zero
+                let last = cache.get(control_id).copied();
+                if last.map_or(true, |v| v != 0.0) {
                     debug!("Axis event: {} = 0.0 (deadzone)", control_id);
-                    match router.handle_control(&control_id, Some(Value::from(0.0))).await {
+                    match router.handle_control(control_id, Some(Value::from(0.0))).await {
                         Ok(_) => debug!("✅ Router handled axis (deadzone): {} = 0.0", control_id),
                         Err(e) => debug!("⚠️  Router error for {}: {}", control_id, e),
                     }
-                    // Update cache
-                    cache.write().unwrap().insert(control_id, 0.0);
-                } else {
-                    debug!("Axis already at 0.0, skipping redundant event: {}", control_id);
+                    cache.insert(control_id.to_string(), 0.0);
                 }
                 return Ok(());
             }
         };
 
         // Check cache to avoid sending redundant values
-        let should_send = {
-            let cache_read = cache.read().unwrap();
-            cache_read.get(&control_id).map_or(true, |&last| last != final_value)
-        };
-
-        if should_send {
+        let last = cache.get(control_id).copied();
+        if last.map_or(true, |v| v != final_value) {
             debug!("Axis event: {} = {:.3} (raw: {:.3})", control_id, final_value, raw_value);
 
             // Send to router (pass normalized value, driver will handle scaling)
-            match router.handle_control(&control_id, Some(Value::from(final_value))).await {
+            match router.handle_control(control_id, Some(Value::from(final_value))).await {
                 Ok(_) => debug!("✅ Router handled axis: {} = {:.3}", control_id, final_value),
                 Err(e) => debug!("⚠️  Router error for {}: {}", control_id, e),
             }
 
             // Update cache
-            cache.write().unwrap().insert(control_id, final_value);
-        } else {
-            debug!("Axis value unchanged ({}), skipping redundant event: {}", final_value, control_id);
+            cache.insert(control_id.to_string(), final_value);
         }
 
         Ok(())
@@ -207,6 +209,7 @@ impl GamepadMapper {
     /// Shutdown the mapper
     pub async fn shutdown(&self) -> Result<()> {
         // Provider will be dropped automatically
+        // Event processor will stop when channel is dropped
         Ok(())
     }
 }

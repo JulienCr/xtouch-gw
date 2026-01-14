@@ -158,6 +158,8 @@ struct HybridProviderState {
     last_reconnect_check: Instant,
     /// Track last gilrs axis values to detect return-to-zero
     last_gilrs_axis_values: HashMap<(gilrs::GamepadId, gilrs::Axis), f32>,
+    /// Monotonic sequence counter for axis events (prevents race conditions)
+    axis_sequence: u64,
 }
 
 impl HybridProviderState {
@@ -203,6 +205,7 @@ impl HybridProviderState {
             xinput_connected: [false; 4],
             last_reconnect_check: Instant::now(),
             last_gilrs_axis_values: HashMap::new(),
+            axis_sequence: 0,
         })
     }
 
@@ -421,7 +424,7 @@ impl HybridProviderState {
                 ("gamepad".to_string(), None)
             };
 
-            // Convert event with slot prefix (with zero-detection)
+            // Convert event with slot prefix (with zero-detection and sequence)
             if let Some(gamepad_event) = self.convert_gilrs_event(id, event, &prefix, analog_config) {
                 debug!("gilrs event: {:?}", gamepad_event);
 
@@ -481,11 +484,14 @@ impl HybridProviderState {
                                normalized_value);
                         // Remove from tracking (axis is now at rest)
                         self.last_gilrs_axis_values.remove(&key);
+                        // Increment sequence for ordering
+                        self.axis_sequence += 1;
                         // Emit explicit 0.0 event
                         return Some(GamepadEvent::Axis {
                             control_id: Self::axis_to_id(axis, prefix),
                             value: 0.0,
                             analog_config,
+                            sequence: self.axis_sequence,
                         });
                     }
                     // Already at zero, no event needed
@@ -493,10 +499,13 @@ impl HybridProviderState {
                 } else {
                     // Non-zero value, track it
                     self.last_gilrs_axis_values.insert(key, normalized_value);
+                    // Increment sequence for ordering
+                    self.axis_sequence += 1;
                     Some(GamepadEvent::Axis {
                         control_id: Self::axis_to_id(axis, prefix),
                         value: normalized_value,
                         analog_config,
+                        sequence: self.axis_sequence,
                     })
                 }
             }
@@ -657,7 +666,8 @@ impl HybridProviderState {
             self.last_xinput_state[user_index].as_ref(),
             &state,
             &prefix,
-            analog_config
+            analog_config,
+            &mut self.axis_sequence
         );
 
         for event in axis_events {
