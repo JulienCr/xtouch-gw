@@ -1,5 +1,6 @@
 //! X-Touch MIDI input handling and routing
 
+use crate::state::{build_entry_from_raw, AppKey};
 use serde_json::Value;
 use tracing::{debug, trace, warn};
 
@@ -288,6 +289,19 @@ impl super::Router {
                 // Call passthrough action on the bridge
                 if let Err(e) = driver.execute("passthrough", vec![], ctx).await {
                     warn!("Failed to passthrough MIDI: {}", e);
+                } else {
+                    // OPTIMISTIC UPDATE: Store the sent value in StateActor
+                    // This ensures state persists even if the app doesn't send feedback
+                    // (e.g., QLC+ doesn't echo MIDI values back)
+                    if let Some(app) = AppKey::from_str(&control_config.app) {
+                        if let Some(entry) = build_entry_from_raw(&bytes, &control_config.app) {
+                            debug!(
+                                "Optimistic state update: {} -> {:?} = {:?}",
+                                control_config.app, entry.addr, entry.value
+                            );
+                            self.state_actor.update_state(app, entry);
+                        }
+                    }
                 }
             } else {
                 warn!(
