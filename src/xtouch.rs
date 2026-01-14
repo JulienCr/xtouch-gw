@@ -12,7 +12,7 @@ use midir::{MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::mpsc;
-use tracing::{debug, info, trace};
+use tracing::{debug, trace};
 
 use crate::config::{AppConfig, XTouchMode};
 use crate::midi::{format_hex, MidiMessage};

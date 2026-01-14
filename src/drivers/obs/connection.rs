@@ -272,8 +272,7 @@ impl ObsDriver {
     pub(super) async fn refresh_state(&self) -> Result<()> {
         let guard = self.client.read().await;
         let client = guard.as_ref()
-            .context("OBS client not connected")?
-            .clone();
+            .context("OBS client not connected")?;
 
         // Get studio mode state
         let studio_mode = client.ui().studio_mode_enabled().await?;

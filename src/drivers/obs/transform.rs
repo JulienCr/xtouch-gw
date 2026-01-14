@@ -76,8 +76,7 @@ impl ObsDriver {
         // Cache miss, resolve from OBS
         let guard = self.client.read().await;
         let client = guard.as_ref()
-            .context("OBS client not connected")?
-            .clone();
+            .context("OBS client not connected")?;
 
         debug!("Resolving OBS item ID: scene='{}' source='{}'", scene_name, source_name);
 
@@ -101,8 +100,7 @@ impl ObsDriver {
     pub(super) async fn read_transform(&self, scene_name: &str, item_id: i64) -> Result<ObsItemState> {
         let guard = self.client.read().await;
         let client = guard.as_ref()
-            .context("OBS client not connected")?
-            .clone();
+            .context("OBS client not connected")?;
 
         let transform = client.scene_items()
             .transform(scene_name, item_id)
@@ -138,8 +136,7 @@ impl ObsDriver {
     pub(super) async fn get_canvas_dimensions(&self) -> Result<(f64, f64)> {
         let guard = self.client.read().await;
         let client = guard.as_ref()
-            .context("OBS client not connected")?
-            .clone();
+            .context("OBS client not connected")?;
 
         let video_settings = client.config().video_settings().await
             .context("Failed to get OBS video settings")?;
@@ -330,8 +327,7 @@ impl ObsDriver {
         // Send update to OBS
         let guard = self.client.read().await;
         let client = guard.as_ref()
-            .context("OBS client not connected")?
-            .clone();
+            .context("OBS client not connected")?;
 
         // Build transform conditionally based on what changed
         let mut transform = obws::requests::scene_items::SceneItemTransform::default();

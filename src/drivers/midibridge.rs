@@ -10,7 +10,7 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{info, debug, warn, trace};
+use tracing::{debug, warn, trace};
 
 use super::{Driver, ExecutionContext};
 use crate::config::{MidiFilterConfig, TransformConfig};

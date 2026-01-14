@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
-use tracing::{info, debug};
+use tracing::info;
 
 /// Control mapping entry from CSV
 #[derive(Debug, Clone, Deserialize)]

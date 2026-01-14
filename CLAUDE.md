@@ -36,25 +36,39 @@ cargo run -- -c config.yaml  # Run with config
 ### Project Structure
 ```
 src/
-├── main.rs        # Entry point, Tokio runtime
-├── config.rs      # YAML configuration types
-├── router.rs      # Event orchestration
-├── state.rs       # MIDI state management
-├── xtouch.rs      # Hardware driver
-├── midi.rs        # MIDI utilities
-├── drivers.rs     # App drivers trait
-├── cli.rs         # REPL interface
-└── sniffer.rs     # Debug tools
+├── main.rs                     # Entry point, Tokio runtime
+├── config/                     # YAML configuration types
+├── router/                     # Event orchestration
+│   ├── mod.rs                  # Router core
+│   ├── page.rs                 # Page management
+│   ├── refresh.rs              # State refresh logic
+│   └── driver.rs               # Driver dispatch
+├── state/                      # Actor Model state management
+│   ├── actor.rs                # StateActor (single-threaded owner)
+│   ├── actor_handle.rs         # Public async API (StateActorHandle)
+│   ├── commands.rs             # Message types for actor
+│   ├── persistence.rs          # StateSnapshot type
+│   ├── persistence_actor.rs    # sled integration (ACID persistence)
+│   ├── types.rs                # MidiStateEntry, AppKey, etc.
+│   └── builders.rs             # Entry constructors
+├── xtouch/                     # Hardware driver
+├── drivers/                    # App drivers (OBS, Voicemeeter, etc.)
+├── midi.rs                     # MIDI utilities
+├── input/                      # Gamepad input handling
+├── tray/                       # System tray integration
+├── cli.rs                      # REPL interface
+└── sniffer.rs                  # Debug tools
 ```
 
 ## Architecture Principles
 
 ### Core Design Patterns
-1. **Event-Driven**: Tokio channels for async message passing
-2. **Lock-Free Where Possible**: DashMap for concurrent state access
-3. **Zero-Copy MIDI**: Avoid allocations in hot path
-4. **Shadow State**: Track last-sent values for anti-echo
-5. **Atomic Config Swap**: Hot-reload without dropping events
+1. **Actor Model**: Single-threaded state ownership via `StateActor` (eliminates race conditions)
+2. **Event-Driven**: Tokio channels for async message passing
+3. **ACID Persistence**: sled embedded database for crash-safe state
+4. **Zero-Copy MIDI**: Avoid allocations in hot path
+5. **Shadow State**: Track last-sent values for anti-echo (in `StateActor`)
+6. **Atomic Config Swap**: Hot-reload without dropping events
 
 ### Data Flow
 ```mermaid
@@ -64,9 +78,10 @@ flowchart LR
     ROUTER["Router"]
     DRV["Driver"]
     APP["Application"]
-    STORE["StateStore"]
+    ACTOR["StateActor"]
+    PERSIST["PersistenceActor<br/>(sled)"]
     FEEDBACK["Application Feedback"]
-    ANTIECHO["Anti-Echo"]
+    ANTIECHO["Anti-Echo<br/>(in StateActor)"]
     XT_OUT["X-Touch Output"]
 
     XT_IN --> PARSER
@@ -74,11 +89,12 @@ flowchart LR
     ROUTER --> DRV
     DRV --> APP
 
-    ROUTER --> STORE
+    ROUTER -- "update_state()" --> ACTOR
     APP --> FEEDBACK
-    FEEDBACK --> ANTIECHO
+    FEEDBACK -- "on_midi_from_app()" --> ACTOR
+    ACTOR -- "snapshot" --> PERSIST
+    ACTOR -- "anti-echo check" --> ANTIECHO
     ANTIECHO --> XT_OUT
-
 ```
 
 ## Working with This Codebase
@@ -135,11 +151,22 @@ flowchart LR
 - Recovery needs 250ms+ after disconnect
 - Use substring matching for port discovery
 
-### State Management Rules
-1. **Source of truth**: App feedback updates state
-2. **Optimistic updates**: Update immediately on send
-3. **Page changes**: Full state replay required
-4. **Conflict resolution**: Last-Write-Wins within time window
+### State Management (Actor Model)
+
+The state system uses an Actor Model architecture for race-condition-free operation:
+
+**Key Components:**
+- `StateActor`: Single-threaded owner of all state (runs in dedicated task)
+- `StateActorHandle`: Async API for other components to interact with state
+- `PersistenceActor`: Handles sled database writes with debouncing
+
+**Rules:**
+1. **Single ownership**: Only `StateActor` modifies state (no locks needed)
+2. **Message passing**: All state access via `StateCommand` messages
+3. **Anti-echo**: Shadow state tracking is internal to `StateActor`
+4. **ACID persistence**: State changes are durably persisted to `.state/sled/`
+5. **Stale flag**: Hydrated entries marked `stale: true`, superseded by fresh feedback
+6. **LWW conflict resolution**: Last-Write-Wins within time window
 
 ## Testing Guidelines
 
@@ -202,6 +229,43 @@ flowchart LR
 3. **Test assumptions**: Verify MIDI behavior with real hardware
 4. **Follow phases**: Respect the migration plan order
 5. **Document TODOs**: Mark unknowns clearly in code
+
+## Migration: JSON Snapshots to sled
+
+The state persistence has been migrated from JSON snapshots to sled embedded database.
+
+### What Changed
+| Before (v2) | After (v3) |
+|-------------|------------|
+| `.state/snapshot.json` | `.state/sled/` directory |
+| JSON file written on every change | sled with write debouncing (250ms) |
+| `StateStore` with `RwLock<HashMap>` | `StateActor` (single-threaded) |
+| Manual load/save | Automatic ACID persistence |
+
+### Migration Steps
+
+If upgrading from a previous version with JSON snapshots:
+
+1. **Automatic migration**: On first startup, if `.state/sled/` doesn't exist but `.state/snapshot.json` does, the system will read the JSON and hydrate the sled database.
+
+2. **Manual cleanup** (optional): After confirming the migration worked:
+   ```bash
+   rm .state/snapshot.json
+   ```
+
+3. **No action needed** for fresh installs - sled is used by default.
+
+### Data Location
+- **State database**: `.state/sled/` (binary sled format)
+- **Keys**: `state:{app}:{status}:{channel}:{data1}`
+- **Values**: JSON-serialized `MidiStateEntry`
+
+### Rollback (if needed)
+The sled database can be exported to JSON for debugging:
+```rust
+// In code, the PersistenceActor stores StateSnapshot format internally
+// which can be serialized to JSON for inspection
+```
 
 ## Current Focus
 

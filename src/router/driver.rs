@@ -4,7 +4,7 @@ use crate::drivers::{Driver, ExecutionContext};
 use anyhow::{anyhow, Result};
 use serde_json::Value;
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 impl super::Router {
     /// Create an execution context for driver calls

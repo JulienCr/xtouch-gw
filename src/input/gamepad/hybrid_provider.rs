@@ -6,13 +6,13 @@
 
 use anyhow::Result;
 use gilrs::{Gilrs, Event, EventType};
-use rusty_xinput::{XInputHandle, XInputUsageError};
-use std::collections::{HashSet, HashMap};
+use rusty_xinput::XInputHandle;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tokio::sync::mpsc;
-use tracing::{info, warn, debug, trace};
+use tracing::{warn, debug, trace};
 
 use crate::config::AnalogConfig;
 use super::hybrid_id::HybridControllerId;
@@ -441,7 +441,7 @@ impl HybridProviderState {
         prefix: &str,
         analog_config: Option<AnalogConfig>
     ) -> Option<GamepadEvent> {
-        use gilrs::{Button, Axis};
+        use gilrs::Axis;
 
         match event {
             EventType::ButtonPressed(button, _) => {
