@@ -310,16 +310,11 @@ impl XTouchDriver {
         let device_inquiry = vec![0xF0, 0x00, 0x00, 0x66, 0x14, 0x00, 0xF7];
         self.send_raw(&device_inquiry).await?;
 
-        // Reset all faders to center
-        for channel in 0..8 {
-            let msg = MidiMessage::PitchBend {
-                channel,
-                value: 8192, // Center position
-            };
-            self.send(&msg).await?;
-        }
+        // NOTE: We no longer reset faders to center here.
+        // The refresh_page() call will set them to the correct persisted values.
+        // Previously this caused a visible "jump to 50% then correct position" at startup.
 
-        // Turn off all LEDs
+        // Turn off all LEDs (will be set correctly by refresh_page and indicator updates)
         for note in 0..128 {
             let msg = MidiMessage::NoteOff {
                 channel: 0,
