@@ -1,4 +1,4 @@
-import streamDeck, { action, SingletonAction, LogLevel } from '@elgato/streamdeck';
+import streamDeck, { SingletonAction, action, LogLevel } from '@elgato/streamdeck';
 import { WebSocket } from 'ws';
 import { createCanvas } from 'canvas';
 
@@ -776,16 +776,213 @@ function renderFlashImage(size = DEFAULT_BUTTON_SIZE) {
 }
 
 /**
- * Normalize settings by providing empty string defaults for missing values.
+ * Configuration for the blink animation on key press.
  */
-function normalizeSettings$1(settings) {
-    return {
-        serverAddress: settings.serverAddress || "",
-        gamepadSlot: settings.gamepadSlot || "",
-        cameraId: settings.cameraId || "",
-        resetMode: settings.resetMode || "both",
-    };
+const BLINK_CONFIG = {
+    ITERATIONS: 2,
+    DURATION_MS: 100,
+};
+/**
+ * Execute a yellow blink animation on a key action.
+ * Used for visual feedback after successful operations.
+ *
+ * @param keyAction The Stream Deck key action
+ * @param restoreDisplay Callback to restore the normal display after blinking
+ */
+async function executeBlinkAnimation(keyAction, restoreDisplay) {
+    const flashImage = renderFlashImage();
+    for (let i = 0; i < BLINK_CONFIG.ITERATIONS; i++) {
+        await keyAction.setImage(flashImage);
+        await new Promise((resolve) => setTimeout(resolve, BLINK_CONFIG.DURATION_MS));
+        await restoreDisplay();
+        await new Promise((resolve) => setTimeout(resolve, BLINK_CONFIG.DURATION_MS));
+    }
 }
+/**
+ * Abstract base class for camera-related Stream Deck actions.
+ * Provides common functionality for connection management, display updates, and state tracking.
+ *
+ * Subclasses must implement:
+ * - normalizeSettings: Provide defaults for missing settings
+ * - createContextState: Create the initial context state
+ * - renderImage: Render the button image for current state
+ * - getFallbackTitle: Get fallback title when image rendering fails
+ * - setupClientCallbacks: Configure callbacks on the XTouch client
+ *
+ * Subclasses may override:
+ * - updateStateFromClient: Update action-specific state from client
+ */
+class CameraActionBase extends SingletonAction {
+    constructor() {
+        super(...arguments);
+        /**
+         * Map of context IDs to their state.
+         * Each Stream Deck button instance has a unique context ID.
+         */
+        this.contexts = new Map();
+    }
+    /**
+     * Update action-specific state from the current client.
+     * Override in subclasses that track additional state beyond connection status.
+     * Base implementation only updates connection status.
+     */
+    updateStateFromClient(contextState) {
+        const { client } = contextState;
+        if (!client) {
+            contextState.connectionStatus = "disconnected";
+            return;
+        }
+        contextState.connectionStatus = client.connectionStatus;
+    }
+    /**
+     * Called when the action appears on the Stream Deck.
+     * Initializes the context state and connects to the server.
+     */
+    async onWillAppear(ev) {
+        const contextId = ev.action.id;
+        const settings = ev.payload.settings;
+        streamDeck.logger.info(`Action appeared: context=${contextId}, settings=${JSON.stringify(settings)}`);
+        if (!ev.action.isKey()) {
+            streamDeck.logger.error(`Action is not a key action: context=${contextId}`);
+            return;
+        }
+        const keyAction = ev.action;
+        const normalizedSettings = this.normalizeSettings(settings);
+        const contextState = this.createContextState(normalizedSettings, keyAction);
+        this.contexts.set(contextId, contextState);
+        if (normalizedSettings.serverAddress) {
+            this.connectContext(contextId);
+        }
+        await this.updateDisplay(contextState);
+    }
+    /**
+     * Called when the action disappears from the Stream Deck.
+     * Cleans up resources.
+     */
+    async onWillDisappear(ev) {
+        const contextId = ev.action.id;
+        streamDeck.logger.info(`Action disappeared: context=${contextId}`);
+        this.contexts.delete(contextId);
+    }
+    /**
+     * Called when settings are received from the property inspector.
+     * Updates stored settings and reconnects if necessary.
+     */
+    async onDidReceiveSettings(ev) {
+        const contextId = ev.action.id;
+        const newSettings = ev.payload.settings;
+        streamDeck.logger.info(`Settings received: context=${contextId}, settings=${JSON.stringify(newSettings)}`);
+        const contextState = this.contexts.get(contextId);
+        if (!contextState) {
+            streamDeck.logger.warn(`No context state for ${contextId}`);
+            return;
+        }
+        const oldServerAddress = contextState.settings.serverAddress;
+        contextState.settings = this.normalizeSettings(newSettings);
+        if (newSettings.serverAddress !== oldServerAddress) {
+            streamDeck.logger.info(`Server address changed: ${oldServerAddress} -> ${newSettings.serverAddress}`);
+            this.disconnectContextClient(contextState);
+            if (newSettings.serverAddress) {
+                this.connectContext(contextId);
+            }
+        }
+        this.updateStateFromClient(contextState);
+        await this.updateDisplay(contextState);
+    }
+    /**
+     * Disconnect the client from a context (clears callbacks only).
+     */
+    disconnectContextClient(contextState) {
+        if (contextState.client) {
+            contextState.client.onStateChange = null;
+            contextState.client.onConnectionChange = null;
+            contextState.client = null;
+        }
+    }
+    /**
+     * Connect a context to the XTouch GW server.
+     * Uses the shared client via getClient().
+     */
+    connectContext(contextId) {
+        const contextState = this.contexts.get(contextId);
+        if (!contextState)
+            return;
+        const { serverAddress } = contextState.settings;
+        if (!serverAddress)
+            return;
+        streamDeck.logger.info(`Connecting context ${contextId} to ${serverAddress}`);
+        const client = getClient(serverAddress);
+        contextState.client = client;
+        this.setupClientCallbacks(client, serverAddress);
+        if (client.connectionStatus === "disconnected") {
+            client.connect();
+        }
+        this.updateStateFromClient(contextState);
+        void this.updateDisplay(contextState);
+    }
+    /**
+     * Handle connection status changes.
+     * Updates all contexts connected to the given server.
+     */
+    handleConnectionChange(status, serverAddress) {
+        const normalizedAddress = serverAddress.toLowerCase().trim();
+        for (const [contextId, contextState] of this.contexts) {
+            if (contextState.settings.serverAddress.toLowerCase().trim() !== normalizedAddress) {
+                continue;
+            }
+            if (contextState.connectionStatus !== status) {
+                streamDeck.logger.info(`Connection status changed for ${contextId}: ${contextState.connectionStatus} -> ${status}`);
+                contextState.connectionStatus = status;
+                void this.updateDisplay(contextState);
+            }
+        }
+    }
+    /**
+     * Update the action display based on current state.
+     * Renders button images showing camera name and connection state.
+     */
+    async updateDisplay(contextState) {
+        const { keyAction, connectionStatus } = contextState;
+        if (connectionStatus === "connecting") {
+            await keyAction.setTitle("...");
+            return;
+        }
+        try {
+            const imageDataUrl = this.getDisplayImage(contextState);
+            await keyAction.setTitle("");
+            await keyAction.setImage(imageDataUrl);
+        }
+        catch (error) {
+            streamDeck.logger.warn(`Failed to render button image, using title fallback: ${error}`);
+            const title = this.getFallbackTitle(contextState);
+            try {
+                await keyAction.setTitle(title);
+            }
+            catch (fallbackError) {
+                streamDeck.logger.debug(`Failed to update display in fallback: ${fallbackError}`);
+            }
+        }
+    }
+    /**
+     * Get the appropriate display image based on connection status and configuration.
+     */
+    getDisplayImage(contextState) {
+        const { connectionStatus, settings } = contextState;
+        if (connectionStatus === "disconnected") {
+            return renderDisconnectedImage();
+        }
+        if (!settings.cameraId) {
+            return renderNotConfiguredImage();
+        }
+        return this.renderImage(contextState);
+    }
+}
+
+/**
+ * Long press threshold in milliseconds.
+ * Hold longer than this to trigger reset instead of select.
+ */
+const LONG_PRESS_THRESHOLD_MS = 500;
 /**
  * Action that selects a camera for XTouch GW fader control.
  * When pressed, this action sends a camera target request to the XTouch GW server.
@@ -795,39 +992,26 @@ function normalizeSettings$1(settings) {
  * - Real-time state updates via WebSocket
  * - Visual feedback showing active/on-air status
  * - Shared client connections across contexts with same server
+ * - Long press (500ms) triggers camera reset
  */
 let CameraSelectAction = (() => {
     let _classDecorators = [action({ UUID: "com.juliencr.xtouch-gw.camera-select" })];
     let _classDescriptor;
     let _classExtraInitializers = [];
     let _classThis;
-    let _classSuper = SingletonAction;
+    let _classSuper = CameraActionBase;
     _classThis = class extends _classSuper {
-        constructor() {
-            super(...arguments);
-            /**
-             * Map of context IDs to their state.
-             * Each Stream Deck button instance has a unique context ID.
-             */
-            this.contexts = new Map();
+        normalizeSettings(settings) {
+            return {
+                serverAddress: settings.serverAddress || "",
+                gamepadSlot: settings.gamepadSlot || "",
+                cameraId: settings.cameraId || "",
+                resetMode: settings.resetMode || "both",
+            };
         }
-        /**
-         * Called when the action appears on the Stream Deck.
-         * Initializes the context state and connects to the server.
-         */
-        async onWillAppear(ev) {
-            const contextId = ev.action.id;
-            const settings = ev.payload.settings;
-            streamDeck.logger.info(`Camera Select action appeared: context=${contextId}, settings=${JSON.stringify(settings)}`);
-            // Ensure this is a key action (not a dial)
-            if (!ev.action.isKey()) {
-                streamDeck.logger.error(`Camera Select action is not a key action: context=${contextId}`);
-                return;
-            }
-            const keyAction = ev.action;
-            // Initialize context state
-            const contextState = {
-                settings: normalizeSettings$1(settings),
+        createContextState(settings, keyAction) {
+            return {
+                settings,
                 client: null,
                 keyAction,
                 isActive: false,
@@ -836,23 +1020,86 @@ let CameraSelectAction = (() => {
                 longPressTimer: null,
                 longPressTriggered: false,
             };
-            this.contexts.set(contextId, contextState);
-            // Connect to server if configured
-            if (contextState.settings.serverAddress) {
-                this.connectContext(contextId);
+        }
+        renderImage(contextState) {
+            return renderButtonImage({
+                cameraId: contextState.settings.cameraId,
+                isControlled: contextState.isActive,
+                isOnAir: contextState.isOnAir,
+            });
+        }
+        getFallbackTitle(contextState) {
+            const { connectionStatus, settings, isActive, isOnAir } = contextState;
+            if (connectionStatus === "disconnected") {
+                return "!";
             }
-            // Update display
-            await this.updateDisplay(contextState);
+            if (!settings.cameraId) {
+                return "Config";
+            }
+            if (isActive && isOnAir) {
+                return `[LIVE]\n${settings.cameraId}`;
+            }
+            if (isActive) {
+                return `[*]\n${settings.cameraId}`;
+            }
+            if (isOnAir) {
+                return `(LIVE)\n${settings.cameraId}`;
+            }
+            return settings.cameraId;
+        }
+        setupClientCallbacks(client, serverAddress) {
+            client.onStateChange = (state) => {
+                this.handleStateChange(state);
+            };
+            client.onConnectionChange = (status) => {
+                this.handleConnectionChange(status, serverAddress);
+            };
+        }
+        updateStateFromClient(contextState) {
+            const { client, settings } = contextState;
+            if (!client) {
+                contextState.connectionStatus = "disconnected";
+                contextState.isActive = false;
+                contextState.isOnAir = false;
+                return;
+            }
+            contextState.connectionStatus = client.connectionStatus;
+            if (client.connectionStatus === "connected") {
+                const { gamepadSlot, cameraId } = settings;
+                contextState.isActive = gamepadSlot && cameraId
+                    ? client.isControlledBy(cameraId, gamepadSlot)
+                    : false;
+                contextState.isOnAir = cameraId ? client.isOnAir(cameraId) : false;
+            }
+            else {
+                contextState.isActive = false;
+                contextState.isOnAir = false;
+            }
         }
         /**
-         * Called when the action disappears from the Stream Deck.
-         * Cleans up resources.
+         * Handle state changes from the XTouch GW server.
+         * Updates all contexts that match the changed state.
          */
-        async onWillDisappear(ev) {
-            const contextId = ev.action.id;
-            streamDeck.logger.info(`Camera Select action disappeared: context=${contextId}`);
-            // Remove context (client disconnection is handled separately via disconnectClient if needed)
-            this.contexts.delete(contextId);
+        handleStateChange(state) {
+            for (const [contextId, contextState] of this.contexts) {
+                if (!contextState.client)
+                    continue;
+                const { gamepadSlot, cameraId } = contextState.settings;
+                const wasActive = contextState.isActive;
+                const wasOnAir = contextState.isOnAir;
+                if (gamepadSlot && cameraId) {
+                    const gamepad = state.gamepads.get(gamepadSlot);
+                    contextState.isActive = gamepad?.current_camera === cameraId;
+                }
+                else {
+                    contextState.isActive = false;
+                }
+                contextState.isOnAir = cameraId ? state.onAirCameraId === cameraId : false;
+                if (contextState.isActive !== wasActive || contextState.isOnAir !== wasOnAir) {
+                    streamDeck.logger.debug(`State changed for ${contextId}: active=${contextState.isActive}, onAir=${contextState.isOnAir}`);
+                    void this.updateDisplay(contextState);
+                }
+            }
         }
         /**
          * Called when the key is pressed.
@@ -863,14 +1110,10 @@ let CameraSelectAction = (() => {
             const contextState = this.contexts.get(contextId);
             if (!contextState)
                 return;
-            // Reset state
             contextState.longPressTriggered = false;
-            // Clear any existing timer
             if (contextState.longPressTimer) {
                 clearTimeout(contextState.longPressTimer);
             }
-            const LONG_PRESS_THRESHOLD_MS = 500;
-            // Start long press timer - reset will trigger automatically after 500ms
             contextState.longPressTimer = setTimeout(() => {
                 contextState.longPressTimer = null;
                 contextState.longPressTriggered = true;
@@ -880,40 +1123,30 @@ let CameraSelectAction = (() => {
         /**
          * Execute camera reset (called when long press timer fires).
          */
-        async executeReset(contextId, action) {
+        async executeReset(contextId, keyAction) {
             const contextState = this.contexts.get(contextId);
             if (!contextState)
                 return;
             const { settings, client } = contextState;
-            // Validate settings
             if (!settings.serverAddress || !settings.cameraId) {
                 streamDeck.logger.warn("Camera Select action not configured for reset");
-                await action.showAlert();
+                await keyAction.showAlert();
                 return;
             }
-            // Ensure client is connected
             if (!client || client.connectionStatus !== "connected") {
                 streamDeck.logger.warn("Not connected to XTouch GW server");
-                await action.showAlert();
+                await keyAction.showAlert();
                 return;
             }
             streamDeck.logger.info(`Long press triggered - resetting camera ${settings.cameraId}`);
             try {
                 await client.resetCamera(settings.cameraId, settings.resetMode || "both");
                 streamDeck.logger.info(`Camera reset successful: ${settings.cameraId}`);
-                // Yellow blink feedback (2 iterations)
-                const flashImage = renderFlashImage();
-                const BLINK_DURATION_MS = 100;
-                for (let i = 0; i < 2; i++) {
-                    await action.setImage(flashImage);
-                    await new Promise((resolve) => setTimeout(resolve, BLINK_DURATION_MS));
-                    await this.updateDisplay(contextState);
-                    await new Promise((resolve) => setTimeout(resolve, BLINK_DURATION_MS));
-                }
+                await executeBlinkAnimation(keyAction, () => this.updateDisplay(contextState));
             }
             catch (error) {
                 streamDeck.logger.error(`Failed to reset camera: ${error}`);
-                await action.showAlert();
+                await keyAction.showAlert();
             }
         }
         /**
@@ -929,20 +1162,16 @@ let CameraSelectAction = (() => {
                 await ev.action.showAlert();
                 return;
             }
-            // Cancel the long press timer if it hasn't fired yet
             if (contextState.longPressTimer) {
                 clearTimeout(contextState.longPressTimer);
                 contextState.longPressTimer = null;
             }
-            // If long press already triggered the reset, don't also select
             if (contextState.longPressTriggered) {
                 streamDeck.logger.debug("Long press was triggered, skipping select on keyUp");
                 contextState.longPressTriggered = false;
                 return;
             }
-            // SHORT PRESS: Select camera
             const { settings, client } = contextState;
-            // Validate settings
             if (!settings.serverAddress || !settings.cameraId) {
                 streamDeck.logger.warn("Camera Select action not configured");
                 await ev.action.showAlert();
@@ -953,7 +1182,6 @@ let CameraSelectAction = (() => {
                 await ev.action.showAlert();
                 return;
             }
-            // Ensure client is connected
             if (!client || client.connectionStatus !== "connected") {
                 streamDeck.logger.warn("Not connected to XTouch GW server");
                 await ev.action.showAlert();
@@ -963,217 +1191,11 @@ let CameraSelectAction = (() => {
             try {
                 await client.setCameraTarget(settings.gamepadSlot, settings.cameraId);
                 streamDeck.logger.info(`Camera target set successfully: ${settings.gamepadSlot} -> ${settings.cameraId}`);
-                // Don't show the built-in green checkmark - the button image will update via state change
             }
             catch (error) {
                 streamDeck.logger.error(`Failed to set camera target: ${error}`);
                 await ev.action.showAlert();
             }
-        }
-        /**
-         * Called when settings are received from the property inspector.
-         * Updates stored settings and reconnects if necessary.
-         */
-        async onDidReceiveSettings(ev) {
-            const contextId = ev.action.id;
-            const newSettings = ev.payload.settings;
-            streamDeck.logger.info(`Camera Select settings received: context=${contextId}, settings=${JSON.stringify(newSettings)}`);
-            const contextState = this.contexts.get(contextId);
-            if (!contextState) {
-                streamDeck.logger.warn(`No context state for ${contextId}`);
-                return;
-            }
-            const oldServerAddress = contextState.settings.serverAddress;
-            // Update settings
-            contextState.settings = normalizeSettings$1(newSettings);
-            // Reconnect if server address changed
-            if (newSettings.serverAddress !== oldServerAddress) {
-                streamDeck.logger.info(`Server address changed: ${oldServerAddress} -> ${newSettings.serverAddress}`);
-                // Disconnect old client callbacks
-                if (contextState.client) {
-                    contextState.client.onStateChange = null;
-                    contextState.client.onConnectionChange = null;
-                    contextState.client = null;
-                }
-                // Connect to new server
-                if (newSettings.serverAddress) {
-                    this.connectContext(contextId);
-                }
-            }
-            // Update display with current state
-            this.updateStateFromClient(contextState);
-            await this.updateDisplay(contextState);
-        }
-        /**
-         * Connect a context to the XTouch GW server.
-         * Uses the shared client via getClient().
-         */
-        connectContext(contextId) {
-            const contextState = this.contexts.get(contextId);
-            if (!contextState)
-                return;
-            const { serverAddress } = contextState.settings;
-            if (!serverAddress)
-                return;
-            streamDeck.logger.info(`Connecting context ${contextId} to ${serverAddress}`);
-            // Get or create shared client
-            const client = getClient(serverAddress);
-            contextState.client = client;
-            // Set up callbacks
-            // Note: Multiple contexts may share the same client, so callbacks will update
-            // all contexts that use this client when they're re-registered
-            client.onStateChange = (state) => {
-                this.handleStateChange(state);
-            };
-            client.onConnectionChange = (status) => {
-                this.handleConnectionChange(status, serverAddress);
-            };
-            // Start connection if not already connected
-            if (client.connectionStatus === "disconnected") {
-                client.connect();
-            }
-            // Update state from current client state
-            this.updateStateFromClient(contextState);
-            void this.updateDisplay(contextState);
-        }
-        /**
-         * Handle state changes from the XTouch GW server.
-         * Updates all contexts that match the changed state.
-         */
-        handleStateChange(state) {
-            for (const [contextId, contextState] of this.contexts) {
-                if (!contextState.client)
-                    continue;
-                const { gamepadSlot, cameraId } = contextState.settings;
-                const wasActive = contextState.isActive;
-                const wasOnAir = contextState.isOnAir;
-                // Update active state
-                if (gamepadSlot && cameraId) {
-                    const gamepad = state.gamepads.get(gamepadSlot);
-                    contextState.isActive = gamepad?.current_camera === cameraId;
-                }
-                else {
-                    contextState.isActive = false;
-                }
-                // Update on-air state
-                contextState.isOnAir = cameraId ? state.onAirCameraId === cameraId : false;
-                // Only update display if state changed
-                if (contextState.isActive !== wasActive || contextState.isOnAir !== wasOnAir) {
-                    streamDeck.logger.debug(`State changed for ${contextId}: active=${contextState.isActive}, onAir=${contextState.isOnAir}`);
-                    void this.updateDisplay(contextState);
-                }
-            }
-        }
-        /**
-         * Handle connection status changes.
-         * Updates all contexts connected to the given server.
-         */
-        handleConnectionChange(status, serverAddress) {
-            const normalizedAddress = serverAddress.toLowerCase().trim();
-            for (const [contextId, contextState] of this.contexts) {
-                if (contextState.settings.serverAddress.toLowerCase().trim() !== normalizedAddress) {
-                    continue;
-                }
-                if (contextState.connectionStatus !== status) {
-                    streamDeck.logger.info(`Connection status changed for ${contextId}: ${contextState.connectionStatus} -> ${status}`);
-                    contextState.connectionStatus = status;
-                    void this.updateDisplay(contextState);
-                }
-            }
-        }
-        /**
-         * Update context state from current client state.
-         */
-        updateStateFromClient(contextState) {
-            const { client, settings } = contextState;
-            if (!client) {
-                contextState.connectionStatus = "disconnected";
-                contextState.isActive = false;
-                contextState.isOnAir = false;
-                return;
-            }
-            contextState.connectionStatus = client.connectionStatus;
-            if (client.connectionStatus === "connected") {
-                client.getState();
-                const { gamepadSlot, cameraId } = settings;
-                if (gamepadSlot && cameraId) {
-                    contextState.isActive = client.isControlledBy(cameraId, gamepadSlot);
-                }
-                else {
-                    contextState.isActive = false;
-                }
-                contextState.isOnAir = cameraId ? client.isOnAir(cameraId) : false;
-            }
-            else {
-                contextState.isActive = false;
-                contextState.isOnAir = false;
-            }
-        }
-        /**
-         * Update the action display based on current state.
-         * Renders button images showing camera name, active status, and connection state.
-         */
-        async updateDisplay(contextState) {
-            const { settings, keyAction, isActive, isOnAir, connectionStatus } = contextState;
-            // Handle connecting state separately (no image, just title)
-            if (connectionStatus === "connecting") {
-                await keyAction.setTitle("...");
-                return;
-            }
-            try {
-                const imageDataUrl = this.getDisplayImage(connectionStatus, settings.cameraId, isActive, isOnAir);
-                await keyAction.setTitle("");
-                await keyAction.setImage(imageDataUrl);
-            }
-            catch (error) {
-                streamDeck.logger.warn(`Failed to render button image, using title fallback: ${error}`);
-                const title = this.getFallbackTitle(connectionStatus, settings.cameraId, isActive, isOnAir);
-                try {
-                    await keyAction.setTitle(title);
-                }
-                catch (fallbackError) {
-                    streamDeck.logger.debug(`Failed to update display in fallback: ${fallbackError}`);
-                }
-            }
-        }
-        /**
-         * Get the appropriate display image based on connection status and state.
-         */
-        getDisplayImage(connectionStatus, cameraId, isActive, isOnAir) {
-            if (connectionStatus === "disconnected") {
-                return renderDisconnectedImage();
-            }
-            if (!cameraId) {
-                return renderNotConfiguredImage();
-            }
-            return renderButtonImage({
-                cameraId,
-                isControlled: isActive,
-                isOnAir,
-            });
-        }
-        /**
-         * Get fallback title when image rendering fails.
-         */
-        getFallbackTitle(connectionStatus, cameraId, isActive, isOnAir) {
-            // Determine base title
-            if (connectionStatus === "disconnected") {
-                return "!";
-            }
-            if (!cameraId) {
-                return "Config";
-            }
-            // Add state prefix to camera name
-            if (isActive && isOnAir) {
-                return `[LIVE]\n${cameraId}`;
-            }
-            if (isActive) {
-                return `[*]\n${cameraId}`;
-            }
-            if (isOnAir) {
-                return `(LIVE)\n${cameraId}`;
-            }
-            return cameraId;
         }
     };
     __setFunctionName(_classThis, "CameraSelectAction");
@@ -1187,16 +1209,6 @@ let CameraSelectAction = (() => {
     return _classThis;
 })();
 
-/**
- * Normalize settings by providing defaults for missing values.
- */
-function normalizeSettings(settings) {
-    return {
-        serverAddress: settings.serverAddress || "",
-        cameraId: settings.cameraId || "",
-        resetMode: settings.resetMode || "both",
-    };
-}
 /**
  * Action that resets a camera's zoom and/or position.
  * When pressed, this action sends a reset request to the XTouch GW server.
@@ -1212,54 +1224,40 @@ let CameraResetAction = (() => {
     let _classDescriptor;
     let _classExtraInitializers = [];
     let _classThis;
-    let _classSuper = SingletonAction;
+    let _classSuper = CameraActionBase;
     _classThis = class extends _classSuper {
-        constructor() {
-            super(...arguments);
-            /**
-             * Map of context IDs to their state.
-             * Each Stream Deck button instance has a unique context ID.
-             */
-            this.contexts = new Map();
+        normalizeSettings(settings) {
+            return {
+                serverAddress: settings.serverAddress || "",
+                cameraId: settings.cameraId || "",
+                resetMode: settings.resetMode || "both",
+            };
         }
-        /**
-         * Called when the action appears on the Stream Deck.
-         * Initializes the context state and connects to the server.
-         */
-        async onWillAppear(ev) {
-            const contextId = ev.action.id;
-            const settings = ev.payload.settings;
-            streamDeck.logger.info(`Camera Reset action appeared: context=${contextId}, settings=${JSON.stringify(settings)}`);
-            // Ensure this is a key action (not a dial)
-            if (!ev.action.isKey()) {
-                streamDeck.logger.error(`Camera Reset action is not a key action: context=${contextId}`);
-                return;
-            }
-            const keyAction = ev.action;
-            // Initialize context state
-            const contextState = {
-                settings: normalizeSettings(settings),
+        createContextState(settings, keyAction) {
+            return {
+                settings,
                 client: null,
                 keyAction,
                 connectionStatus: "disconnected",
             };
-            this.contexts.set(contextId, contextState);
-            // Connect to server if configured
-            if (contextState.settings.serverAddress) {
-                this.connectContext(contextId);
-            }
-            // Update display
-            await this.updateDisplay(contextState);
         }
-        /**
-         * Called when the action disappears from the Stream Deck.
-         * Cleans up resources.
-         */
-        async onWillDisappear(ev) {
-            const contextId = ev.action.id;
-            streamDeck.logger.info(`Camera Reset action disappeared: context=${contextId}`);
-            // Remove context (client disconnection is handled separately via disconnectClient if needed)
-            this.contexts.delete(contextId);
+        renderImage(contextState) {
+            return renderResetButtonImage({ cameraId: contextState.settings.cameraId });
+        }
+        getFallbackTitle(contextState) {
+            const { connectionStatus, settings } = contextState;
+            if (connectionStatus === "disconnected") {
+                return "!";
+            }
+            if (!settings.cameraId) {
+                return "Config";
+            }
+            return settings.cameraId;
+        }
+        setupClientCallbacks(client, serverAddress) {
+            client.onConnectionChange = (status) => {
+                this.handleConnectionChange(status, serverAddress);
+            };
         }
         /**
          * Called when the key is pressed.
@@ -1275,13 +1273,11 @@ let CameraResetAction = (() => {
             }
             const { settings, client } = contextState;
             streamDeck.logger.info(`Camera Reset key pressed: context=${contextId}, camera=${settings.cameraId}, mode=${settings.resetMode}`);
-            // Validate settings
             if (!settings.serverAddress || !settings.cameraId) {
                 streamDeck.logger.warn("Camera Reset action not configured");
                 await ev.action.showAlert();
                 return;
             }
-            // Ensure client is connected
             if (!client || client.connectionStatus !== "connected") {
                 streamDeck.logger.warn("Not connected to XTouch GW server");
                 await ev.action.showAlert();
@@ -1290,159 +1286,12 @@ let CameraResetAction = (() => {
             try {
                 await client.resetCamera(settings.cameraId, settings.resetMode);
                 streamDeck.logger.info(`Camera reset successful: ${settings.cameraId} (mode=${settings.resetMode})`);
-                // Yellow blink feedback (2 iterations)
-                const flashImage = renderFlashImage();
-                const BLINK_DURATION_MS = 100;
-                for (let i = 0; i < 2; i++) {
-                    await ev.action.setImage(flashImage);
-                    await new Promise((resolve) => setTimeout(resolve, BLINK_DURATION_MS));
-                    await this.updateDisplay(contextState);
-                    await new Promise((resolve) => setTimeout(resolve, BLINK_DURATION_MS));
-                }
+                await executeBlinkAnimation(ev.action, () => this.updateDisplay(contextState));
             }
             catch (error) {
                 streamDeck.logger.error(`Failed to reset camera: ${error}`);
                 await ev.action.showAlert();
             }
-        }
-        /**
-         * Called when settings are received from the property inspector.
-         * Updates stored settings and reconnects if necessary.
-         */
-        async onDidReceiveSettings(ev) {
-            const contextId = ev.action.id;
-            const newSettings = ev.payload.settings;
-            streamDeck.logger.info(`Camera Reset settings received: context=${contextId}, settings=${JSON.stringify(newSettings)}`);
-            const contextState = this.contexts.get(contextId);
-            if (!contextState) {
-                streamDeck.logger.warn(`No context state for ${contextId}`);
-                return;
-            }
-            const oldServerAddress = contextState.settings.serverAddress;
-            // Update settings
-            contextState.settings = normalizeSettings(newSettings);
-            // Reconnect if server address changed
-            if (newSettings.serverAddress !== oldServerAddress) {
-                streamDeck.logger.info(`Server address changed: ${oldServerAddress} -> ${newSettings.serverAddress}`);
-                // Disconnect old client callbacks
-                if (contextState.client) {
-                    contextState.client.onConnectionChange = null;
-                    contextState.client = null;
-                }
-                // Connect to new server
-                if (newSettings.serverAddress) {
-                    this.connectContext(contextId);
-                }
-            }
-            // Update display with current state
-            this.updateConnectionFromClient(contextState);
-            await this.updateDisplay(contextState);
-        }
-        /**
-         * Connect a context to the XTouch GW server.
-         * Uses the shared client via getClient().
-         */
-        connectContext(contextId) {
-            const contextState = this.contexts.get(contextId);
-            if (!contextState)
-                return;
-            const { serverAddress } = contextState.settings;
-            if (!serverAddress)
-                return;
-            streamDeck.logger.info(`Connecting context ${contextId} to ${serverAddress}`);
-            // Get or create shared client
-            const client = getClient(serverAddress);
-            contextState.client = client;
-            // Set up connection change callback
-            client.onConnectionChange = (status) => {
-                this.handleConnectionChange(status, serverAddress);
-            };
-            // Start connection if not already connected
-            if (client.connectionStatus === "disconnected") {
-                client.connect();
-            }
-            // Update state from current client state
-            this.updateConnectionFromClient(contextState);
-            void this.updateDisplay(contextState);
-        }
-        /**
-         * Handle connection status changes.
-         * Updates all contexts connected to the given server.
-         */
-        handleConnectionChange(status, serverAddress) {
-            const normalizedAddress = serverAddress.toLowerCase().trim();
-            for (const [contextId, contextState] of this.contexts) {
-                if (contextState.settings.serverAddress.toLowerCase().trim() !== normalizedAddress) {
-                    continue;
-                }
-                if (contextState.connectionStatus !== status) {
-                    streamDeck.logger.info(`Connection status changed for ${contextId}: ${contextState.connectionStatus} -> ${status}`);
-                    contextState.connectionStatus = status;
-                    void this.updateDisplay(contextState);
-                }
-            }
-        }
-        /**
-         * Update context connection status from current client state.
-         */
-        updateConnectionFromClient(contextState) {
-            const { client } = contextState;
-            if (!client) {
-                contextState.connectionStatus = "disconnected";
-                return;
-            }
-            contextState.connectionStatus = client.connectionStatus;
-        }
-        /**
-         * Update the action display based on current state.
-         * Renders button images showing camera name and connection state.
-         */
-        async updateDisplay(contextState) {
-            const { settings, keyAction, connectionStatus } = contextState;
-            // Handle connecting state separately (no image, just title)
-            if (connectionStatus === "connecting") {
-                await keyAction.setTitle("...");
-                return;
-            }
-            try {
-                const imageDataUrl = this.getDisplayImage(connectionStatus, settings.cameraId);
-                await keyAction.setTitle("");
-                await keyAction.setImage(imageDataUrl);
-            }
-            catch (error) {
-                streamDeck.logger.warn(`Failed to render button image, using title fallback: ${error}`);
-                const title = this.getFallbackTitle(connectionStatus, settings.cameraId);
-                try {
-                    await keyAction.setTitle(title);
-                }
-                catch (fallbackError) {
-                    streamDeck.logger.debug(`Failed to update display in fallback: ${fallbackError}`);
-                }
-            }
-        }
-        /**
-         * Get the appropriate display image based on connection status and configuration.
-         */
-        getDisplayImage(connectionStatus, cameraId) {
-            if (connectionStatus === "disconnected") {
-                return renderDisconnectedImage();
-            }
-            if (!cameraId) {
-                return renderNotConfiguredImage();
-            }
-            return renderResetButtonImage({ cameraId });
-        }
-        /**
-         * Get fallback title when image rendering fails.
-         */
-        getFallbackTitle(connectionStatus, cameraId) {
-            if (connectionStatus === "disconnected") {
-                return "!";
-            }
-            if (!cameraId) {
-                return "Config";
-            }
-            return cameraId;
         }
     };
     __setFunctionName(_classThis, "CameraResetAction");
