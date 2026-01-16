@@ -308,4 +308,40 @@ export abstract class CameraActionBase<
     }
     return this.renderImage(contextState);
   }
+
+  /**
+   * Execute a camera reset with validation and visual feedback.
+   * Returns true if reset was executed, false if validation failed.
+   */
+  protected async executeCameraReset(
+    contextState: TContextState,
+    resetMode: "position" | "zoom" | "both",
+    keyAction: KeyAction<BaseSettings>
+  ): Promise<boolean> {
+    const { settings, client } = contextState;
+
+    if (!settings.serverAddress || !settings.cameraId) {
+      streamDeck.logger.warn("Camera reset: action not configured");
+      await keyAction.showAlert();
+      return false;
+    }
+
+    if (!client || client.connectionStatus !== "connected") {
+      streamDeck.logger.warn("Camera reset: not connected to server");
+      await keyAction.showAlert();
+      return false;
+    }
+
+    try {
+      await client.resetCamera(settings.cameraId, resetMode);
+      streamDeck.logger.info(`Camera reset successful: ${settings.cameraId} (mode=${resetMode})`);
+
+      await executeBlinkAnimation(keyAction, () => this.updateDisplay(contextState));
+      return true;
+    } catch (error) {
+      streamDeck.logger.error(`Failed to reset camera: ${error}`);
+      await keyAction.showAlert();
+      return false;
+    }
+  }
 }

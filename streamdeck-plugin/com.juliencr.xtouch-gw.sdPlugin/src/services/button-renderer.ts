@@ -6,36 +6,42 @@ import { createCanvas, type Canvas, type CanvasRenderingContext2D } from "canvas
 const DEFAULT_BUTTON_SIZE = 144;
 
 /**
- * Scale a value proportionally to the button size.
- * @param baseValue The value at DEFAULT_BUTTON_SIZE
- * @param size Current button size
- * @returns Scaled and rounded value
- */
-function scaled(baseValue: number, size: number): number {
-  return Math.round((size * baseValue) / DEFAULT_BUTTON_SIZE);
-}
-
-/**
  * Color constants for button rendering
  */
 const Colors = {
-  /** Background for inactive (not controlled) state */
   INACTIVE_BG: "#212121",
-  /** Background for active (controlled by gamepad) state */
   ACTIVE_BG: "#1B5E20",
-  /** Border color for ON AIR state */
   ON_AIR_BORDER: "#B71C1C",
-  /** Indicator bar color for controlled state */
   CONTROLLED_INDICATOR: "#4CAF50",
-  /** Text color */
   TEXT_COLOR: "#FFFFFF",
-  /** Disconnected/error background */
   DISCONNECTED_BG: "#424242",
-  /** Disconnected/error icon color */
   DISCONNECTED_ICON: "#FF5252",
-  /** Flash/feedback background (yellow/amber) */
   FLASH_BG: "#F9A825",
 } as const;
+
+/**
+ * Canvas context with computed scaled values for consistent rendering.
+ */
+interface RenderContext {
+  canvas: Canvas;
+  ctx: CanvasRenderingContext2D;
+  size: number;
+  scaled: (baseValue: number) => number;
+}
+
+/**
+ * Create a render context with canvas and scaling helper.
+ */
+function createRenderContext(size: number = DEFAULT_BUTTON_SIZE): RenderContext {
+  const canvas = createCanvas(size, size);
+  const ctx = canvas.getContext("2d");
+  return {
+    canvas,
+    ctx,
+    size,
+    scaled: (baseValue: number) => Math.round((size * baseValue) / DEFAULT_BUTTON_SIZE),
+  };
+}
 
 /**
  * Button state for rendering
@@ -265,101 +271,83 @@ function drawResetIcon(
  * Render a button image for a camera with the given state.
  *
  * Visual design:
- * - Inactive (not controlled): Dark gray (#212121) background
- * - Active (controlled by this gamepad): Dark green (#1B5E20) background + green bar at bottom
- * - On Air: Red 8px border (#B71C1C)
+ * - Inactive (not controlled): Dark gray background
+ * - Active (controlled by this gamepad): Dark green background + green bar at bottom
+ * - On Air: Red border
  * - Active + On Air: Dark green background + red border + green bar
  * - Camera icon in the center, text at the bottom
- *
- * @param state Button state including camera ID, controlled status, and on-air status
- * @param size Canvas size in pixels (default 144 for @2x resolution)
- * @returns Base64 data URL of the rendered PNG image
  */
 export function renderButtonImage(state: ButtonState, size: number = DEFAULT_BUTTON_SIZE): string {
-  const canvas: Canvas = createCanvas(size, size);
-  const ctx = canvas.getContext("2d");
+  const { canvas, ctx, scaled } = createRenderContext(size);
 
-  const borderWidth = scaled(10, size);
-  const indicatorHeight = scaled(6, size);
-  const fontSize = scaled(24, size);
-  const padding = scaled(6, size);
-  const iconSize = scaled(44, size);
+  const borderWidth = scaled(10);
+  const indicatorHeight = scaled(6);
+  const fontSize = scaled(24);
+  const padding = scaled(6);
+  const iconSize = scaled(44);
 
-  // Step 1: Draw background
+  // Background
   ctx.fillStyle = state.isControlled ? Colors.ACTIVE_BG : Colors.INACTIVE_BG;
   ctx.fillRect(0, 0, size, size);
 
-  // Step 2: Draw ON AIR border (if isOnAir) with rounded corners matching Stream Deck buttons
+  // ON AIR border
   if (state.isOnAir) {
     ctx.strokeStyle = Colors.ON_AIR_BORDER;
     ctx.lineWidth = borderWidth;
     const offset = borderWidth / 2;
-    const cornerRadius = Math.round(size * 7 / 72); // 6px at 72px button, scales to 12px at 144px
+    const cornerRadius = Math.round(size * 7 / 72);
     ctx.beginPath();
     ctx.roundRect(offset, offset, size - borderWidth, size - borderWidth, cornerRadius);
     ctx.stroke();
   }
 
-  // Step 3: Draw camera icon (centered, slightly above middle)
+  // Camera icon
   const iconY = size * 0.38;
   drawCameraIcon(ctx, size / 2, iconY, iconSize, Colors.TEXT_COLOR);
 
-  // Step 4: Draw camera name (at bottom)
+  // Camera name text
   ctx.fillStyle = Colors.TEXT_COLOR;
   ctx.font = `bold ${fontSize}px sans-serif`;
 
-  // Calculate available width for text (account for border and padding)
   const textPadding = state.isOnAir ? borderWidth + padding : padding;
   const availableWidth = size - textPadding * 2;
-
-  // Position text near bottom, above the indicator if present
+  const borderOffset = state.isOnAir ? borderWidth : 0;
   const textY = state.isControlled
-    ? size - indicatorHeight - padding - fontSize / 2 - (state.isOnAir ? borderWidth : 0)
-    : size - padding - fontSize / 2 - (state.isOnAir ? borderWidth : 0);
+    ? size - indicatorHeight - padding - fontSize / 2 - borderOffset
+    : size - padding - fontSize / 2 - borderOffset;
 
   const displayText = truncateText(ctx, state.cameraId, availableWidth);
   drawCenteredText(ctx, displayText, size / 2, textY);
 
-  // Step 5: Draw "controlled" indicator (green bar at bottom)
+  // Controlled indicator bar
   if (state.isControlled) {
     ctx.fillStyle = Colors.CONTROLLED_INDICATOR;
-
-    // Position indicator inside the border if ON AIR
     const indicatorX = state.isOnAir ? borderWidth : 0;
     const indicatorWidth = state.isOnAir ? size - borderWidth * 2 : size;
-    const indicatorY = size - indicatorHeight - (state.isOnAir ? borderWidth : 0);
-
+    const indicatorY = size - indicatorHeight - borderOffset;
     ctx.fillRect(indicatorX, indicatorY, indicatorWidth, indicatorHeight);
   }
 
-  // Return as data URL
   return canvas.toDataURL("image/png");
 }
 
 /**
  * Render a disconnected state button image.
  * Shows a dark gray background with a red "!" icon.
- *
- * @param size Canvas size in pixels (default 144 for @2x resolution)
- * @returns Base64 data URL of the rendered PNG image
  */
 export function renderDisconnectedImage(size: number = DEFAULT_BUTTON_SIZE): string {
-  const canvas: Canvas = createCanvas(size, size);
-  const ctx = canvas.getContext("2d");
+  const { canvas, ctx, scaled } = createRenderContext(size);
 
-  const fontSize = scaled(48, size);
-  const labelFontSize = scaled(14, size);
+  const fontSize = scaled(48);
+  const labelFontSize = scaled(14);
 
-  // Draw background
   ctx.fillStyle = Colors.DISCONNECTED_BG;
   ctx.fillRect(0, 0, size, size);
 
-  // Draw exclamation mark icon
   ctx.fillStyle = Colors.DISCONNECTED_ICON;
   ctx.font = `bold ${fontSize}px sans-serif`;
   drawCenteredText(ctx, "!", size / 2, size / 2 - labelFontSize / 2);
 
-  // Draw "Offline" label
   ctx.fillStyle = Colors.TEXT_COLOR;
   ctx.font = `${labelFontSize}px sans-serif`;
   drawCenteredText(ctx, "Offline", size / 2, size / 2 + fontSize / 2);
@@ -370,27 +358,20 @@ export function renderDisconnectedImage(size: number = DEFAULT_BUTTON_SIZE): str
 /**
  * Render a "not configured" state button image.
  * Shows a dark gray background with a gear icon and "Config" label.
- *
- * @param size Canvas size in pixels (default 144 for @2x resolution)
- * @returns Base64 data URL of the rendered PNG image
  */
 export function renderNotConfiguredImage(size: number = DEFAULT_BUTTON_SIZE): string {
-  const canvas: Canvas = createCanvas(size, size);
-  const ctx = canvas.getContext("2d");
+  const { canvas, ctx, scaled } = createRenderContext(size);
 
-  const iconFontSize = scaled(36, size);
-  const labelFontSize = scaled(14, size);
+  const iconFontSize = scaled(36);
+  const labelFontSize = scaled(14);
 
-  // Draw background
   ctx.fillStyle = Colors.INACTIVE_BG;
   ctx.fillRect(0, 0, size, size);
 
-  // Draw gear icon (using Unicode gear symbol)
   ctx.fillStyle = Colors.TEXT_COLOR;
   ctx.font = `${iconFontSize}px sans-serif`;
   drawCenteredText(ctx, "\u2699", size / 2, size / 2 - labelFontSize / 2);
 
-  // Draw "Config" label
   ctx.font = `${labelFontSize}px sans-serif`;
   drawCenteredText(ctx, "Config", size / 2, size / 2 + iconFontSize / 2);
 
@@ -401,31 +382,23 @@ export function renderNotConfiguredImage(size: number = DEFAULT_BUTTON_SIZE): st
  * Render a button image for a camera reset action.
  *
  * Visual design:
- * - Dark gray (#212121) background
+ * - Dark gray background
  * - Reset icon (circular arrows) in center
  * - Camera ID text at bottom
- *
- * @param state Reset button state including camera ID
- * @param size Canvas size in pixels (default 144 for @2x resolution)
- * @returns Base64 data URL of the rendered PNG image
  */
 export function renderResetButtonImage(state: ResetButtonState, size: number = DEFAULT_BUTTON_SIZE): string {
-  const canvas: Canvas = createCanvas(size, size);
-  const ctx = canvas.getContext("2d");
+  const { canvas, ctx, scaled } = createRenderContext(size);
 
-  const fontSize = scaled(24, size);
-  const padding = scaled(6, size);
-  const iconSize = scaled(44, size);
+  const fontSize = scaled(24);
+  const padding = scaled(6);
+  const iconSize = scaled(44);
 
-  // Step 1: Draw background (always inactive color - no state tracking for reset)
   ctx.fillStyle = Colors.INACTIVE_BG;
   ctx.fillRect(0, 0, size, size);
 
-  // Step 2: Draw reset icon (centered, slightly above middle)
   const iconY = size * 0.38;
   drawResetIcon(ctx, size / 2, iconY, iconSize, Colors.TEXT_COLOR);
 
-  // Step 3: Draw camera name (at bottom)
   ctx.fillStyle = Colors.TEXT_COLOR;
   ctx.font = `bold ${fontSize}px sans-serif`;
 
@@ -441,15 +414,10 @@ export function renderResetButtonImage(state: ResetButtonState, size: number = D
 /**
  * Render a yellow flash image for feedback.
  * Used for reset confirmation instead of the green checkmark.
- *
- * @param size Canvas size in pixels (default 144 for @2x resolution)
- * @returns Base64 data URL of the rendered PNG image
  */
 export function renderFlashImage(size: number = DEFAULT_BUTTON_SIZE): string {
-  const canvas: Canvas = createCanvas(size, size);
-  const ctx = canvas.getContext("2d");
+  const { canvas, ctx } = createRenderContext(size);
 
-  // Fill with yellow/amber color
   ctx.fillStyle = Colors.FLASH_BG;
   ctx.fillRect(0, 0, size, size);
 

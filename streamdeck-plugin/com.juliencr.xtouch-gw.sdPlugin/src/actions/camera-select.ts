@@ -9,7 +9,6 @@ import {
   CameraActionBase,
   BaseContextState,
   BaseSettings,
-  executeBlinkAnimation,
 } from "./action-base";
 
 import {
@@ -206,34 +205,8 @@ export class CameraSelectAction extends CameraActionBase<CameraSelectSettings, C
     const contextState = this.contexts.get(contextId);
     if (!contextState) return;
 
-    const { settings, client } = contextState;
-
-    if (!settings.serverAddress || !settings.cameraId) {
-      streamDeck.logger.warn("Camera Select action not configured for reset");
-      await keyAction.showAlert();
-      return;
-    }
-
-    if (!client || client.connectionStatus !== "connected") {
-      streamDeck.logger.warn("Not connected to XTouch GW server");
-      await keyAction.showAlert();
-      return;
-    }
-
-    streamDeck.logger.info(`Long press triggered - resetting camera ${settings.cameraId}`);
-
-    try {
-      await client.resetCamera(settings.cameraId, settings.resetMode || "both");
-      streamDeck.logger.info(`Camera reset successful: ${settings.cameraId}`);
-
-      await executeBlinkAnimation(
-        keyAction as KeyAction<BaseSettings>,
-        () => this.updateDisplay(contextState)
-      );
-    } catch (error) {
-      streamDeck.logger.error(`Failed to reset camera: ${error}`);
-      await keyAction.showAlert();
-    }
+    streamDeck.logger.info(`Long press triggered - resetting camera ${contextState.settings.cameraId}`);
+    await this.executeCameraReset(contextState, contextState.settings.resetMode || "both", keyAction);
   }
 
   /**

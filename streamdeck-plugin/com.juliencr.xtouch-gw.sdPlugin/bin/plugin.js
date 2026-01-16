@@ -63,15 +63,28 @@ typeof SuppressedError === "function" ? SuppressedError : function (error, suppr
 };
 
 /**
- * Check HTTP response and throw an error if not OK.
- * @param response The fetch Response object
- * @param operation Description of the operation for error messages
+ * Make an HTTP request to the XTouch GW API.
+ * Handles response checking and JSON parsing.
  */
-async function checkResponse(response, operation) {
+async function apiRequest(baseUrl, path, options) {
+    const url = `http://${baseUrl}${path}`;
+    const fetchOptions = {
+        method: options?.method ?? "GET",
+        headers: { "Content-Type": "application/json" },
+    };
+    if (options?.body) {
+        fetchOptions.body = JSON.stringify(options.body);
+    }
+    const response = await fetch(url, fetchOptions);
     if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(`Failed to ${operation}: HTTP ${response.status} - ${errorText}`);
+        throw new Error(`API ${options?.method ?? "GET"} ${path}: HTTP ${response.status} - ${errorText}`);
     }
+    const contentType = response.headers.get("content-type");
+    if (contentType?.includes("application/json")) {
+        return (await response.json());
+    }
+    return undefined;
 }
 /**
  * Client for communicating with the XTouch GW server.
@@ -337,60 +350,32 @@ class XTouchClient {
     }
     /**
      * Set the camera target for a gamepad slot via HTTP API.
-     * @param slot The gamepad slot identifier
-     * @param cameraId The camera ID to target
      */
     async setCameraTarget(slot, cameraId) {
         streamDeck.logger.info(`Setting camera target: slot=${slot}, camera=${cameraId}`);
-        const url = `http://${this._serverAddress}/api/gamepad/${encodeURIComponent(slot)}/camera`;
-        const response = await fetch(url, {
-            method: "PUT",
-            headers: {
-                "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-                camera_id: cameraId,
-            }),
-        });
-        await checkResponse(response, "set camera target");
+        const path = `/api/gamepad/${encodeURIComponent(slot)}/camera`;
+        await apiRequest(this._serverAddress, path, { method: "PUT", body: { camera_id: cameraId } });
         streamDeck.logger.info(`Camera target set successfully: ${slot} -> ${cameraId}`);
     }
     /**
-     * Fetch available gamepad slots via HTTP API
+     * Fetch available gamepad slots via HTTP API.
      */
     async getGamepadSlots() {
-        const url = `http://${this._serverAddress}/api/gamepads`;
-        const response = await fetch(url);
-        await checkResponse(response, "fetch gamepad slots");
-        return (await response.json());
+        return apiRequest(this._serverAddress, "/api/gamepads");
     }
     /**
-     * Fetch available cameras via HTTP API
+     * Fetch available cameras via HTTP API.
      */
     async getCameras() {
-        const url = `http://${this._serverAddress}/api/cameras`;
-        const response = await fetch(url);
-        await checkResponse(response, "fetch cameras");
-        return (await response.json());
+        return apiRequest(this._serverAddress, "/api/cameras");
     }
     /**
      * Reset a camera's zoom and/or position via HTTP API.
-     * @param cameraId The camera ID to reset
-     * @param mode Reset mode: "position", "zoom", or "both"
      */
     async resetCamera(cameraId, mode) {
         streamDeck.logger.info(`Resetting camera: id=${cameraId}, mode=${mode}`);
-        const url = `http://${this._serverAddress}/api/cameras/${encodeURIComponent(cameraId)}/reset`;
-        const response = await fetch(url, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-                mode: mode,
-            }),
-        });
-        await checkResponse(response, "reset camera");
+        const path = `/api/cameras/${encodeURIComponent(cameraId)}/reset`;
+        await apiRequest(this._serverAddress, path, { method: "POST", body: { mode } });
         streamDeck.logger.info(`Camera reset successful: ${cameraId}`);
     }
 }
@@ -426,35 +411,31 @@ function getClient(serverAddress) {
  */
 const DEFAULT_BUTTON_SIZE = 144;
 /**
- * Scale a value proportionally to the button size.
- * @param baseValue The value at DEFAULT_BUTTON_SIZE
- * @param size Current button size
- * @returns Scaled and rounded value
- */
-function scaled(baseValue, size) {
-    return Math.round((size * baseValue) / DEFAULT_BUTTON_SIZE);
-}
-/**
  * Color constants for button rendering
  */
 const Colors = {
-    /** Background for inactive (not controlled) state */
     INACTIVE_BG: "#212121",
-    /** Background for active (controlled by gamepad) state */
     ACTIVE_BG: "#1B5E20",
-    /** Border color for ON AIR state */
     ON_AIR_BORDER: "#B71C1C",
-    /** Indicator bar color for controlled state */
     CONTROLLED_INDICATOR: "#4CAF50",
-    /** Text color */
     TEXT_COLOR: "#FFFFFF",
-    /** Disconnected/error background */
     DISCONNECTED_BG: "#424242",
-    /** Disconnected/error icon color */
     DISCONNECTED_ICON: "#FF5252",
-    /** Flash/feedback background (yellow/amber) */
     FLASH_BG: "#F9A825",
 };
+/**
+ * Create a render context with canvas and scaling helper.
+ */
+function createRenderContext(size = DEFAULT_BUTTON_SIZE) {
+    const canvas = createCanvas(size, size);
+    const ctx = canvas.getContext("2d");
+    return {
+        canvas,
+        ctx,
+        size,
+        scaled: (baseValue) => Math.round((size * baseValue) / DEFAULT_BUTTON_SIZE),
+    };
+}
 /**
  * Truncate text to fit within a given width, adding "..." if needed.
  * @param ctx Canvas rendering context
@@ -619,84 +600,69 @@ function drawResetIcon(ctx, x, y, iconSize, color) {
  * Render a button image for a camera with the given state.
  *
  * Visual design:
- * - Inactive (not controlled): Dark gray (#212121) background
- * - Active (controlled by this gamepad): Dark green (#1B5E20) background + green bar at bottom
- * - On Air: Red 8px border (#B71C1C)
+ * - Inactive (not controlled): Dark gray background
+ * - Active (controlled by this gamepad): Dark green background + green bar at bottom
+ * - On Air: Red border
  * - Active + On Air: Dark green background + red border + green bar
  * - Camera icon in the center, text at the bottom
- *
- * @param state Button state including camera ID, controlled status, and on-air status
- * @param size Canvas size in pixels (default 144 for @2x resolution)
- * @returns Base64 data URL of the rendered PNG image
  */
 function renderButtonImage(state, size = DEFAULT_BUTTON_SIZE) {
-    const canvas = createCanvas(size, size);
-    const ctx = canvas.getContext("2d");
-    const borderWidth = scaled(10, size);
-    const indicatorHeight = scaled(6, size);
-    const fontSize = scaled(24, size);
-    const padding = scaled(6, size);
-    const iconSize = scaled(44, size);
-    // Step 1: Draw background
+    const { canvas, ctx, scaled } = createRenderContext(size);
+    const borderWidth = scaled(10);
+    const indicatorHeight = scaled(6);
+    const fontSize = scaled(24);
+    const padding = scaled(6);
+    const iconSize = scaled(44);
+    // Background
     ctx.fillStyle = state.isControlled ? Colors.ACTIVE_BG : Colors.INACTIVE_BG;
     ctx.fillRect(0, 0, size, size);
-    // Step 2: Draw ON AIR border (if isOnAir) with rounded corners matching Stream Deck buttons
+    // ON AIR border
     if (state.isOnAir) {
         ctx.strokeStyle = Colors.ON_AIR_BORDER;
         ctx.lineWidth = borderWidth;
         const offset = borderWidth / 2;
-        const cornerRadius = Math.round(size * 7 / 72); // 6px at 72px button, scales to 12px at 144px
+        const cornerRadius = Math.round(size * 7 / 72);
         ctx.beginPath();
         ctx.roundRect(offset, offset, size - borderWidth, size - borderWidth, cornerRadius);
         ctx.stroke();
     }
-    // Step 3: Draw camera icon (centered, slightly above middle)
+    // Camera icon
     const iconY = size * 0.38;
     drawCameraIcon(ctx, size / 2, iconY, iconSize, Colors.TEXT_COLOR);
-    // Step 4: Draw camera name (at bottom)
+    // Camera name text
     ctx.fillStyle = Colors.TEXT_COLOR;
     ctx.font = `bold ${fontSize}px sans-serif`;
-    // Calculate available width for text (account for border and padding)
     const textPadding = state.isOnAir ? borderWidth + padding : padding;
     const availableWidth = size - textPadding * 2;
-    // Position text near bottom, above the indicator if present
+    const borderOffset = state.isOnAir ? borderWidth : 0;
     const textY = state.isControlled
-        ? size - indicatorHeight - padding - fontSize / 2 - (state.isOnAir ? borderWidth : 0)
-        : size - padding - fontSize / 2 - (state.isOnAir ? borderWidth : 0);
+        ? size - indicatorHeight - padding - fontSize / 2 - borderOffset
+        : size - padding - fontSize / 2 - borderOffset;
     const displayText = truncateText(ctx, state.cameraId, availableWidth);
     drawCenteredText(ctx, displayText, size / 2, textY);
-    // Step 5: Draw "controlled" indicator (green bar at bottom)
+    // Controlled indicator bar
     if (state.isControlled) {
         ctx.fillStyle = Colors.CONTROLLED_INDICATOR;
-        // Position indicator inside the border if ON AIR
         const indicatorX = state.isOnAir ? borderWidth : 0;
         const indicatorWidth = state.isOnAir ? size - borderWidth * 2 : size;
-        const indicatorY = size - indicatorHeight - (state.isOnAir ? borderWidth : 0);
+        const indicatorY = size - indicatorHeight - borderOffset;
         ctx.fillRect(indicatorX, indicatorY, indicatorWidth, indicatorHeight);
     }
-    // Return as data URL
     return canvas.toDataURL("image/png");
 }
 /**
  * Render a disconnected state button image.
  * Shows a dark gray background with a red "!" icon.
- *
- * @param size Canvas size in pixels (default 144 for @2x resolution)
- * @returns Base64 data URL of the rendered PNG image
  */
 function renderDisconnectedImage(size = DEFAULT_BUTTON_SIZE) {
-    const canvas = createCanvas(size, size);
-    const ctx = canvas.getContext("2d");
-    const fontSize = scaled(48, size);
-    const labelFontSize = scaled(14, size);
-    // Draw background
+    const { canvas, ctx, scaled } = createRenderContext(size);
+    const fontSize = scaled(48);
+    const labelFontSize = scaled(14);
     ctx.fillStyle = Colors.DISCONNECTED_BG;
     ctx.fillRect(0, 0, size, size);
-    // Draw exclamation mark icon
     ctx.fillStyle = Colors.DISCONNECTED_ICON;
     ctx.font = `bold ${fontSize}px sans-serif`;
     drawCenteredText(ctx, "!", size / 2, size / 2 - labelFontSize / 2);
-    // Draw "Offline" label
     ctx.fillStyle = Colors.TEXT_COLOR;
     ctx.font = `${labelFontSize}px sans-serif`;
     drawCenteredText(ctx, "Offline", size / 2, size / 2 + fontSize / 2);
@@ -705,23 +671,16 @@ function renderDisconnectedImage(size = DEFAULT_BUTTON_SIZE) {
 /**
  * Render a "not configured" state button image.
  * Shows a dark gray background with a gear icon and "Config" label.
- *
- * @param size Canvas size in pixels (default 144 for @2x resolution)
- * @returns Base64 data URL of the rendered PNG image
  */
 function renderNotConfiguredImage(size = DEFAULT_BUTTON_SIZE) {
-    const canvas = createCanvas(size, size);
-    const ctx = canvas.getContext("2d");
-    const iconFontSize = scaled(36, size);
-    const labelFontSize = scaled(14, size);
-    // Draw background
+    const { canvas, ctx, scaled } = createRenderContext(size);
+    const iconFontSize = scaled(36);
+    const labelFontSize = scaled(14);
     ctx.fillStyle = Colors.INACTIVE_BG;
     ctx.fillRect(0, 0, size, size);
-    // Draw gear icon (using Unicode gear symbol)
     ctx.fillStyle = Colors.TEXT_COLOR;
     ctx.font = `${iconFontSize}px sans-serif`;
     drawCenteredText(ctx, "\u2699", size / 2, size / 2 - labelFontSize / 2);
-    // Draw "Config" label
     ctx.font = `${labelFontSize}px sans-serif`;
     drawCenteredText(ctx, "Config", size / 2, size / 2 + iconFontSize / 2);
     return canvas.toDataURL("image/png");
@@ -730,27 +689,19 @@ function renderNotConfiguredImage(size = DEFAULT_BUTTON_SIZE) {
  * Render a button image for a camera reset action.
  *
  * Visual design:
- * - Dark gray (#212121) background
+ * - Dark gray background
  * - Reset icon (circular arrows) in center
  * - Camera ID text at bottom
- *
- * @param state Reset button state including camera ID
- * @param size Canvas size in pixels (default 144 for @2x resolution)
- * @returns Base64 data URL of the rendered PNG image
  */
 function renderResetButtonImage(state, size = DEFAULT_BUTTON_SIZE) {
-    const canvas = createCanvas(size, size);
-    const ctx = canvas.getContext("2d");
-    const fontSize = scaled(24, size);
-    const padding = scaled(6, size);
-    const iconSize = scaled(44, size);
-    // Step 1: Draw background (always inactive color - no state tracking for reset)
+    const { canvas, ctx, scaled } = createRenderContext(size);
+    const fontSize = scaled(24);
+    const padding = scaled(6);
+    const iconSize = scaled(44);
     ctx.fillStyle = Colors.INACTIVE_BG;
     ctx.fillRect(0, 0, size, size);
-    // Step 2: Draw reset icon (centered, slightly above middle)
     const iconY = size * 0.38;
     drawResetIcon(ctx, size / 2, iconY, iconSize, Colors.TEXT_COLOR);
-    // Step 3: Draw camera name (at bottom)
     ctx.fillStyle = Colors.TEXT_COLOR;
     ctx.font = `bold ${fontSize}px sans-serif`;
     const availableWidth = size - padding * 2;
@@ -762,14 +713,9 @@ function renderResetButtonImage(state, size = DEFAULT_BUTTON_SIZE) {
 /**
  * Render a yellow flash image for feedback.
  * Used for reset confirmation instead of the green checkmark.
- *
- * @param size Canvas size in pixels (default 144 for @2x resolution)
- * @returns Base64 data URL of the rendered PNG image
  */
 function renderFlashImage(size = DEFAULT_BUTTON_SIZE) {
-    const canvas = createCanvas(size, size);
-    const ctx = canvas.getContext("2d");
-    // Fill with yellow/amber color
+    const { canvas, ctx } = createRenderContext(size);
     ctx.fillStyle = Colors.FLASH_BG;
     ctx.fillRect(0, 0, size, size);
     return canvas.toDataURL("image/png");
@@ -976,6 +922,34 @@ class CameraActionBase extends SingletonAction {
         }
         return this.renderImage(contextState);
     }
+    /**
+     * Execute a camera reset with validation and visual feedback.
+     * Returns true if reset was executed, false if validation failed.
+     */
+    async executeCameraReset(contextState, resetMode, keyAction) {
+        const { settings, client } = contextState;
+        if (!settings.serverAddress || !settings.cameraId) {
+            streamDeck.logger.warn("Camera reset: action not configured");
+            await keyAction.showAlert();
+            return false;
+        }
+        if (!client || client.connectionStatus !== "connected") {
+            streamDeck.logger.warn("Camera reset: not connected to server");
+            await keyAction.showAlert();
+            return false;
+        }
+        try {
+            await client.resetCamera(settings.cameraId, resetMode);
+            streamDeck.logger.info(`Camera reset successful: ${settings.cameraId} (mode=${resetMode})`);
+            await executeBlinkAnimation(keyAction, () => this.updateDisplay(contextState));
+            return true;
+        }
+        catch (error) {
+            streamDeck.logger.error(`Failed to reset camera: ${error}`);
+            await keyAction.showAlert();
+            return false;
+        }
+    }
 }
 
 /**
@@ -1127,27 +1101,8 @@ let CameraSelectAction = (() => {
             const contextState = this.contexts.get(contextId);
             if (!contextState)
                 return;
-            const { settings, client } = contextState;
-            if (!settings.serverAddress || !settings.cameraId) {
-                streamDeck.logger.warn("Camera Select action not configured for reset");
-                await keyAction.showAlert();
-                return;
-            }
-            if (!client || client.connectionStatus !== "connected") {
-                streamDeck.logger.warn("Not connected to XTouch GW server");
-                await keyAction.showAlert();
-                return;
-            }
-            streamDeck.logger.info(`Long press triggered - resetting camera ${settings.cameraId}`);
-            try {
-                await client.resetCamera(settings.cameraId, settings.resetMode || "both");
-                streamDeck.logger.info(`Camera reset successful: ${settings.cameraId}`);
-                await executeBlinkAnimation(keyAction, () => this.updateDisplay(contextState));
-            }
-            catch (error) {
-                streamDeck.logger.error(`Failed to reset camera: ${error}`);
-                await keyAction.showAlert();
-            }
+            streamDeck.logger.info(`Long press triggered - resetting camera ${contextState.settings.cameraId}`);
+            await this.executeCameraReset(contextState, contextState.settings.resetMode || "both", keyAction);
         }
         /**
          * Called when the key is released.
@@ -1271,27 +1226,8 @@ let CameraResetAction = (() => {
                 await ev.action.showAlert();
                 return;
             }
-            const { settings, client } = contextState;
-            streamDeck.logger.info(`Camera Reset key pressed: context=${contextId}, camera=${settings.cameraId}, mode=${settings.resetMode}`);
-            if (!settings.serverAddress || !settings.cameraId) {
-                streamDeck.logger.warn("Camera Reset action not configured");
-                await ev.action.showAlert();
-                return;
-            }
-            if (!client || client.connectionStatus !== "connected") {
-                streamDeck.logger.warn("Not connected to XTouch GW server");
-                await ev.action.showAlert();
-                return;
-            }
-            try {
-                await client.resetCamera(settings.cameraId, settings.resetMode);
-                streamDeck.logger.info(`Camera reset successful: ${settings.cameraId} (mode=${settings.resetMode})`);
-                await executeBlinkAnimation(ev.action, () => this.updateDisplay(contextState));
-            }
-            catch (error) {
-                streamDeck.logger.error(`Failed to reset camera: ${error}`);
-                await ev.action.showAlert();
-            }
+            streamDeck.logger.info(`Camera Reset key pressed: context=${contextId}, camera=${contextState.settings.cameraId}, mode=${contextState.settings.resetMode}`);
+            await this.executeCameraReset(contextState, contextState.settings.resetMode, ev.action);
         }
     };
     __setFunctionName(_classThis, "CameraResetAction");
