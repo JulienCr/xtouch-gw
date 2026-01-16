@@ -267,15 +267,8 @@ async fn run_app(
     let active_page_name = router.get_active_page_name().await;
 
     if let Some(page) = active_page {
-        // Apply LCD labels and colors
         let labels = page.lcd.as_ref().and_then(|lcd| lcd.labels.as_ref());
-
-        // Convert LcdColor to u8 values
-        let colors_u8: Option<Vec<u8>> = page.lcd.as_ref().and_then(|lcd| {
-            lcd.colors.as_ref().map(|colors| {
-                colors.iter().map(|c| c.to_u8()).collect()
-            })
-        });
+        let colors_u8 = convert_lcd_colors(&page);
 
         if let Err(e) = xtouch
             .apply_lcd_for_page(labels, colors_u8.as_ref(), &active_page_name)
@@ -404,29 +397,8 @@ async fn run_app(
     // Create ApiState early so it can be captured by the OBS indicator callback
     let api_state = Arc::new(api::ApiState {
         camera_targets: router.get_camera_targets(),
-        available_cameras: Arc::new(parking_lot::RwLock::new(
-            config.obs.as_ref()
-                .and_then(|o| o.camera_control.as_ref())
-                .map(|cc| cc.cameras.iter().map(|c| api::CameraInfo {
-                    id: c.id.clone(),
-                    scene: c.scene.clone(),
-                    source: c.source.clone(),
-                    split_source: c.split_source.clone(),
-                    enable_ptz: c.enable_ptz,
-                }).collect())
-                .unwrap_or_default()
-        )),
-        gamepad_slots: Arc::new(parking_lot::RwLock::new(
-            config.gamepad.as_ref()
-                .and_then(|g| g.gamepads.as_ref())
-                .map(|slots| slots.iter().enumerate().map(|(i, slot)| api::GamepadSlotInfo {
-                    slot: format!("gamepad{}", i + 1),
-                    product_match: slot.product_match.clone(),
-                    camera_target_mode: slot.camera_target.clone().unwrap_or_else(|| "static".to_string()),
-                    current_camera: None,
-                }).collect())
-                .unwrap_or_default()
-        )),
+        available_cameras: Arc::new(parking_lot::RwLock::new(build_camera_infos(&config))),
+        gamepad_slots: Arc::new(parking_lot::RwLock::new(build_gamepad_slot_infos(&config))),
         update_tx: tokio::sync::broadcast::channel(16).0,
         current_on_air_camera: Arc::new(parking_lot::RwLock::new(None)),
     });
@@ -616,15 +588,8 @@ async fn run_app(
                     let active_page_name = router.get_active_page_name().await;
 
                     if let Some(page) = active_page {
-                        // Apply LCD labels and colors
                         let labels = page.lcd.as_ref().and_then(|lcd| lcd.labels.as_ref());
-
-                        // Convert LcdColor to u8 values
-                        let colors_u8: Option<Vec<u8>> = page.lcd.as_ref().and_then(|lcd| {
-                            lcd.colors.as_ref().map(|colors| {
-                                colors.iter().map(|c| c.to_u8()).collect()
-                            })
-                        });
+                        let colors_u8 = convert_lcd_colors(&page);
 
                         if let Err(e) = xtouch.apply_lcd_for_page(labels, colors_u8.as_ref(), &active_page_name).await {
                             warn!("Failed to apply LCD for page: {}", e);
@@ -915,6 +880,57 @@ async fn test_control_mappings() -> Result<()> {
     println!("\n{}", "✅ Control mapping test complete!".green().bold());
 
     Ok(())
+}
+
+/// Build camera info list from configuration.
+fn build_camera_infos(config: &AppConfig) -> Vec<api::CameraInfo> {
+    let Some(obs) = config.obs.as_ref() else {
+        return Vec::new();
+    };
+    let Some(camera_control) = obs.camera_control.as_ref() else {
+        return Vec::new();
+    };
+    camera_control
+        .cameras
+        .iter()
+        .map(|c| api::CameraInfo {
+            id: c.id.clone(),
+            scene: c.scene.clone(),
+            source: c.source.clone(),
+            split_source: c.split_source.clone(),
+            enable_ptz: c.enable_ptz,
+        })
+        .collect()
+}
+
+/// Build gamepad slot info list from configuration.
+fn build_gamepad_slot_infos(config: &AppConfig) -> Vec<api::GamepadSlotInfo> {
+    let Some(gamepad) = config.gamepad.as_ref() else {
+        return Vec::new();
+    };
+    let Some(slots) = gamepad.gamepads.as_ref() else {
+        return Vec::new();
+    };
+    slots
+        .iter()
+        .enumerate()
+        .map(|(i, slot)| api::GamepadSlotInfo {
+            slot: format!("gamepad{}", i + 1),
+            product_match: slot.product_match.clone(),
+            camera_target_mode: slot
+                .camera_target
+                .clone()
+                .unwrap_or_else(|| "static".to_string()),
+            current_camera: None,
+        })
+        .collect()
+}
+
+/// Convert LCD colors from config to u8 values.
+fn convert_lcd_colors(page: &crate::config::PageConfig) -> Option<Vec<u8>> {
+    page.lcd.as_ref().and_then(|lcd| {
+        lcd.colors.as_ref().map(|colors| colors.iter().map(|c| c.to_u8()).collect())
+    })
 }
 
 /// Extract PitchBend channel and 14-bit value from raw MIDI feedback data.

@@ -74,6 +74,18 @@ interface OnAirChangedMessage {
 type WebSocketMessage = SnapshotMessage | TargetChangedMessage | OnAirChangedMessage;
 
 /**
+ * Check HTTP response and throw an error if not OK.
+ * @param response The fetch Response object
+ * @param operation Description of the operation for error messages
+ */
+async function checkResponse(response: Response, operation: string): Promise<void> {
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Failed to ${operation}: HTTP ${response.status} - ${errorText}`);
+  }
+}
+
+/**
  * Client for communicating with the XTouch GW server.
  * Handles WebSocket connection for real-time state updates and HTTP API calls for camera targeting.
  */
@@ -97,6 +109,9 @@ export class XTouchClient {
   // Reconnect configuration
   private static readonly INITIAL_RECONNECT_DELAY_MS = 1000;
   private static readonly MAX_RECONNECT_DELAY_MS = 30000;
+
+  // WebSocket close codes
+  private static readonly CLOSE_NORMAL = 1000;
 
   constructor(serverAddress: string) {
     this._serverAddress = serverAddress;
@@ -262,8 +277,8 @@ export class XTouchClient {
 
     const gamepad = this._gamepads.get(message.gamepad_slot);
     if (gamepad) {
+      // Object retrieved from Map is mutated directly; no need to re-set since Map still references the same instance
       gamepad.current_camera = message.camera_id;
-      this._gamepads.set(message.gamepad_slot, gamepad);
     } else {
       // Create a placeholder entry if gamepad not found
       this._gamepads.set(message.gamepad_slot, {
@@ -328,7 +343,7 @@ export class XTouchClient {
     }
 
     if (this._ws) {
-      this._ws.close(1000, "Client disconnecting");
+      this._ws.close(XTouchClient.CLOSE_NORMAL, "Client disconnecting");
       this._ws = null;
     }
 
@@ -412,10 +427,7 @@ export class XTouchClient {
       }),
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Failed to set camera target: HTTP ${response.status} - ${errorText}`);
-    }
+    await checkResponse(response, "set camera target");
 
     streamDeck.logger.info(`Camera target set successfully: ${slot} -> ${cameraId}`);
   }
@@ -425,21 +437,9 @@ export class XTouchClient {
    */
   async getGamepadSlots(): Promise<GamepadSlotInfo[]> {
     const url = `http://${this._serverAddress}/api/gamepads`;
-
-    const response = await fetch(url, {
-      method: "GET",
-      headers: {
-        "Content-Type": "application/json",
-      },
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Failed to fetch gamepad slots: HTTP ${response.status} - ${errorText}`);
-    }
-
-    const data = (await response.json()) as GamepadSlotInfo[];
-    return data;
+    const response = await fetch(url);
+    await checkResponse(response, "fetch gamepad slots");
+    return (await response.json()) as GamepadSlotInfo[];
   }
 
   /**
@@ -447,21 +447,9 @@ export class XTouchClient {
    */
   async getCameras(): Promise<CameraInfo[]> {
     const url = `http://${this._serverAddress}/api/cameras`;
-
-    const response = await fetch(url, {
-      method: "GET",
-      headers: {
-        "Content-Type": "application/json",
-      },
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Failed to fetch cameras: HTTP ${response.status} - ${errorText}`);
-    }
-
-    const data = (await response.json()) as CameraInfo[];
-    return data;
+    const response = await fetch(url);
+    await checkResponse(response, "fetch cameras");
+    return (await response.json()) as CameraInfo[];
   }
 }
 

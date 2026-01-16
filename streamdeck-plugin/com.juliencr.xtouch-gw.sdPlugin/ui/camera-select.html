@@ -224,6 +224,9 @@
   </div>
 
   <script>
+    // Constants
+    const DEFAULT_SERVER_ADDRESS = "localhost:8125";
+
     // Stream Deck WebSocket connection
     let websocket = null;
     let uuid = null;
@@ -232,7 +235,7 @@
 
     // State
     let currentSettings = {
-      serverAddress: "localhost:8125",
+      serverAddress: DEFAULT_SERVER_ADDRESS,
       gamepadSlot: "",
       cameraId: ""
     };
@@ -259,7 +262,7 @@
       // Load settings from actionInfo
       if (actionInfo && actionInfo.payload && actionInfo.payload.settings) {
         currentSettings = {
-          serverAddress: actionInfo.payload.settings.serverAddress || "localhost:8125",
+          serverAddress: actionInfo.payload.settings.serverAddress || DEFAULT_SERVER_ADDRESS,
           gamepadSlot: actionInfo.payload.settings.gamepadSlot || "",
           cameraId: actionInfo.payload.settings.cameraId || ""
         };
@@ -292,7 +295,7 @@
         if (data.event === "didReceiveSettings") {
           const settings = data.payload.settings || {};
           currentSettings = {
-            serverAddress: settings.serverAddress || "localhost:8125",
+            serverAddress: settings.serverAddress || DEFAULT_SERVER_ADDRESS,
             gamepadSlot: settings.gamepadSlot || "",
             cameraId: settings.cameraId || ""
           };
@@ -365,7 +368,7 @@
     }
 
     function applySettingsToUI() {
-      serverAddressInput.value = currentSettings.serverAddress || "localhost:8125";
+      serverAddressInput.value = currentSettings.serverAddress || DEFAULT_SERVER_ADDRESS;
 
       // Gamepad and camera will be set after dropdowns are populated
     }
