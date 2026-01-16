@@ -1,0 +1,48 @@
+{
+  "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
+  "UUID": "com.juliencr.xtouch-gw",
+  "Name": "XTouch GW Camera Control",
+  "Version": "1.0.0",
+  "Description": "Control XTouch GW camera targeting from Stream Deck",
+  "Author": "Julien Cr",
+  "Icon": "imgs/plugin-icon",
+  "CodePath": "bin/plugin.js",
+  "Category": "XTouch GW",
+  "CategoryIcon": "imgs/plugin-icon",
+  "SDKVersion": 2,
+  "Software": {
+    "MinimumVersion": "6.6"
+  },
+  "OS": [
+    {
+      "Platform": "mac",
+      "MinimumVersion": "13"
+    },
+    {
+      "Platform": "windows",
+      "MinimumVersion": "10"
+    }
+  ],
+  "Nodejs": {
+    "Version": "20",
+    "Debug": "enabled"
+  },
+  "Actions": [
+    {
+      "UUID": "com.juliencr.xtouch-gw.camera-select",
+      "Name": "Camera Select",
+      "Icon": "imgs/action-icon",
+      "Tooltip": "Select a camera for XTouch GW fader control",
+      "PropertyInspectorPath": "ui/camera-select.html",
+      "SupportedInMultiActions": false,
+      "Controllers": ["Keypad"],
+      "States": [
+        {
+          "Image": "imgs/action-icon",
+          "TitleAlignment": "bottom",
+          "FontSize": "10"
+        }
+      ]
+    }
+  ]
+}
