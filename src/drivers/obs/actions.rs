@@ -525,15 +525,40 @@ impl Driver for ObsDriver {
                 // Resolve item ID
                 let item_id = self.resolve_item_id(&scene_name, &source_name).await?;
 
-                // Build transform to reset zoom to 1:1
+                // Read current transform from OBS (not cache!) to determine type
+                let current = self.read_transform(&scene_name, item_id).await?;
+
+                // Detect if this source uses bounds-based or scale-based transform
+                let is_bounds_based = if let (Some(bw), Some(bh)) = (current.bounds_width, current.bounds_height) {
+                    bw > 0.0 && bh > 0.0
+                } else {
+                    false
+                };
+
+                // Build transform to reset zoom
                 let mut transform = obws::requests::scene_items::SceneItemTransform::default();
 
-                // Reset scale to 1.0
-                transform.scale = Some(obws::requests::scene_items::Scale {
-                    x: Some(1.0),
-                    y: Some(1.0),
-                    ..Default::default()
-                });
+                if is_bounds_based {
+                    // For bounds-based sources (NDI cameras): reset bounds to canvas dimensions
+                    // Keep position unchanged - user can reset position separately with resetPosition
+                    let (canvas_width, canvas_height) = self.get_canvas_dimensions().await?;
+
+                    transform.bounds = Some(obws::requests::scene_items::Bounds {
+                        width: Some(canvas_width as f32),
+                        height: Some(canvas_height as f32),
+                        ..Default::default()
+                    });
+
+                    info!("OBS Reset zoom (bounds): {}x{}", canvas_width as u32, canvas_height as u32);
+                } else {
+                    // For scale-based sources: reset scale to 1.0
+                    transform.scale = Some(obws::requests::scene_items::Scale {
+                        x: Some(1.0),
+                        y: Some(1.0),
+                        ..Default::default()
+                    });
+                    debug!("OBS Reset zoom (scale): 1.0x1.0");
+                }
 
                 // Send to OBS
                 let guard = self.client.read().await;
@@ -549,18 +574,11 @@ impl Driver for ObsDriver {
                     .await
                     .context("Failed to reset scene item zoom")?;
 
-                // Update cache with new scale
+                // Invalidate cache to force fresh read on next operation
                 let cache_key = self.cache_key(&scene_name, &source_name);
-                if let Some(state) = self.transform_cache.write().get_mut(&cache_key) {
-                    state.scale_x = 1.0;
-                    state.scale_y = 1.0;
-                    // Also clear bounds if they exist (prefer scale-based)
-                    state.bounds_width = None;
-                    state.bounds_height = None;
-                }
+                self.transform_cache.write().remove(&cache_key);
 
-                debug!("OBS reset zoom: '{}' scale=(1.0,1.0)",
-                    self.cache_key(&scene_name, &source_name));
+                debug!("OBS reset zoom: '{}' (cache invalidated)", cache_key);
 
                 Ok(())
             },
