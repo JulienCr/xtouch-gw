@@ -43,6 +43,22 @@
           "FontSize": "10"
         }
       ]
+    },
+    {
+      "UUID": "com.juliencr.xtouch-gw.camera-reset",
+      "Name": "Camera Reset",
+      "Icon": "imgs/action-icon",
+      "Tooltip": "Reset camera zoom and/or position to default",
+      "PropertyInspectorPath": "ui/camera-reset.html",
+      "SupportedInMultiActions": true,
+      "Controllers": ["Keypad"],
+      "States": [
+        {
+          "Image": "imgs/action-icon",
+          "TitleAlignment": "bottom",
+          "FontSize": "10"
+        }
+      ]
     }
   ]
 }

@@ -74,15 +74,37 @@ interface OnAirChangedMessage {
 type WebSocketMessage = SnapshotMessage | TargetChangedMessage | OnAirChangedMessage;
 
 /**
- * Check HTTP response and throw an error if not OK.
- * @param response The fetch Response object
- * @param operation Description of the operation for error messages
+ * Make an HTTP request to the XTouch GW API.
+ * Handles response checking and JSON parsing.
  */
-async function checkResponse(response: Response, operation: string): Promise<void> {
+async function apiRequest<T>(
+  baseUrl: string,
+  path: string,
+  options?: { method?: string; body?: object }
+): Promise<T> {
+  const url = `http://${baseUrl}${path}`;
+  const fetchOptions: RequestInit = {
+    method: options?.method ?? "GET",
+    headers: { "Content-Type": "application/json" },
+  };
+
+  if (options?.body) {
+    fetchOptions.body = JSON.stringify(options.body);
+  }
+
+  const response = await fetch(url, fetchOptions);
+
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Failed to ${operation}: HTTP ${response.status} - ${errorText}`);
+    throw new Error(`API ${options?.method ?? "GET"} ${path}: HTTP ${response.status} - ${errorText}`);
   }
+
+  const contentType = response.headers.get("content-type");
+  if (contentType?.includes("application/json")) {
+    return (await response.json()) as T;
+  }
+
+  return undefined as T;
 }
 
 /**
@@ -409,47 +431,36 @@ export class XTouchClient {
 
   /**
    * Set the camera target for a gamepad slot via HTTP API.
-   * @param slot The gamepad slot identifier
-   * @param cameraId The camera ID to target
    */
   async setCameraTarget(slot: string, cameraId: string): Promise<void> {
     streamDeck.logger.info(`Setting camera target: slot=${slot}, camera=${cameraId}`);
-
-    const url = `http://${this._serverAddress}/api/gamepad/${encodeURIComponent(slot)}/camera`;
-
-    const response = await fetch(url, {
-      method: "PUT",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        camera_id: cameraId,
-      }),
-    });
-
-    await checkResponse(response, "set camera target");
-
+    const path = `/api/gamepad/${encodeURIComponent(slot)}/camera`;
+    await apiRequest(this._serverAddress, path, { method: "PUT", body: { camera_id: cameraId } });
     streamDeck.logger.info(`Camera target set successfully: ${slot} -> ${cameraId}`);
   }
 
   /**
-   * Fetch available gamepad slots via HTTP API
+   * Fetch available gamepad slots via HTTP API.
    */
   async getGamepadSlots(): Promise<GamepadSlotInfo[]> {
-    const url = `http://${this._serverAddress}/api/gamepads`;
-    const response = await fetch(url);
-    await checkResponse(response, "fetch gamepad slots");
-    return (await response.json()) as GamepadSlotInfo[];
+    return apiRequest<GamepadSlotInfo[]>(this._serverAddress, "/api/gamepads");
   }
 
   /**
-   * Fetch available cameras via HTTP API
+   * Fetch available cameras via HTTP API.
    */
   async getCameras(): Promise<CameraInfo[]> {
-    const url = `http://${this._serverAddress}/api/cameras`;
-    const response = await fetch(url);
-    await checkResponse(response, "fetch cameras");
-    return (await response.json()) as CameraInfo[];
+    return apiRequest<CameraInfo[]>(this._serverAddress, "/api/cameras");
+  }
+
+  /**
+   * Reset a camera's zoom and/or position via HTTP API.
+   */
+  async resetCamera(cameraId: string, mode: "position" | "zoom" | "both"): Promise<void> {
+    streamDeck.logger.info(`Resetting camera: id=${cameraId}, mode=${mode}`);
+    const path = `/api/cameras/${encodeURIComponent(cameraId)}/reset`;
+    await apiRequest(this._serverAddress, path, { method: "POST", body: { mode } });
+    streamDeck.logger.info(`Camera reset successful: ${cameraId}`);
   }
 }
 

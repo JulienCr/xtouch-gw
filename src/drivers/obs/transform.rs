@@ -4,7 +4,7 @@
 //! Provides caching for performance and handles center-based zoom operations.
 
 use anyhow::{Result, Context};
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use super::driver::ObsDriver;
 
@@ -402,6 +402,128 @@ impl ObsDriver {
                 Err(e).context("Failed to set scene item transform")
             }
         }?;
+
+        Ok(())
+    }
+
+    /// Reset camera transform to default (centered, no zoom)
+    ///
+    /// # Arguments
+    /// * `scene_name` - The OBS scene containing the source
+    /// * `source_name` - The source to reset
+    /// * `mode` - Reset mode: "position" (center), "zoom" (scale 1.0), or "both"
+    pub async fn reset_transform(
+        &self,
+        scene_name: &str,
+        source_name: &str,
+        mode: &str,
+    ) -> Result<()> {
+        let item_id = self.resolve_item_id(scene_name, source_name).await?;
+
+        // Get canvas dimensions for centering
+        let (canvas_width, canvas_height) = self.get_canvas_dimensions().await?;
+        let center_x = canvas_width / 2.0;
+        let center_y = canvas_height / 2.0;
+
+        // Read current transform to preserve what we don't reset
+        let current = self.read_transform(scene_name, item_id).await?;
+
+        let cache_key = self.cache_key(scene_name, source_name);
+        let mut new_state = current.clone();
+
+        let reset_position = mode == "position" || mode == "both";
+        let reset_zoom = mode == "zoom" || mode == "both";
+
+        // Get source base dimensions for centering calculations
+        let (source_width, source_height) = if let (Some(w), Some(h)) = (current.width, current.height) {
+            (w, h)
+        } else {
+            (canvas_width, canvas_height) // Fallback to canvas size
+        };
+
+        // Determine if using bounds-based or scale-based transform
+        let use_bounds = if let (Some(bw), Some(bh)) = (current.bounds_width, current.bounds_height) {
+            bw > 0.0 && bh > 0.0
+        } else {
+            false
+        };
+
+        if reset_zoom {
+            if use_bounds {
+                // Reset bounds to canvas dimensions
+                new_state.bounds_width = Some(canvas_width);
+                new_state.bounds_height = Some(canvas_height);
+            } else {
+                // Reset scale to 1.0
+                new_state.scale_x = 1.0;
+                new_state.scale_y = 1.0;
+            }
+        }
+
+        if reset_position {
+            // Calculate the object dimensions after zoom reset
+            let (obj_width, obj_height) = if use_bounds {
+                (new_state.bounds_width.unwrap_or(canvas_width),
+                 new_state.bounds_height.unwrap_or(canvas_height))
+            } else {
+                (source_width * new_state.scale_x,
+                 source_height * new_state.scale_y)
+            };
+
+            // Compute anchor from alignment
+            let (anchor_x, anchor_y) = compute_anchor_from_alignment(current.alignment);
+
+            // Position so object is centered on canvas
+            // Object center should be at canvas center
+            // anchor_pos = object_center - (0.5 - anchor) * object_size
+            new_state.x = center_x - (0.5 - anchor_x) * obj_width;
+            new_state.y = center_y - (0.5 - anchor_y) * obj_height;
+        }
+
+        // Apply the transform
+        let guard = self.client.read().await;
+        let client = guard.as_ref().context("OBS client not connected")?;
+
+        let mut transform = obws::requests::scene_items::SceneItemTransform::default();
+
+        if reset_position {
+            transform.position = Some(obws::requests::scene_items::Position {
+                x: Some(new_state.x as f32),
+                y: Some(new_state.y as f32),
+                ..Default::default()
+            });
+        }
+
+        if reset_zoom {
+            if use_bounds {
+                transform.bounds = Some(obws::requests::scene_items::Bounds {
+                    width: Some(new_state.bounds_width.unwrap() as f32),
+                    height: Some(new_state.bounds_height.unwrap() as f32),
+                    ..Default::default()
+                });
+            } else {
+                transform.scale = Some(obws::requests::scene_items::Scale {
+                    x: Some(new_state.scale_x as f32),
+                    y: Some(new_state.scale_y as f32),
+                    ..Default::default()
+                });
+            }
+        }
+
+        client.scene_items()
+            .set_transform(obws::requests::scene_items::SetTransform {
+                scene: scene_name,
+                item_id,
+                transform,
+            })
+            .await
+            .context("Failed to reset scene item transform")?;
+
+        // Update cache
+        self.transform_cache.write().insert(cache_key.clone(), new_state);
+
+        info!("OBS reset_transform: scene='{}' source='{}' mode='{}' -> centered at ({:.1},{:.1})",
+            scene_name, source_name, mode, center_x, center_y);
 
         Ok(())
     }
