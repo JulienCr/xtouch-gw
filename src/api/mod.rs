@@ -62,6 +62,7 @@ pub struct CameraInfo {
     pub scene: String,
     pub source: String,
     pub split_source: String,
+    pub enable_ptz: bool,
 }
 
 /// Information about a gamepad slot

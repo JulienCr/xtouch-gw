@@ -26,12 +26,14 @@ obs:
   # - scene: scène OBS pour la vue plein écran
   # - source: source OBS à transformer (pan/zoom) dans cette scène
   # - split_source: source OBS pour les vues split
+  # - enable_ptz: activer le contrôle PTZ (pan/tilt/zoom) pour cette caméra (default: true)
   camera_control:
     cameras:
       - id: "Main"
         scene: "--- CAM Main"
         source: "--- CAM Main"
         split_source: "SPLIT CAM Main"
+        enable_ptz: false  # Désactiver le contrôle PTZ pour cette caméra
       - id: "Main2"
         scene: "--- CAM Main 2"
         source: "--- CAM Main"

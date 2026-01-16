@@ -1,0 +1,202 @@
+{
+	"info": {
+		"_postman_id": "xtouch-gw-camera-api",
+		"name": "XTouch-GW Camera API",
+		"description": "REST API for dynamic camera targeting (Stream Deck integration)\n\nPort: 8125",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"variable": [
+		{
+			"key": "base_url",
+			"value": "http://localhost:8125",
+			"type": "string"
+		}
+	],
+	"item": [
+		{
+			"name": "Health Check",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/api/health",
+					"host": ["{{base_url}}"],
+					"path": ["api", "health"]
+				},
+				"description": "Check if the API server is running"
+			},
+			"response": []
+		},
+		{
+			"name": "List Cameras",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/api/cameras",
+					"host": ["{{base_url}}"],
+					"path": ["api", "cameras"]
+				},
+				"description": "List all available cameras from config"
+			},
+			"response": []
+		},
+		{
+			"name": "List Gamepads",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/api/gamepads",
+					"host": ["{{base_url}}"],
+					"path": ["api", "gamepads"]
+				},
+				"description": "List all gamepad slots with their current camera targets"
+			},
+			"response": []
+		},
+		{
+			"name": "Get Camera Target (gamepad1)",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/api/gamepad/gamepad1/camera",
+					"host": ["{{base_url}}"],
+					"path": ["api", "gamepad", "gamepad1", "camera"]
+				},
+				"description": "Get current camera target for gamepad1"
+			},
+			"response": []
+		},
+		{
+			"name": "Get Camera Target (gamepad2)",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/api/gamepad/gamepad2/camera",
+					"host": ["{{base_url}}"],
+					"path": ["api", "gamepad", "gamepad2", "camera"]
+				},
+				"description": "Get current camera target for gamepad2"
+			},
+			"response": []
+		},
+		{
+			"name": "Set Camera Target - Main",
+			"request": {
+				"method": "PUT",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"camera_id\": \"Main\"\n}"
+				},
+				"url": {
+					"raw": "{{base_url}}/api/gamepad/gamepad1/camera",
+					"host": ["{{base_url}}"],
+					"path": ["api", "gamepad", "gamepad1", "camera"]
+				},
+				"description": "Set gamepad1 to control Main camera"
+			},
+			"response": []
+		},
+		{
+			"name": "Set Camera Target - Main2",
+			"request": {
+				"method": "PUT",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"camera_id\": \"Main2\"\n}"
+				},
+				"url": {
+					"raw": "{{base_url}}/api/gamepad/gamepad1/camera",
+					"host": ["{{base_url}}"],
+					"path": ["api", "gamepad", "gamepad1", "camera"]
+				},
+				"description": "Set gamepad1 to control Main2 camera"
+			},
+			"response": []
+		},
+		{
+			"name": "Set Camera Target - Jardin",
+			"request": {
+				"method": "PUT",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"camera_id\": \"Jardin\"\n}"
+				},
+				"url": {
+					"raw": "{{base_url}}/api/gamepad/gamepad1/camera",
+					"host": ["{{base_url}}"],
+					"path": ["api", "gamepad", "gamepad1", "camera"]
+				},
+				"description": "Set gamepad1 to control Jardin camera"
+			},
+			"response": []
+		},
+		{
+			"name": "Set Camera Target - Cour",
+			"request": {
+				"method": "PUT",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"camera_id\": \"Cour\"\n}"
+				},
+				"url": {
+					"raw": "{{base_url}}/api/gamepad/gamepad1/camera",
+					"host": ["{{base_url}}"],
+					"path": ["api", "gamepad", "gamepad1", "camera"]
+				},
+				"description": "Set gamepad1 to control Cour camera"
+			},
+			"response": []
+		},
+		{
+			"name": "Set Invalid Camera (Error Test)",
+			"request": {
+				"method": "PUT",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"camera_id\": \"InvalidCamera\"\n}"
+				},
+				"url": {
+					"raw": "{{base_url}}/api/gamepad/gamepad1/camera",
+					"host": ["{{base_url}}"],
+					"path": ["api", "gamepad", "gamepad1", "camera"]
+				},
+				"description": "Test error handling with invalid camera ID"
+			},
+			"response": []
+		}
+	]
+}

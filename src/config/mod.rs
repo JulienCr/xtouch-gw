@@ -75,6 +75,9 @@ pub struct CameraConfig {
     pub scene: String,
     pub source: String,
     pub split_source: String,
+    /// Enable PTZ (pan/tilt/zoom) control for this camera. Default: true
+    #[serde(default = "default_true")]
+    pub enable_ptz: bool,
 }
 
 /// Split scene configuration

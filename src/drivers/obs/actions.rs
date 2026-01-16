@@ -22,6 +22,26 @@ impl ObsDriver {
             .map(|c| (c.scene.clone(), c.source.clone()))
     }
 
+    /// Check if PTZ is enabled for a camera by ID.
+    /// Returns true by default if camera not found (legacy compatibility).
+    fn is_ptz_enabled(&self, camera_id: &str) -> bool {
+        let config_guard = self.camera_control_config.read();
+        config_guard.as_ref()
+            .and_then(|cc| cc.cameras.iter().find(|c| c.id == camera_id))
+            .map(|c| c.enable_ptz)
+            .unwrap_or(true) // Default: PTZ enabled for unknown cameras
+    }
+
+    /// Check if PTZ is enabled for a camera by scene name.
+    /// Returns true by default if camera not found (legacy compatibility).
+    fn is_ptz_enabled_by_scene(&self, scene: &str) -> bool {
+        let config_guard = self.camera_control_config.read();
+        config_guard.as_ref()
+            .and_then(|cc| cc.cameras.iter().find(|c| c.scene == scene))
+            .map(|c| c.enable_ptz)
+            .unwrap_or(true) // Default: PTZ enabled for unknown cameras
+    }
+
     /// Parse camera params with step for nudgeX, nudgeY, scaleUniform.
     /// Supports both new format [camera_id, step] and legacy [scene, source, step].
     fn parse_camera_params_with_step(&self, params: &[Value]) -> Result<(String, String, f64)> {
@@ -203,6 +223,11 @@ impl Driver for ObsDriver {
                         (scene, source, 2.0)
                     });
 
+                // Check if PTZ is enabled for this camera
+                if !self.is_ptz_enabled_by_scene(&scene_name) {
+                    return Ok(()); // Silently ignore PTZ commands for disabled cameras
+                }
+
                 // Check if input is from gamepad or encoder
                 let is_gamepad = ctx.control_id.as_ref()
                     .map(|id| id.starts_with("gamepad"))
@@ -274,6 +299,11 @@ impl Driver for ObsDriver {
                         let source = params.get(1).and_then(|v| v.as_str()).unwrap_or("").to_string();
                         (scene, source, 2.0)
                     });
+
+                // Check if PTZ is enabled for this camera
+                if !self.is_ptz_enabled_by_scene(&scene_name) {
+                    return Ok(()); // Silently ignore PTZ commands for disabled cameras
+                }
 
                 // Check if input is from gamepad or encoder
                 let is_gamepad = ctx.control_id.as_ref()
@@ -347,6 +377,11 @@ impl Driver for ObsDriver {
                         (scene, source, 0.02)
                     });
 
+                // Check if PTZ is enabled for this camera
+                if !self.is_ptz_enabled_by_scene(&scene_name) {
+                    return Ok(()); // Silently ignore PTZ commands for disabled cameras
+                }
+
                 // Check if input is from gamepad or encoder
                 let is_gamepad = ctx.control_id.as_ref()
                     .map(|id| id.starts_with("gamepad"))
@@ -414,6 +449,11 @@ impl Driver for ObsDriver {
                 let (scene_name, source_name) = self.parse_camera_params(&params)
                     .context("resetPosition requires [camera_id] or [scene, source]")?;
 
+                // Check if PTZ is enabled for this camera
+                if !self.is_ptz_enabled_by_scene(&scene_name) {
+                    return Ok(()); // Silently ignore PTZ commands for disabled cameras
+                }
+
                 info!("OBS Reset position: scene='{}' source='{}'", scene_name, source_name);
 
                 // Stop any analog motion on position axes
@@ -471,6 +511,11 @@ impl Driver for ObsDriver {
                 // Parse params: [camera_id] or [scene, source]
                 let (scene_name, source_name) = self.parse_camera_params(&params)
                     .context("resetZoom requires [camera_id] or [scene, source]")?;
+
+                // Check if PTZ is enabled for this camera
+                if !self.is_ptz_enabled_by_scene(&scene_name) {
+                    return Ok(()); // Silently ignore PTZ commands for disabled cameras
+                }
 
                 info!("OBS Reset zoom: scene='{}' source='{}'", scene_name, source_name);
 

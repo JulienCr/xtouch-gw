@@ -474,6 +474,7 @@ async fn run_app(
                     scene: c.scene.clone(),
                     source: c.source.clone(),
                     split_source: c.split_source.clone(),
+                    enable_ptz: c.enable_ptz,
                 }).collect())
                 .unwrap_or_default()
         )),
