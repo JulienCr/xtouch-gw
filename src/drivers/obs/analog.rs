@@ -3,7 +3,6 @@
 //! Handles velocity-based pan/zoom control using gamepad analog sticks.
 //! Applies gamma curves for finer control and manages a 60Hz timer for smooth motion.
 
-use anyhow::Result;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::time::{interval, MissedTickBehavior};

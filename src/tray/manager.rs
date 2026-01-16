@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{debug, info, warn, trace};
+use tracing::{debug, warn, trace};
 
 use super::{ActivityDirection, ConnectionStatus, TrayCommand, TrayUpdate};
 use crate::config::TrayConfig;

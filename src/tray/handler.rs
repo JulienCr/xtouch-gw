@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use parking_lot::RwLock;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, trace, warn};
 
 use super::{ActivityDirection, ActivityTracker, ConnectionStatus, TrayUpdate};
 

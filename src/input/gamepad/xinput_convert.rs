@@ -109,11 +109,15 @@ pub fn convert_xinput_buttons(
 ///
 /// Compares old and new axis values and emits events for changed axes.
 /// Applies radial deadzone and normalizes values to -1.0 to 1.0 range.
+///
+/// # Arguments
+/// * `sequence_counter` - Mutable reference to monotonic sequence counter (prevents race conditions)
 pub fn convert_xinput_axes(
     old_state: Option<&CachedXInputState>,
     new_state: &XInputState,
     prefix: &str,
     analog_config: Option<AnalogConfig>,
+    sequence_counter: &mut u64,
 ) -> Vec<GamepadEvent> {
     let mut events = Vec::new();
 
@@ -159,10 +163,12 @@ pub fn convert_xinput_axes(
     for (axis_name, new_value, old_value) in axes {
         // Emit if changed from previous value (mapper will handle redundant event filtering)
         if old_value.map_or(true, |old| new_value != old) {
+            *sequence_counter += 1;
             events.push(GamepadEvent::Axis {
                 control_id: format!("{}.axis.{}", prefix, axis_name),
                 value: new_value,
                 analog_config: analog_config.clone(),
+                sequence: *sequence_counter,
             });
         }
     }

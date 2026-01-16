@@ -86,8 +86,7 @@ impl ObsDriver {
         
         let guard = self.client.read().await;
         let client = guard.as_ref()
-            .context("OBS client not connected")?
-            .clone();
+            .context("OBS client not connected")?;
         
         client.scene_items()
             .set_enabled(obws::requests::scene_items::SetEnabled {

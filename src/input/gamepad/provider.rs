@@ -23,6 +23,8 @@ pub enum GamepadEvent {
         control_id: String,  // Full ID: "gamepad1.axis.lx"
         value: f32,
         analog_config: Option<AnalogConfig>,  // Per-slot config
+        /// Monotonic sequence number for ordering (prevents race conditions under CPU load)
+        sequence: u64,
     },
 }
 
@@ -248,6 +250,7 @@ impl GilrsProvider {
                     control_id: Self::axis_to_id(axis, prefix),
                     value: normalized_value,
                     analog_config,
+                    sequence: 0, // Legacy provider - sequence not used (use HybridGamepadProvider instead)
                 })
             }
             EventType::Connected => {

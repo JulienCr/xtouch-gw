@@ -3,7 +3,7 @@
 use crate::config::PageConfig;
 use anyhow::{anyhow, Result};
 use std::collections::HashSet;
-use tracing::{debug, info};
+use tracing::info;
 
 impl super::Router {
     /// Get the active page configuration

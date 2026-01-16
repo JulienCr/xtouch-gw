@@ -79,8 +79,7 @@ impl Driver for ObsDriver {
 
                 let guard = self.client.read().await;
                 let client = guard.as_ref()
-                    .context("OBS not connected")?
-                    .clone();
+                    .context("OBS not connected")?;
 
                 // Check studio mode to determine which scene to change
                 let studio_mode = *self.studio_mode.read();
@@ -99,8 +98,7 @@ impl Driver for ObsDriver {
             "toggleStudioMode" => {
                 let guard = self.client.read().await;
                 let client = guard.as_ref()
-                    .context("OBS not connected")?
-                    .clone();
+                    .context("OBS not connected")?;
 
                 // Get current state and toggle
                 let current = *self.studio_mode.read();
@@ -124,8 +122,7 @@ impl Driver for ObsDriver {
                 info!("🎬 OBS Studio Transition requested");
                 let guard = self.client.read().await;
                 let client = guard.as_ref()
-                    .context("OBS not connected")?
-                    .clone();
+                    .context("OBS not connected")?;
 
                 client.transitions().trigger().await?;
                 Ok(())
@@ -371,8 +368,7 @@ impl Driver for ObsDriver {
                 // Send to OBS
                 let guard = self.client.read().await;
                 let client = guard.as_ref()
-                    .context("OBS client not connected")?
-                    .clone();
+                    .context("OBS client not connected")?;
 
                 client.scene_items()
                     .set_transform(obws::requests::scene_items::SetTransform {
@@ -425,8 +421,7 @@ impl Driver for ObsDriver {
                 // Send to OBS
                 let guard = self.client.read().await;
                 let client = guard.as_ref()
-                    .context("OBS client not connected")?
-                    .clone();
+                    .context("OBS client not connected")?;
 
                 client.scene_items()
                     .set_transform(obws::requests::scene_items::SetTransform {
@@ -489,8 +484,7 @@ impl Driver for ObsDriver {
                         
                         let guard = self.client.read().await;
                         let client = guard.as_ref()
-                            .context("OBS not connected")?
-                            .clone();
+                            .context("OBS not connected")?;
                         
                         let studio_mode = *self.studio_mode.read();
                         
@@ -553,8 +547,7 @@ impl Driver for ObsDriver {
                 // Switch to split scene
                 let guard = self.client.read().await;
                 let client = guard.as_ref()
-                    .context("OBS not connected")?
-                    .clone();
+                    .context("OBS not connected")?;
                 
                 let studio_mode = *self.studio_mode.read();
                 
@@ -598,8 +591,7 @@ impl Driver for ObsDriver {
                 // Switch to full scene
                 let guard = self.client.read().await;
                 let client = guard.as_ref()
-                    .context("OBS not connected")?
-                    .clone();
+                    .context("OBS not connected")?;
                 
                 let studio_mode = *self.studio_mode.read();
                 

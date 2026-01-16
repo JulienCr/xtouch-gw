@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::fs;
 
-pub use watcher::ConfigWatcher;
 
 /// Root configuration structure
 #[derive(Debug, Clone, Deserialize, Serialize)]
