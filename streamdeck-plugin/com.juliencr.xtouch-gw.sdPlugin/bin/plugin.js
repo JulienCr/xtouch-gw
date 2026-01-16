@@ -1051,6 +1051,19 @@ let CameraSelectAction = (() => {
             }
         }
         /**
+         * Called when the action disappears from the Stream Deck.
+         * Clears the long press timer to prevent orphaned callbacks.
+         */
+        async onWillDisappear(ev) {
+            const contextId = ev.action.id;
+            const contextState = this.contexts.get(contextId);
+            if (contextState?.longPressTimer) {
+                clearTimeout(contextState.longPressTimer);
+                contextState.longPressTimer = null;
+            }
+            await super.onWillDisappear(ev);
+        }
+        /**
          * Handle state changes from the XTouch GW server.
          * Updates all contexts that match the changed state.
          */

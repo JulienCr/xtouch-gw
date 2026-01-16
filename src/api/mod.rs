@@ -69,11 +69,33 @@ pub struct SetCameraRequest {
     pub camera_id: String,
 }
 
+/// Reset mode for camera transform reset
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ResetMode {
+    /// Reset only position (center on canvas)
+    Position,
+    /// Reset only zoom (scale to 1.0 or bounds to canvas)
+    Zoom,
+    /// Reset both position and zoom
+    Both,
+}
+
+impl ResetMode {
+    /// Convert to string representation for OBS driver
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ResetMode::Position => "position",
+            ResetMode::Zoom => "zoom",
+            ResetMode::Both => "both",
+        }
+    }
+}
+
 /// Request body for resetting camera transform
 #[derive(Debug, Deserialize)]
 pub struct ResetCameraRequest {
-    /// Reset mode: "position", "zoom", or "both"
-    pub mode: String,
+    pub mode: ResetMode,
 }
 
 /// Response for get camera target
@@ -239,17 +261,6 @@ async fn reset_camera_transform(
         }),
     };
 
-    // Validate mode
-    let mode = match req.mode.as_str() {
-        "position" | "zoom" | "both" => req.mode.clone(),
-        _ => return Err(ApiError {
-            error: format!(
-                "Invalid mode: '{}'. Must be 'position', 'zoom', or 'both'.",
-                req.mode
-            ),
-        }),
-    };
-
     // Get OBS driver
     let obs_driver = match &state.obs_driver {
         Some(driver) => driver.clone(),
@@ -258,20 +269,21 @@ async fn reset_camera_transform(
         }),
     };
 
-    // Reset transform
-    if let Err(e) = obs_driver.reset_transform(&camera.scene, &camera.source, &mode).await {
+    // Reset transform (mode is already validated by serde deserialization)
+    let mode_str = req.mode.as_str();
+    if let Err(e) = obs_driver.reset_transform(&camera.scene, &camera.source, mode_str).await {
         error!("Failed to reset camera transform: {}", e);
         return Err(ApiError {
             error: format!("Failed to reset camera: {}", e),
         });
     }
 
-    info!("Camera reset successful: camera={}, mode={}", camera_id, mode);
+    info!("Camera reset successful: camera={}, mode={}", camera_id, mode_str);
 
     Ok(Json(serde_json::json!({
         "ok": true,
         "camera_id": camera_id,
-        "mode": mode
+        "mode": mode_str
     })))
 }
 

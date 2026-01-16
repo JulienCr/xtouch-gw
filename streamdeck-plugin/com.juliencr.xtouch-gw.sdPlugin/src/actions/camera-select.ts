@@ -3,6 +3,7 @@ import streamDeck, {
   KeyDownEvent,
   KeyUpEvent,
   KeyAction,
+  WillDisappearEvent,
 } from "@elgato/streamdeck";
 
 import {
@@ -144,6 +145,22 @@ export class CameraSelectAction extends CameraActionBase<CameraSelectSettings, C
       contextState.isActive = false;
       contextState.isOnAir = false;
     }
+  }
+
+  /**
+   * Called when the action disappears from the Stream Deck.
+   * Clears the long press timer to prevent orphaned callbacks.
+   */
+  override async onWillDisappear(ev: WillDisappearEvent<CameraSelectSettings>): Promise<void> {
+    const contextId = ev.action.id;
+    const contextState = this.contexts.get(contextId);
+
+    if (contextState?.longPressTimer) {
+      clearTimeout(contextState.longPressTimer);
+      contextState.longPressTimer = null;
+    }
+
+    await super.onWillDisappear(ev);
   }
 
   /**
