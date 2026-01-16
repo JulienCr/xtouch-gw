@@ -899,15 +899,7 @@ let CameraSelectAction = (() => {
             }
             streamDeck.logger.info(`Long press triggered - resetting camera ${settings.cameraId}`);
             try {
-                const url = `http://${settings.serverAddress}/api/cameras/${encodeURIComponent(settings.cameraId)}/reset`;
-                const response = await fetch(url, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ mode: settings.resetMode || "both" }),
-                });
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}`);
-                }
+                await client.resetCamera(settings.cameraId, settings.resetMode || "both");
                 streamDeck.logger.info(`Camera reset successful: ${settings.cameraId}`);
                 // Yellow blink feedback (2 iterations)
                 const flashImage = renderFlashImage();
@@ -1123,67 +1115,65 @@ let CameraSelectAction = (() => {
          */
         async updateDisplay(contextState) {
             const { settings, keyAction, isActive, isOnAir, connectionStatus } = contextState;
+            // Handle connecting state separately (no image, just title)
+            if (connectionStatus === "connecting") {
+                await keyAction.setTitle("...");
+                return;
+            }
             try {
-                let imageDataUrl;
-                if (connectionStatus === "disconnected") {
-                    // Show disconnected image with red "!" icon
-                    imageDataUrl = renderDisconnectedImage();
-                }
-                else if (connectionStatus === "connecting") {
-                    // Show connecting state - use text animation for now
-                    await keyAction.setTitle("...");
-                    return;
-                }
-                else if (!settings.cameraId) {
-                    // Show not configured image with gear icon
-                    imageDataUrl = renderNotConfiguredImage();
-                }
-                else {
-                    // Render button with current state
-                    // - isControlled: green background + bottom indicator bar
-                    // - isOnAir: red border
-                    imageDataUrl = renderButtonImage({
-                        cameraId: settings.cameraId,
-                        isControlled: isActive,
-                        isOnAir: isOnAir,
-                    });
-                }
-                // Clear title and set the rendered image
+                const imageDataUrl = this.getDisplayImage(connectionStatus, settings.cameraId, isActive, isOnAir);
                 await keyAction.setTitle("");
                 await keyAction.setImage(imageDataUrl);
             }
             catch (error) {
-                // Fallback to title-based display if rendering fails
                 streamDeck.logger.warn(`Failed to render button image, using title fallback: ${error}`);
-                let title;
-                if (connectionStatus === "disconnected") {
-                    title = "!";
-                }
-                else if (!settings.cameraId) {
-                    title = "Config";
-                }
-                else {
-                    title = settings.cameraId;
-                }
+                const title = this.getFallbackTitle(connectionStatus, settings.cameraId, isActive, isOnAir);
                 try {
-                    if (isActive && isOnAir) {
-                        await keyAction.setTitle(`[LIVE]\n${title}`);
-                    }
-                    else if (isActive) {
-                        await keyAction.setTitle(`[*]\n${title}`);
-                    }
-                    else if (isOnAir) {
-                        await keyAction.setTitle(`(LIVE)\n${title}`);
-                    }
-                    else {
-                        await keyAction.setTitle(title);
-                    }
+                    await keyAction.setTitle(title);
                 }
                 catch (fallbackError) {
-                    // Action may have been removed, log but don't throw
                     streamDeck.logger.debug(`Failed to update display in fallback: ${fallbackError}`);
                 }
             }
+        }
+        /**
+         * Get the appropriate display image based on connection status and state.
+         */
+        getDisplayImage(connectionStatus, cameraId, isActive, isOnAir) {
+            if (connectionStatus === "disconnected") {
+                return renderDisconnectedImage();
+            }
+            if (!cameraId) {
+                return renderNotConfiguredImage();
+            }
+            return renderButtonImage({
+                cameraId,
+                isControlled: isActive,
+                isOnAir,
+            });
+        }
+        /**
+         * Get fallback title when image rendering fails.
+         */
+        getFallbackTitle(connectionStatus, cameraId, isActive, isOnAir) {
+            // Determine base title
+            if (connectionStatus === "disconnected") {
+                return "!";
+            }
+            if (!cameraId) {
+                return "Config";
+            }
+            // Add state prefix to camera name
+            if (isActive && isOnAir) {
+                return `[LIVE]\n${cameraId}`;
+            }
+            if (isActive) {
+                return `[*]\n${cameraId}`;
+            }
+            if (isOnAir) {
+                return `(LIVE)\n${cameraId}`;
+            }
+            return cameraId;
         }
     };
     __setFunctionName(_classThis, "CameraSelectAction");
@@ -1298,21 +1288,7 @@ let CameraResetAction = (() => {
                 return;
             }
             try {
-                // Make direct HTTP POST call to reset the camera
-                const url = `http://${settings.serverAddress}/api/cameras/${encodeURIComponent(settings.cameraId)}/reset`;
-                const response = await fetch(url, {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                    },
-                    body: JSON.stringify({
-                        mode: settings.resetMode,
-                    }),
-                });
-                if (!response.ok) {
-                    const errorText = await response.text();
-                    throw new Error(`HTTP ${response.status} - ${errorText}`);
-                }
+                await client.resetCamera(settings.cameraId, settings.resetMode);
                 streamDeck.logger.info(`Camera reset successful: ${settings.cameraId} (mode=${settings.resetMode})`);
                 // Yellow blink feedback (2 iterations)
                 const flashImage = renderFlashImage();
@@ -1423,52 +1399,50 @@ let CameraResetAction = (() => {
          */
         async updateDisplay(contextState) {
             const { settings, keyAction, connectionStatus } = contextState;
+            // Handle connecting state separately (no image, just title)
+            if (connectionStatus === "connecting") {
+                await keyAction.setTitle("...");
+                return;
+            }
             try {
-                let imageDataUrl;
-                if (connectionStatus === "disconnected") {
-                    // Show disconnected image with red "!" icon
-                    imageDataUrl = renderDisconnectedImage();
-                }
-                else if (connectionStatus === "connecting") {
-                    // Show connecting state - use text animation for now
-                    await keyAction.setTitle("...");
-                    return;
-                }
-                else if (!settings.cameraId) {
-                    // Show not configured image with gear icon
-                    imageDataUrl = renderNotConfiguredImage();
-                }
-                else {
-                    // Render reset button with camera name and reset icon
-                    imageDataUrl = renderResetButtonImage({
-                        cameraId: settings.cameraId,
-                    });
-                }
-                // Clear title and set the rendered image
+                const imageDataUrl = this.getDisplayImage(connectionStatus, settings.cameraId);
                 await keyAction.setTitle("");
                 await keyAction.setImage(imageDataUrl);
             }
             catch (error) {
-                // Fallback to title-based display if rendering fails
                 streamDeck.logger.warn(`Failed to render button image, using title fallback: ${error}`);
-                let title;
-                if (connectionStatus === "disconnected") {
-                    title = "!";
-                }
-                else if (!settings.cameraId) {
-                    title = "Config";
-                }
-                else {
-                    title = settings.cameraId;
-                }
+                const title = this.getFallbackTitle(connectionStatus, settings.cameraId);
                 try {
                     await keyAction.setTitle(title);
                 }
                 catch (fallbackError) {
-                    // Action may have been removed, log but don't throw
                     streamDeck.logger.debug(`Failed to update display in fallback: ${fallbackError}`);
                 }
             }
+        }
+        /**
+         * Get the appropriate display image based on connection status and configuration.
+         */
+        getDisplayImage(connectionStatus, cameraId) {
+            if (connectionStatus === "disconnected") {
+                return renderDisconnectedImage();
+            }
+            if (!cameraId) {
+                return renderNotConfiguredImage();
+            }
+            return renderResetButtonImage({ cameraId });
+        }
+        /**
+         * Get fallback title when image rendering fails.
+         */
+        getFallbackTitle(connectionStatus, cameraId) {
+            if (connectionStatus === "disconnected") {
+                return "!";
+            }
+            if (!cameraId) {
+                return "Config";
+            }
+            return cameraId;
         }
     };
     __setFunctionName(_classThis, "CameraResetAction");

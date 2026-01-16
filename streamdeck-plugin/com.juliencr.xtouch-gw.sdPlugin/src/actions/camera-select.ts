@@ -199,15 +199,7 @@ export class CameraSelectAction extends SingletonAction<CameraSelectSettings> {
 
     streamDeck.logger.info(`Long press triggered - resetting camera ${settings.cameraId}`);
     try {
-      const url = `http://${settings.serverAddress}/api/cameras/${encodeURIComponent(settings.cameraId)}/reset`;
-      const response = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: settings.resetMode || "both" }),
-      });
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
+      await client.resetCamera(settings.cameraId, settings.resetMode || "both");
       streamDeck.logger.info(`Camera reset successful: ${settings.cameraId}`);
 
       // Yellow blink feedback (2 iterations)
@@ -462,60 +454,76 @@ export class CameraSelectAction extends SingletonAction<CameraSelectSettings> {
   private async updateDisplay(contextState: ContextState): Promise<void> {
     const { settings, keyAction, isActive, isOnAir, connectionStatus } = contextState;
 
+    // Handle connecting state separately (no image, just title)
+    if (connectionStatus === "connecting") {
+      await keyAction.setTitle("...");
+      return;
+    }
+
     try {
-      let imageDataUrl: string;
-
-      if (connectionStatus === "disconnected") {
-        // Show disconnected image with red "!" icon
-        imageDataUrl = renderDisconnectedImage();
-      } else if (connectionStatus === "connecting") {
-        // Show connecting state - use text animation for now
-        await keyAction.setTitle("...");
-        return;
-      } else if (!settings.cameraId) {
-        // Show not configured image with gear icon
-        imageDataUrl = renderNotConfiguredImage();
-      } else {
-        // Render button with current state
-        // - isControlled: green background + bottom indicator bar
-        // - isOnAir: red border
-        imageDataUrl = renderButtonImage({
-          cameraId: settings.cameraId,
-          isControlled: isActive,
-          isOnAir: isOnAir,
-        });
-      }
-
-      // Clear title and set the rendered image
+      const imageDataUrl = this.getDisplayImage(connectionStatus, settings.cameraId, isActive, isOnAir);
       await keyAction.setTitle("");
       await keyAction.setImage(imageDataUrl);
     } catch (error) {
-      // Fallback to title-based display if rendering fails
       streamDeck.logger.warn(`Failed to render button image, using title fallback: ${error}`);
-
-      let title: string;
-      if (connectionStatus === "disconnected") {
-        title = "!";
-      } else if (!settings.cameraId) {
-        title = "Config";
-      } else {
-        title = settings.cameraId;
-      }
-
+      const title = this.getFallbackTitle(connectionStatus, settings.cameraId, isActive, isOnAir);
       try {
-        if (isActive && isOnAir) {
-          await keyAction.setTitle(`[LIVE]\n${title}`);
-        } else if (isActive) {
-          await keyAction.setTitle(`[*]\n${title}`);
-        } else if (isOnAir) {
-          await keyAction.setTitle(`(LIVE)\n${title}`);
-        } else {
-          await keyAction.setTitle(title);
-        }
+        await keyAction.setTitle(title);
       } catch (fallbackError) {
-        // Action may have been removed, log but don't throw
         streamDeck.logger.debug(`Failed to update display in fallback: ${fallbackError}`);
       }
     }
+  }
+
+  /**
+   * Get the appropriate display image based on connection status and state.
+   */
+  private getDisplayImage(
+    connectionStatus: ConnectionStatus,
+    cameraId: string,
+    isActive: boolean,
+    isOnAir: boolean
+  ): string {
+    if (connectionStatus === "disconnected") {
+      return renderDisconnectedImage();
+    }
+    if (!cameraId) {
+      return renderNotConfiguredImage();
+    }
+    return renderButtonImage({
+      cameraId,
+      isControlled: isActive,
+      isOnAir,
+    });
+  }
+
+  /**
+   * Get fallback title when image rendering fails.
+   */
+  private getFallbackTitle(
+    connectionStatus: ConnectionStatus,
+    cameraId: string,
+    isActive: boolean,
+    isOnAir: boolean
+  ): string {
+    // Determine base title
+    if (connectionStatus === "disconnected") {
+      return "!";
+    }
+    if (!cameraId) {
+      return "Config";
+    }
+
+    // Add state prefix to camera name
+    if (isActive && isOnAir) {
+      return `[LIVE]\n${cameraId}`;
+    }
+    if (isActive) {
+      return `[*]\n${cameraId}`;
+    }
+    if (isOnAir) {
+      return `(LIVE)\n${cameraId}`;
+    }
+    return cameraId;
   }
 }
