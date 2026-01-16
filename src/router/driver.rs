@@ -4,7 +4,7 @@ use crate::drivers::{Driver, ExecutionContext};
 use anyhow::{anyhow, Result};
 use serde_json::Value;
 use std::sync::Arc;
-use tracing::{debug, warn};
+use tracing::{debug, trace, warn};
 
 impl super::Router {
     /// Create an execution context for driver calls
@@ -133,10 +133,13 @@ impl super::Router {
             .action
             .clone()
             .ok_or_else(|| anyhow!("Control '{}' has no action defined", control_id))?;
-        let params = mapping.params.clone().unwrap_or_default();
+        let raw_params = mapping.params.clone().unwrap_or_default();
 
         // Drop config lock before async operations
         drop(config);
+
+        // Resolve $camera placeholders for dynamic gamepad targeting
+        let params = self.resolve_camera_params(control_id, raw_params).await?;
 
         // Get the driver
         let driver = self
@@ -156,6 +159,133 @@ impl super::Router {
         driver.execute(&action, params, ctx).await?;
 
         Ok(())
+    }
+
+    /// Resolve $camera.* placeholders in action params
+    ///
+    /// For gamepads in "dynamic" mode, replaces placeholders with actual camera config.
+    /// For "static" mode or non-gamepad controls, returns params unchanged.
+    async fn resolve_camera_params(
+        &self,
+        control_id: &str,
+        raw_params: Vec<Value>,
+    ) -> Result<Vec<Value>> {
+        // Check if any param contains $camera placeholder
+        let has_camera_placeholder = raw_params
+            .iter()
+            .any(|p| p.as_str().map(|s| s.contains("$camera")).unwrap_or(false));
+
+        if !has_camera_placeholder {
+            return Ok(raw_params);
+        }
+
+        // Extract gamepad slot from control_id (e.g., "gamepad1" from "gamepad1.axis.lx")
+        let gamepad_slot = control_id.split('.').next().unwrap_or("");
+
+        if !gamepad_slot.starts_with("gamepad") {
+            // Not a gamepad control, return unchanged
+            return Ok(raw_params);
+        }
+
+        let config = self.config.read().await;
+
+        // Find the gamepad slot config
+        let slot_config = config.gamepad.as_ref().and_then(|g| g.gamepads.as_ref()).and_then(
+            |slots| {
+                // Determine slot index from gamepad_slot (gamepad1 -> index 0, gamepad2 -> index 1)
+                let slot_num: usize = gamepad_slot
+                    .strip_prefix("gamepad")
+                    .and_then(|n| n.parse().ok())
+                    .unwrap_or(1);
+                slots.get(slot_num.saturating_sub(1))
+            },
+        );
+
+        // Get camera target mode
+        let camera_target_mode = slot_config
+            .and_then(|c| c.camera_target.as_ref())
+            .map(|s| s.as_str())
+            .unwrap_or("static");
+
+        // Determine which camera to use
+        let camera_id = match camera_target_mode {
+            "static" => {
+                // Static mode: no substitution
+                return Ok(raw_params);
+            }
+            "dynamic" => {
+                // Dynamic mode: get from runtime state, fallback to first camera
+                self.camera_targets.get_target(gamepad_slot).or_else(|| {
+                    // Fallback: use first camera from config
+                    config
+                        .obs
+                        .as_ref()
+                        .and_then(|o| o.camera_control.as_ref())
+                        .and_then(|cc| cc.cameras.first())
+                        .map(|c| c.id.clone())
+                })
+                .ok_or_else(|| {
+                    anyhow!(
+                        "No camera target for {} and no cameras configured",
+                        gamepad_slot
+                    )
+                })?
+            }
+            fixed_camera_id => {
+                // Fixed to specific camera
+                fixed_camera_id.to_string()
+            }
+        };
+
+        // Find camera config
+        let camera_config = config
+            .obs
+            .as_ref()
+            .and_then(|o| o.camera_control.as_ref())
+            .and_then(|cc| cc.cameras.iter().find(|c| c.id == camera_id))
+            .ok_or_else(|| anyhow!("Camera '{}' not found in camera_control config", camera_id))?;
+
+        // Clone camera values before dropping config
+        let scene = camera_config.scene.clone();
+        let source = camera_config.source.clone();
+        let split_source = camera_config.split_source.clone();
+        let id = camera_config.id.clone();
+
+        drop(config);
+
+        // Resolve placeholders
+        let resolved: Vec<Value> = raw_params
+            .into_iter()
+            .map(|param| {
+                if let Some(s) = param.as_str() {
+                    // First replace specific $camera.* placeholders
+                    let replaced = s
+                        .replace("$camera.scene", &scene)
+                        .replace("$camera.source", &source)
+                        .replace("$camera.split_source", &split_source)
+                        .replace("$camera.id", &id);
+
+                    // Then replace standalone $camera with camera_id
+                    // (must be after $camera.* to avoid partial replacement)
+                    let replaced = replaced.replace("$camera", &id);
+
+                    if replaced != s {
+                        trace!("Resolved camera param: '{}' -> '{}'", s, replaced);
+                    }
+
+                    Value::String(replaced)
+                } else {
+                    param
+                }
+            })
+            .collect();
+
+        debug!(
+            "Resolved $camera params for {} (camera={}): {:?}",
+            control_id, camera_id, resolved
+        );
+
+        Ok(resolved)
     }
 }
 

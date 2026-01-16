@@ -12,6 +12,71 @@ use super::analog::shape_analog;
 use super::camera::ViewMode;
 use super::driver::ObsDriver;
 
+impl ObsDriver {
+    /// Resolve camera_id to (scene, source) from camera_control config.
+    /// Returns None if camera_id is not found (assumes it's already scene/source format).
+    fn resolve_camera_id(&self, camera_id: &str) -> Option<(String, String)> {
+        let config_guard = self.camera_control_config.read();
+        config_guard.as_ref()
+            .and_then(|cc| cc.cameras.iter().find(|c| c.id == camera_id))
+            .map(|c| (c.scene.clone(), c.source.clone()))
+    }
+
+    /// Parse camera params with step for nudgeX, nudgeY, scaleUniform.
+    /// Supports both new format [camera_id, step] and legacy [scene, source, step].
+    fn parse_camera_params_with_step(&self, params: &[Value]) -> Result<(String, String, f64)> {
+        match params.len() {
+            2 => {
+                // New format: [camera_id, step]
+                let camera_id = params[0].as_str()
+                    .ok_or_else(|| anyhow!("camera_id must be a string"))?;
+                let step = params[1].as_f64()
+                    .ok_or_else(|| anyhow!("step must be a number"))?;
+
+                let (scene, source) = self.resolve_camera_id(camera_id)
+                    .ok_or_else(|| anyhow!("Camera '{}' not found in camera_control config", camera_id))?;
+
+                Ok((scene, source, step))
+            }
+            3 => {
+                // Legacy format: [scene, source, step]
+                let scene = params[0].as_str()
+                    .ok_or_else(|| anyhow!("scene must be a string"))?.to_string();
+                let source = params[1].as_str()
+                    .ok_or_else(|| anyhow!("source must be a string"))?.to_string();
+                let step = params[2].as_f64()
+                    .ok_or_else(|| anyhow!("step must be a number"))?;
+                Ok((scene, source, step))
+            }
+            _ => Err(anyhow!("Expected [camera_id, step] or [scene, source, step]"))
+        }
+    }
+
+    /// Parse camera params for resetPosition, resetZoom.
+    /// Supports both new format [camera_id] and legacy [scene, source].
+    fn parse_camera_params(&self, params: &[Value]) -> Result<(String, String)> {
+        match params.len() {
+            1 => {
+                // New format: [camera_id]
+                let camera_id = params[0].as_str()
+                    .ok_or_else(|| anyhow!("camera_id must be a string"))?;
+
+                self.resolve_camera_id(camera_id)
+                    .ok_or_else(|| anyhow!("Camera '{}' not found in camera_control config", camera_id))
+            }
+            2 => {
+                // Legacy format: [scene, source]
+                let scene = params[0].as_str()
+                    .ok_or_else(|| anyhow!("scene must be a string"))?.to_string();
+                let source = params[1].as_str()
+                    .ok_or_else(|| anyhow!("source must be a string"))?.to_string();
+                Ok((scene, source))
+            }
+            _ => Err(anyhow!("Expected [camera_id] or [scene, source]"))
+        }
+    }
+}
+
 #[async_trait]
 impl Driver for ObsDriver {
     fn name(&self) -> &str {
@@ -129,11 +194,14 @@ impl Driver for ObsDriver {
             },
 
             "nudgeX" => {
-                let scene_name = params.get(0).and_then(|v| v.as_str())
-                    .context("Scene name required")?;
-                let source_name = params.get(1).and_then(|v| v.as_str())
-                    .context("Source name required")?;
-                let step = params.get(2).and_then(|v| v.as_f64()).unwrap_or(2.0);
+                // Parse params: [camera_id, step] or [scene, source, step]
+                let (scene_name, source_name, step) = self.parse_camera_params_with_step(&params)
+                    .unwrap_or_else(|_| {
+                        // Fallback for backward compatibility with missing step
+                        let scene = params.get(0).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let source = params.get(1).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        (scene, source, 2.0)
+                    });
 
                 // Check if input is from gamepad or encoder
                 let is_gamepad = ctx.control_id.as_ref()
@@ -157,7 +225,7 @@ impl Driver for ObsDriver {
                             let vx = shaped * step * gain;
 
                             // Set analog velocity (timer will apply)
-                            self.set_analog_rate(scene_name, source_name, Some(vx), None, None);
+                            self.set_analog_rate(&scene_name, &source_name, Some(vx), None, None);
                         }
                     }
                 } else {
@@ -191,18 +259,21 @@ impl Driver for ObsDriver {
                         debug!("OBS nudgeX encoder: id='{}' delta={} accel={:.2}x final={:.2}",
                             control_id, delta, accel, final_delta);
 
-                        self.apply_delta(scene_name, source_name, Some(final_delta), None, None).await?;
+                        self.apply_delta(&scene_name, &source_name, Some(final_delta), None, None).await?;
                     }
                 }
                 Ok(())
             },
 
             "nudgeY" => {
-                let scene_name = params.get(0).and_then(|v| v.as_str())
-                    .context("Scene name required")?;
-                let source_name = params.get(1).and_then(|v| v.as_str())
-                    .context("Source name required")?;
-                let step = params.get(2).and_then(|v| v.as_f64()).unwrap_or(2.0);
+                // Parse params: [camera_id, step] or [scene, source, step]
+                let (scene_name, source_name, step) = self.parse_camera_params_with_step(&params)
+                    .unwrap_or_else(|_| {
+                        // Fallback for backward compatibility with missing step
+                        let scene = params.get(0).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let source = params.get(1).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        (scene, source, 2.0)
+                    });
 
                 // Check if input is from gamepad or encoder
                 let is_gamepad = ctx.control_id.as_ref()
@@ -226,7 +297,7 @@ impl Driver for ObsDriver {
                             let vy = shaped * step * gain;
 
                             // Set analog velocity (timer will apply)
-                            self.set_analog_rate(scene_name, source_name, None, Some(vy), None);
+                            self.set_analog_rate(&scene_name, &source_name, None, Some(vy), None);
                         }
                     }
                 } else {
@@ -260,18 +331,21 @@ impl Driver for ObsDriver {
                         debug!("OBS nudgeY encoder: id='{}' delta={} accel={:.2}x final={:.2}",
                             control_id, delta, accel, final_delta);
 
-                        self.apply_delta(scene_name, source_name, None, Some(final_delta), None).await?;
+                        self.apply_delta(&scene_name, &source_name, None, Some(final_delta), None).await?;
                     }
                 }
                 Ok(())
             },
 
             "scaleUniform" => {
-                let scene_name = params.get(0).and_then(|v| v.as_str())
-                    .context("Scene name required")?;
-                let source_name = params.get(1).and_then(|v| v.as_str())
-                    .context("Source name required")?;
-                let base = params.get(2).and_then(|v| v.as_f64()).unwrap_or(0.02);
+                // Parse params: [camera_id, base] or [scene, source, base]
+                let (scene_name, source_name, base) = self.parse_camera_params_with_step(&params)
+                    .unwrap_or_else(|_| {
+                        // Fallback for backward compatibility with missing base
+                        let scene = params.get(0).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let source = params.get(1).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        (scene, source, 0.02)
+                    });
 
                 // Check if input is from gamepad or encoder
                 let is_gamepad = ctx.control_id.as_ref()
@@ -295,7 +369,7 @@ impl Driver for ObsDriver {
                             let vs = shaped * base * gain;
 
                             // Set analog velocity (timer will apply)
-                            self.set_analog_rate(scene_name, source_name, None, None, Some(vs));
+                            self.set_analog_rate(&scene_name, &source_name, None, None, Some(vs));
                         }
                     }
                 } else {
@@ -329,25 +403,24 @@ impl Driver for ObsDriver {
                         debug!("OBS scaleUniform encoder: id='{}' delta={} accel={:.2}x final={:.2}",
                             control_id, delta, accel, final_delta);
 
-                        self.apply_delta(scene_name, source_name, None, None, Some(final_delta)).await?;
+                        self.apply_delta(&scene_name, &source_name, None, None, Some(final_delta)).await?;
                     }
                 }
                 Ok(())
             },
 
             "resetPosition" => {
-                let scene_name = params.get(0).and_then(|v| v.as_str())
-                    .context("Scene name required")?;
-                let source_name = params.get(1).and_then(|v| v.as_str())
-                    .context("Source name required")?;
+                // Parse params: [camera_id] or [scene, source]
+                let (scene_name, source_name) = self.parse_camera_params(&params)
+                    .context("resetPosition requires [camera_id] or [scene, source]")?;
 
-                info!("🎬 OBS Reset position: scene='{}' source='{}'", scene_name, source_name);
+                info!("OBS Reset position: scene='{}' source='{}'", scene_name, source_name);
 
                 // Stop any analog motion on position axes
-                self.set_analog_rate(scene_name, source_name, Some(0.0), Some(0.0), None);
+                self.set_analog_rate(&scene_name, &source_name, Some(0.0), Some(0.0), None);
 
                 // Resolve item ID
-                let item_id = self.resolve_item_id(scene_name, source_name).await?;
+                let item_id = self.resolve_item_id(&scene_name, &source_name).await?;
 
                 // Get canvas dimensions
                 let (canvas_width, canvas_height) = self.get_canvas_dimensions().await?;
@@ -372,7 +445,7 @@ impl Driver for ObsDriver {
 
                 client.scene_items()
                     .set_transform(obws::requests::scene_items::SetTransform {
-                        scene: scene_name,
+                        scene: &scene_name,
                         item_id,
                         transform,
                     })
@@ -380,7 +453,7 @@ impl Driver for ObsDriver {
                     .context("Failed to reset scene item position")?;
 
                 // Update cache with new position and alignment
-                let cache_key = self.cache_key(scene_name, source_name);
+                let cache_key = self.cache_key(&scene_name, &source_name);
                 if let Some(state) = self.transform_cache.write().get_mut(&cache_key) {
                     state.x = canvas_width / 2.0;
                     state.y = canvas_height / 2.0;
@@ -388,25 +461,24 @@ impl Driver for ObsDriver {
                 }
 
                 debug!("OBS reset position: '{}' position=({:.1},{:.1}) alignment=CENTER",
-                    self.cache_key(scene_name, source_name),
+                    self.cache_key(&scene_name, &source_name),
                     canvas_width / 2.0, canvas_height / 2.0);
 
                 Ok(())
             },
 
             "resetZoom" => {
-                let scene_name = params.get(0).and_then(|v| v.as_str())
-                    .context("Scene name required")?;
-                let source_name = params.get(1).and_then(|v| v.as_str())
-                    .context("Source name required")?;
+                // Parse params: [camera_id] or [scene, source]
+                let (scene_name, source_name) = self.parse_camera_params(&params)
+                    .context("resetZoom requires [camera_id] or [scene, source]")?;
 
-                info!("🎬 OBS Reset zoom: scene='{}' source='{}'", scene_name, source_name);
+                info!("OBS Reset zoom: scene='{}' source='{}'", scene_name, source_name);
 
                 // Stop any analog motion on zoom axis
-                self.set_analog_rate(scene_name, source_name, None, None, Some(0.0));
+                self.set_analog_rate(&scene_name, &source_name, None, None, Some(0.0));
 
                 // Resolve item ID
-                let item_id = self.resolve_item_id(scene_name, source_name).await?;
+                let item_id = self.resolve_item_id(&scene_name, &source_name).await?;
 
                 // Build transform to reset zoom to 1:1
                 let mut transform = obws::requests::scene_items::SceneItemTransform::default();
@@ -425,7 +497,7 @@ impl Driver for ObsDriver {
 
                 client.scene_items()
                     .set_transform(obws::requests::scene_items::SetTransform {
-                        scene: scene_name,
+                        scene: &scene_name,
                         item_id,
                         transform,
                     })
@@ -433,7 +505,7 @@ impl Driver for ObsDriver {
                     .context("Failed to reset scene item zoom")?;
 
                 // Update cache with new scale
-                let cache_key = self.cache_key(scene_name, source_name);
+                let cache_key = self.cache_key(&scene_name, &source_name);
                 if let Some(state) = self.transform_cache.write().get_mut(&cache_key) {
                     state.scale_x = 1.0;
                     state.scale_y = 1.0;
@@ -443,7 +515,7 @@ impl Driver for ObsDriver {
                 }
 
                 debug!("OBS reset zoom: '{}' scale=(1.0,1.0)",
-                    self.cache_key(scene_name, source_name));
+                    self.cache_key(&scene_name, &source_name));
 
                 Ok(())
             },

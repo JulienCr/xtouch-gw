@@ -73,6 +73,7 @@ pub struct CameraControlConfig {
 pub struct CameraConfig {
     pub id: String,
     pub scene: String,
+    pub source: String,
     pub split_source: String,
 }
 
@@ -201,6 +202,13 @@ pub struct GamepadSlotConfig {
     /// Per-gamepad analog configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub analog: Option<AnalogConfig>,
+
+    /// Camera targeting mode for gamepad controls:
+    /// - None: static mode (params used as-is)
+    /// - "dynamic": runtime-selectable via Stream Deck API
+    /// - "camera_id": fixed to specific camera from camera_control config
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub camera_target: Option<String>,
 }
 
 /// System tray UI configuration

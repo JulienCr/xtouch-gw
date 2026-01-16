@@ -23,19 +23,26 @@ obs:
   password: "aaaaaa"
   
   # Configuration du contrôle caméra (split views)
+  # - scene: scène OBS pour la vue plein écran
+  # - source: source OBS à transformer (pan/zoom) dans cette scène
+  # - split_source: source OBS pour les vues split
   camera_control:
     cameras:
       - id: "Main"
         scene: "--- CAM Main"
+        source: "--- CAM Main"
         split_source: "SPLIT CAM Main"
       - id: "Main2"
         scene: "--- CAM Main 2"
+        source: "--- CAM Main"
         split_source: "SPLIT CAM Main 2"
       - id: "Jardin"
         scene: "--- CAM Jardin"
+        source: "NDI - Cam Jardin"
         split_source: "SPLIT CAM Jardin"
       - id: "Cour"
         scene: "--- CAM Cour"
+        source: "NDI - Cam Cour"
         split_source: "SPLIT CAM Cour"
     splits:
       left: "--- SPLIT left"
@@ -52,7 +59,10 @@ gamepad:
   provider: hid
   gamepads:
     # Slot 0 → gamepad1.* (Faceoff Pro)
+    # camera_target: "dynamic" permet au Stream Deck de choisir quelle caméra contrôler
+    # Utilisez l'API: PUT http://localhost:8125/api/gamepad/gamepad1/camera {"camera_id": "Main"}
     - product_match: "Faceoff"
+      camera_target: dynamic   # "dynamic" | "camera_id" | omis pour statique
       analog:
         # Vitesse de pan (pixels par tick à v=1, step=1) — à 60Hz → 15*60 = 900 px/sec
         pan_gain: 15
@@ -75,8 +85,9 @@ gamepad:
           zl: false   # Gâchette gauche
           zr: false   # Gâchette droite
 
-    # Slot 1 → gamepad2.* (Xbox via XInput)
+    # Slot 1 → gamepad2.* (Xbox via XInput) - Fixé sur Jardin
     - product_match: "XInput"
+      camera_target: "Jardin"  # Toujours contrôle la caméra Jardin
       analog:
         pan_gain: 15
         zoom_gain: 3
@@ -99,13 +110,14 @@ pages_global:
     vpot7_rotate: { app: "obs", action: "nudgeY", params: ["--- CAM Main 2", "--- CAM Main", 1] }
     vpot8_rotate: { app: "obs", action: "scaleUniform", params: ["--- CAM Main 2", "--- CAM Main", 0.005] }
 
-    # Gamepad 1 (Faceoff): contrôle caméra OBS (stick gauche = pan, stick droit Y = zoom)
-    gamepad1.axis.lx: { app: "obs", action: "nudgeX", params: ["--- CAM Main 2", "--- CAM Main", 1] }
-    gamepad1.axis.ly: { app: "obs", action: "nudgeY", params: ["--- CAM Main 2", "--- CAM Main", 1] }
+    # Gamepad 1 (Faceoff): contrôle caméra dynamique via Stream Deck API
+    # Les placeholders $camera.* sont résolus au runtime selon la cible sélectionnée
+    gamepad1.axis.lx: { app: "obs", action: "nudgeX", params: ["$camera.scene", "$camera.source", 1] }
+    gamepad1.axis.ly: { app: "obs", action: "nudgeY", params: ["$camera.scene", "$camera.source", 1] }
     gamepad1.axis.ry:
       app: "obs"
       action: "scaleUniform"
-      params: ["--- CAM Main 2", "--- CAM Main", 0.015]
+      params: ["$camera.scene", "$camera.source", 0.015]
       # Vitesse effective = 0.015 * zoom_gain(1.5) * analog_value
       # À stick à fond : 0.015 * 1.5 * 1.0 = 0.0225 par tick = 1.35 scale/sec
 
@@ -165,12 +177,12 @@ pages_global:
     gamepad1.btn.l3:
       app: "obs"
       action: "resetPosition"
-      params: ["--- CAM Main 2", "--- CAM Main"]
+      params: ["$camera.scene", "$camera.source"]
 
     gamepad1.btn.r3:
       app: "obs"
       action: "resetZoom"
-      params: ["--- CAM Main 2", "--- CAM Main"]
+      params: ["$camera.scene", "$camera.source"]
 
     # Gamepad 2 (Xbox Bluetooth): contrôle caméra CAM Jardin + mêmes actions split
     gamepad2.axis.lx:

@@ -8,6 +8,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, trace, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+mod api;
 mod config;
 mod control_mapping;
 mod drivers;
@@ -461,6 +462,46 @@ async fn run_app(
     // No separate QlcDriver stub is needed - the MIDI bridge handles everything.
 
     debug!("All drivers registered and initialized");
+
+    // Start Stream Deck API server
+    let api_state = Arc::new(api::ApiState {
+        camera_targets: router.get_camera_targets(),
+        available_cameras: Arc::new(parking_lot::RwLock::new(
+            config.obs.as_ref()
+                .and_then(|o| o.camera_control.as_ref())
+                .map(|cc| cc.cameras.iter().map(|c| api::CameraInfo {
+                    id: c.id.clone(),
+                    scene: c.scene.clone(),
+                    source: c.source.clone(),
+                    split_source: c.split_source.clone(),
+                }).collect())
+                .unwrap_or_default()
+        )),
+        gamepad_slots: Arc::new(parking_lot::RwLock::new(
+            config.gamepad.as_ref()
+                .and_then(|g| g.gamepads.as_ref())
+                .map(|slots| slots.iter().enumerate().map(|(i, slot)| api::GamepadSlotInfo {
+                    slot: format!("gamepad{}", i + 1),
+                    product_match: slot.product_match.clone(),
+                    camera_target_mode: slot.camera_target.clone().unwrap_or_else(|| "static".to_string()),
+                    current_camera: None,
+                }).collect())
+                .unwrap_or_default()
+        )),
+        update_tx: tokio::sync::broadcast::channel(16).0,
+    });
+
+    // Spawn API server task
+    let api_port = api::DEFAULT_API_PORT;
+    tokio::spawn({
+        let api_state = Arc::clone(&api_state);
+        async move {
+            if let Err(e) = api::start_server(api_state, api_port).await {
+                warn!("API server error: {}", e);
+            }
+        }
+    });
+    info!("Stream Deck API server started on port {}", api_port);
 
     // BUG-008 FIX: Wait for configurable delay before initial refresh.
     // This allows drivers time to:

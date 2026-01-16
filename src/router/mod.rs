@@ -8,12 +8,15 @@
 //! - Page refresh with state replay
 
 mod anti_echo;
+mod camera_target;
 mod driver;
 mod feedback;
 mod indicators;
 mod page;
 mod refresh;
 mod xtouch_input;
+
+pub use camera_target::CameraTargetState;
 
 #[cfg(test)]
 mod tests;
@@ -55,6 +58,8 @@ pub struct Router {
     /// Page epoch counter - incremented on each page change to invalidate stale feedback
     /// BUG-006 FIX: Prevents race condition between page refresh and feedback processing
     pub(crate) page_epoch: Arc<AtomicU64>,
+    /// Dynamic camera target state for Stream Deck integration
+    pub(crate) camera_targets: Arc<CameraTargetState>,
 }
 
 impl Router {
@@ -76,6 +81,12 @@ impl Router {
         // Spawn state actor with persistence channel
         let state_actor = StateActorHandle::spawn(persistence_actor.cmd_tx());
 
+        // Open sled database for camera target state (separate db to avoid lock conflicts)
+        let camera_db_path = format!("{}_camera", db_path);
+        let camera_db = sled::open(&camera_db_path)
+            .expect("Failed to open sled database for camera targets");
+        let camera_targets = Arc::new(CameraTargetState::new(camera_db));
+
         Self {
             config: Arc::new(RwLock::new(config)),
             drivers: Arc::new(RwLock::new(HashMap::new())),
@@ -88,6 +99,7 @@ impl Router {
             pending_midi_messages: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             activity_tracker: None,
             page_epoch: Arc::new(AtomicU64::new(0)),
+            camera_targets,
         }
     }
 
@@ -161,6 +173,11 @@ impl Router {
     /// Get reference to PersistenceActorHandle (for loading/saving snapshots)
     pub fn get_persistence_actor(&self) -> &PersistenceActorHandle {
         &self.persistence_actor
+    }
+
+    /// Get reference to CameraTargetState (for API)
+    pub fn get_camera_targets(&self) -> Arc<CameraTargetState> {
+        self.camera_targets.clone()
     }
 
     /// Save current state to the persistence actor (debounced)
