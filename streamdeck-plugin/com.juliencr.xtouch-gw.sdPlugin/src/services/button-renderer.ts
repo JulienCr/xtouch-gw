@@ -33,6 +33,8 @@ const Colors = {
   DISCONNECTED_BG: "#424242",
   /** Disconnected/error icon color */
   DISCONNECTED_ICON: "#FF5252",
+  /** Flash/feedback background (yellow/amber) */
+  FLASH_BG: "#F9A825",
 } as const;
 
 /**
@@ -45,6 +47,14 @@ export interface ButtonState {
   isControlled: boolean;
   /** Is this camera currently on air (program)? */
   isOnAir: boolean;
+}
+
+/**
+ * Reset button state for rendering
+ */
+export interface ResetButtonState {
+  /** Camera name to display */
+  cameraId: string;
 }
 
 /**
@@ -188,6 +198,68 @@ function drawCameraIcon(
   ctx.restore();
 }
 
+/**
+ * Draw a reset icon (two circular arrows forming a refresh/reset symbol)
+ * @param ctx Canvas rendering context
+ * @param x Center X coordinate
+ * @param y Center Y coordinate
+ * @param iconSize Size of the icon
+ * @param color Stroke color
+ */
+function drawResetIcon(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  iconSize: number,
+  color: string
+): void {
+  const lineWidth = Math.max(2, iconSize / 10);
+  const radius = iconSize * 0.35;
+  const arrowSize = iconSize * 0.15;
+
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.lineWidth = lineWidth;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+
+  // Draw two arc arrows forming a circular reset symbol
+  // First arc (top-right, going clockwise)
+  ctx.beginPath();
+  ctx.arc(x, y, radius, -Math.PI * 0.15, Math.PI * 0.7, false);
+  ctx.stroke();
+
+  // Arrow head for first arc (pointing down-left)
+  const angle1 = Math.PI * 0.7;
+  const ax1 = x + radius * Math.cos(angle1);
+  const ay1 = y + radius * Math.sin(angle1);
+  ctx.beginPath();
+  ctx.moveTo(ax1, ay1);
+  ctx.lineTo(ax1 - arrowSize * 0.8, ay1 - arrowSize * 0.5);
+  ctx.lineTo(ax1 + arrowSize * 0.3, ay1 - arrowSize * 0.8);
+  ctx.closePath();
+  ctx.fill();
+
+  // Second arc (bottom-left, going clockwise)
+  ctx.beginPath();
+  ctx.arc(x, y, radius, Math.PI * 0.85, Math.PI * 1.7, false);
+  ctx.stroke();
+
+  // Arrow head for second arc (pointing up-right)
+  const angle2 = Math.PI * 1.7;
+  const ax2 = x + radius * Math.cos(angle2);
+  const ay2 = y + radius * Math.sin(angle2);
+  ctx.beginPath();
+  ctx.moveTo(ax2, ay2);
+  ctx.lineTo(ax2 + arrowSize * 0.8, ay2 + arrowSize * 0.5);
+  ctx.lineTo(ax2 - arrowSize * 0.3, ay2 + arrowSize * 0.8);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.restore();
+}
+
 
 /**
  * Render a button image for a camera with the given state.
@@ -321,6 +393,65 @@ export function renderNotConfiguredImage(size: number = DEFAULT_BUTTON_SIZE): st
   // Draw "Config" label
   ctx.font = `${labelFontSize}px sans-serif`;
   drawCenteredText(ctx, "Config", size / 2, size / 2 + iconFontSize / 2);
+
+  return canvas.toDataURL("image/png");
+}
+
+/**
+ * Render a button image for a camera reset action.
+ *
+ * Visual design:
+ * - Dark gray (#212121) background
+ * - Reset icon (circular arrows) in center
+ * - Camera ID text at bottom
+ *
+ * @param state Reset button state including camera ID
+ * @param size Canvas size in pixels (default 144 for @2x resolution)
+ * @returns Base64 data URL of the rendered PNG image
+ */
+export function renderResetButtonImage(state: ResetButtonState, size: number = DEFAULT_BUTTON_SIZE): string {
+  const canvas: Canvas = createCanvas(size, size);
+  const ctx = canvas.getContext("2d");
+
+  const fontSize = scaled(24, size);
+  const padding = scaled(6, size);
+  const iconSize = scaled(44, size);
+
+  // Step 1: Draw background (always inactive color - no state tracking for reset)
+  ctx.fillStyle = Colors.INACTIVE_BG;
+  ctx.fillRect(0, 0, size, size);
+
+  // Step 2: Draw reset icon (centered, slightly above middle)
+  const iconY = size * 0.38;
+  drawResetIcon(ctx, size / 2, iconY, iconSize, Colors.TEXT_COLOR);
+
+  // Step 3: Draw camera name (at bottom)
+  ctx.fillStyle = Colors.TEXT_COLOR;
+  ctx.font = `bold ${fontSize}px sans-serif`;
+
+  const availableWidth = size - padding * 2;
+  const textY = size - padding - fontSize / 2;
+
+  const displayText = truncateText(ctx, state.cameraId, availableWidth);
+  drawCenteredText(ctx, displayText, size / 2, textY);
+
+  return canvas.toDataURL("image/png");
+}
+
+/**
+ * Render a yellow flash image for feedback.
+ * Used for reset confirmation instead of the green checkmark.
+ *
+ * @param size Canvas size in pixels (default 144 for @2x resolution)
+ * @returns Base64 data URL of the rendered PNG image
+ */
+export function renderFlashImage(size: number = DEFAULT_BUTTON_SIZE): string {
+  const canvas: Canvas = createCanvas(size, size);
+  const ctx = canvas.getContext("2d");
+
+  // Fill with yellow/amber color
+  ctx.fillStyle = Colors.FLASH_BG;
+  ctx.fillRect(0, 0, size, size);
 
   return canvas.toDataURL("image/png");
 }

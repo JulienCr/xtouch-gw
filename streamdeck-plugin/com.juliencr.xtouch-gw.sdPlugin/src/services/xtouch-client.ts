@@ -451,6 +451,31 @@ export class XTouchClient {
     await checkResponse(response, "fetch cameras");
     return (await response.json()) as CameraInfo[];
   }
+
+  /**
+   * Reset a camera's zoom and/or position via HTTP API.
+   * @param cameraId The camera ID to reset
+   * @param mode Reset mode: "position", "zoom", or "both"
+   */
+  async resetCamera(cameraId: string, mode: "position" | "zoom" | "both"): Promise<void> {
+    streamDeck.logger.info(`Resetting camera: id=${cameraId}, mode=${mode}`);
+
+    const url = `http://${this._serverAddress}/api/cameras/${encodeURIComponent(cameraId)}/reset`;
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        mode: mode,
+      }),
+    });
+
+    await checkResponse(response, "reset camera");
+
+    streamDeck.logger.info(`Camera reset successful: ${cameraId}`);
+  }
 }
 
 /**

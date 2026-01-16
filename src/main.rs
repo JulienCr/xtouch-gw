@@ -394,6 +394,11 @@ async fn run_app(
     // Create LED update channel for indicator system
     let (led_tx, mut led_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
+    // Create OBS driver early so it can be passed to ApiState
+    let obs_driver: Option<Arc<ObsDriver>> = config.obs.as_ref().map(|obs_config| {
+        Arc::new(ObsDriver::from_config(obs_config))
+    });
+
     // Create ApiState early so it can be captured by the OBS indicator callback
     let api_state = Arc::new(api::ApiState {
         camera_targets: router.get_camera_targets(),
@@ -401,11 +406,11 @@ async fn run_app(
         gamepad_slots: Arc::new(parking_lot::RwLock::new(build_gamepad_slot_infos(&config))),
         update_tx: tokio::sync::broadcast::channel(16).0,
         current_on_air_camera: Arc::new(parking_lot::RwLock::new(None)),
+        obs_driver: obs_driver.clone(),
     });
 
     // Register OBS driver if configured
-    if let Some(obs_config) = &config.obs {
-        let obs_driver = Arc::new(ObsDriver::from_config(obs_config));
+    if let Some(obs_driver) = obs_driver {
 
         // Subscribe to OBS indicator signals before registering
         let router_clone = router.clone();

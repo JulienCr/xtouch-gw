@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Camera Select</title>
+  <title>Camera Reset</title>
   <style>
     * {
       box-sizing: border-box;
@@ -181,16 +181,6 @@
       </div>
     </div>
 
-    <!-- Gamepad Slot -->
-    <div class="sdpi-item">
-      <div class="sdpi-item-label">Gamepad</div>
-      <div class="sdpi-item-value">
-        <select id="gamepadSlot" disabled>
-          <option value="">-- Connect to server --</option>
-        </select>
-      </div>
-    </div>
-
     <!-- Camera -->
     <div class="sdpi-item">
       <div class="sdpi-item-label">Camera</div>
@@ -201,14 +191,14 @@
       </div>
     </div>
 
-    <!-- Reset Mode (Long Press) -->
+    <!-- Reset Mode -->
     <div class="sdpi-item">
-      <div class="sdpi-item-label">Long Press</div>
+      <div class="sdpi-item-label">Reset Mode</div>
       <div class="sdpi-item-value">
         <select id="resetMode">
-          <option value="both" selected>Reset Position & Zoom</option>
-          <option value="position">Reset Position Only</option>
-          <option value="zoom">Reset Zoom Only</option>
+          <option value="both" selected>Position & Zoom</option>
+          <option value="position">Position Only</option>
+          <option value="zoom">Zoom Only</option>
         </select>
       </div>
     </div>
@@ -248,7 +238,6 @@
     // State
     let currentSettings = {
       serverAddress: DEFAULT_SERVER_ADDRESS,
-      gamepadSlot: "",
       cameraId: "",
       resetMode: "both"
     };
@@ -258,7 +247,6 @@
 
     // DOM Elements
     const serverAddressInput = document.getElementById("serverAddress");
-    const gamepadSlotSelect = document.getElementById("gamepadSlot");
     const cameraIdSelect = document.getElementById("cameraId");
     const resetModeSelect = document.getElementById("resetMode");
     const statusDot = document.getElementById("statusDot");
@@ -277,7 +265,6 @@
       if (actionInfo && actionInfo.payload && actionInfo.payload.settings) {
         currentSettings = {
           serverAddress: actionInfo.payload.settings.serverAddress || DEFAULT_SERVER_ADDRESS,
-          gamepadSlot: actionInfo.payload.settings.gamepadSlot || "",
           cameraId: actionInfo.payload.settings.cameraId || "",
           resetMode: actionInfo.payload.settings.resetMode || "both"
         };
@@ -311,7 +298,6 @@
           const settings = data.payload.settings || {};
           currentSettings = {
             serverAddress: settings.serverAddress || DEFAULT_SERVER_ADDRESS,
-            gamepadSlot: settings.gamepadSlot || "",
             cameraId: settings.cameraId || "",
             resetMode: settings.resetMode || "both"
           };
@@ -365,12 +351,6 @@
         }, 500);
       });
 
-      // Gamepad slot change
-      gamepadSlotSelect.addEventListener("change", function() {
-        currentSettings.gamepadSlot = this.value;
-        saveSettings();
-      });
-
       // Camera change
       cameraIdSelect.addEventListener("change", function() {
         currentSettings.cameraId = this.value;
@@ -393,7 +373,7 @@
       serverAddressInput.value = currentSettings.serverAddress || DEFAULT_SERVER_ADDRESS;
       resetModeSelect.value = currentSettings.resetMode || "both";
 
-      // Gamepad and camera will be set after dropdowns are populated
+      // Camera will be set after dropdown is populated
     }
 
     function saveSettings() {
@@ -417,8 +397,6 @@
     }
 
     function resetDropdowns() {
-      gamepadSlotSelect.innerHTML = '<option value="">-- Connect to server --</option>';
-      gamepadSlotSelect.disabled = true;
       cameraIdSelect.innerHTML = '<option value="">-- Connect to server --</option>';
       cameraIdSelect.disabled = true;
     }
@@ -441,42 +419,25 @@
       }
 
       setStatus("connecting", "Connecting...");
-      setDropdownLoading(gamepadSlotSelect, "Loading...");
       setDropdownLoading(cameraIdSelect, "Loading...");
 
       try {
-        // Fetch both endpoints in parallel
-        const [gamepadsResponse, camerasResponse] = await Promise.all([
-          fetch("http://" + serverAddress + "/api/gamepads", {
-            method: "GET",
-            headers: { "Accept": "application/json" }
-          }),
-          fetch("http://" + serverAddress + "/api/cameras", {
-            method: "GET",
-            headers: { "Accept": "application/json" }
-          })
-        ]);
+        const camerasResponse = await fetch("http://" + serverAddress + "/api/cameras", {
+          method: "GET",
+          headers: { "Accept": "application/json" }
+        });
 
-        if (!gamepadsResponse.ok || !camerasResponse.ok) {
+        if (!camerasResponse.ok) {
           throw new Error("API returned error status");
         }
 
-        const gamepads = await gamepadsResponse.json();
         const cameras = await camerasResponse.json();
 
-        populateGamepadDropdown(gamepads);
         populateCameraDropdown(cameras);
 
         setStatus("connected", "Connected");
 
-        // Restore selected values
-        if (currentSettings.gamepadSlot) {
-          const gamepadOption = gamepadSlotSelect.querySelector('option[value="' + currentSettings.gamepadSlot + '"]');
-          if (gamepadOption) {
-            gamepadSlotSelect.value = currentSettings.gamepadSlot;
-          }
-        }
-
+        // Restore selected value
         if (currentSettings.cameraId) {
           const cameraOption = cameraIdSelect.querySelector('option[value="' + currentSettings.cameraId + '"]');
           if (cameraOption) {
@@ -487,40 +448,7 @@
       } catch (error) {
         console.error("Failed to fetch data:", error);
         setStatus("disconnected", "Connection failed");
-        setDropdownError(gamepadSlotSelect, "Connection failed");
         setDropdownError(cameraIdSelect, "Connection failed");
-      }
-    }
-
-    function populateGamepadDropdown(gamepads) {
-      gamepadSlotSelect.innerHTML = '<option value="">-- Select gamepad --</option>';
-
-      if (Array.isArray(gamepads)) {
-        gamepads.forEach(function(gamepad) {
-          const option = document.createElement("option");
-          // Handle both object format {slot: "main", camera_id: "cam1"} and string format
-          if (typeof gamepad === "object") {
-            option.value = gamepad.slot || gamepad.id || "";
-            const cameraInfo = gamepad.camera_id ? " [" + gamepad.camera_id + "]" : "";
-            option.textContent = (gamepad.name || gamepad.slot || gamepad.id || "Unknown") + cameraInfo;
-          } else {
-            option.value = gamepad;
-            option.textContent = gamepad;
-          }
-          gamepadSlotSelect.appendChild(option);
-        });
-        gamepadSlotSelect.disabled = false;
-      } else if (typeof gamepads === "object" && gamepads !== null) {
-        // Handle object format {slot_name: {camera_id: "..."}, ...}
-        Object.keys(gamepads).forEach(function(slot) {
-          const option = document.createElement("option");
-          option.value = slot;
-          const info = gamepads[slot];
-          const cameraInfo = info && info.camera_id ? " [" + info.camera_id + "]" : "";
-          option.textContent = slot + cameraInfo;
-          gamepadSlotSelect.appendChild(option);
-        });
-        gamepadSlotSelect.disabled = false;
       }
     }
 

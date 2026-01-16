@@ -2,6 +2,7 @@ import streamDeck, {
   action,
   DidReceiveSettingsEvent,
   KeyDownEvent,
+  KeyUpEvent,
   SingletonAction,
   WillAppearEvent,
   WillDisappearEvent,
@@ -19,6 +20,7 @@ import {
   renderButtonImage,
   renderDisconnectedImage,
   renderNotConfiguredImage,
+  renderFlashImage,
 } from "../services/button-renderer";
 
 import type { JsonValue } from "@elgato/streamdeck";
@@ -34,6 +36,8 @@ type CameraSelectSettings = {
   gamepadSlot: string;
   /** Camera ID to target */
   cameraId: string;
+  /** Reset mode for long press: "position", "zoom", or "both" */
+  resetMode: "position" | "zoom" | "both";
   /** Index signature for JsonObject compatibility */
   [key: string]: JsonValue;
 };
@@ -46,6 +50,7 @@ function normalizeSettings(settings: CameraSelectSettings): CameraSelectSettings
     serverAddress: settings.serverAddress || "",
     gamepadSlot: settings.gamepadSlot || "",
     cameraId: settings.cameraId || "",
+    resetMode: settings.resetMode || "both",
   };
 }
 
@@ -65,6 +70,10 @@ interface ContextState {
   isOnAir: boolean;
   /** Current connection status */
   connectionStatus: ConnectionStatus;
+  /** Timer handle for long press detection */
+  longPressTimer: ReturnType<typeof setTimeout> | null;
+  /** Flag indicating if long press action was triggered (to prevent select on keyUp) */
+  longPressTriggered: boolean;
 }
 
 /**
@@ -111,6 +120,8 @@ export class CameraSelectAction extends SingletonAction<CameraSelectSettings> {
       isActive: false,
       isOnAir: false,
       connectionStatus: "disconnected",
+      longPressTimer: null,
+      longPressTriggered: false,
     };
 
     this.contexts.set(contextId, contextState);
@@ -138,9 +149,89 @@ export class CameraSelectAction extends SingletonAction<CameraSelectSettings> {
 
   /**
    * Called when the key is pressed.
-   * Sends the camera target request to the server.
+   * Starts a timer for long press detection - reset triggers automatically after 500ms.
    */
   override async onKeyDown(ev: KeyDownEvent<CameraSelectSettings>): Promise<void> {
+    const contextId = ev.action.id;
+    const contextState = this.contexts.get(contextId);
+    if (!contextState) return;
+
+    // Reset state
+    contextState.longPressTriggered = false;
+
+    // Clear any existing timer
+    if (contextState.longPressTimer) {
+      clearTimeout(contextState.longPressTimer);
+    }
+
+    const LONG_PRESS_THRESHOLD_MS = 500;
+
+    // Start long press timer - reset will trigger automatically after 500ms
+    contextState.longPressTimer = setTimeout(() => {
+      contextState.longPressTimer = null;
+      contextState.longPressTriggered = true;
+      void this.executeReset(contextId, ev.action);
+    }, LONG_PRESS_THRESHOLD_MS);
+  }
+
+  /**
+   * Execute camera reset (called when long press timer fires).
+   */
+  private async executeReset(contextId: string, action: KeyAction<CameraSelectSettings>): Promise<void> {
+    const contextState = this.contexts.get(contextId);
+    if (!contextState) return;
+
+    const { settings, client } = contextState;
+
+    // Validate settings
+    if (!settings.serverAddress || !settings.cameraId) {
+      streamDeck.logger.warn("Camera Select action not configured for reset");
+      await action.showAlert();
+      return;
+    }
+
+    // Ensure client is connected
+    if (!client || client.connectionStatus !== "connected") {
+      streamDeck.logger.warn("Not connected to XTouch GW server");
+      await action.showAlert();
+      return;
+    }
+
+    streamDeck.logger.info(`Long press triggered - resetting camera ${settings.cameraId}`);
+    try {
+      const url = `http://${settings.serverAddress}/api/cameras/${encodeURIComponent(settings.cameraId)}/reset`;
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: settings.resetMode || "both" }),
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      streamDeck.logger.info(`Camera reset successful: ${settings.cameraId}`);
+
+      // Yellow blink feedback (2 iterations)
+      const flashImage = renderFlashImage();
+      const BLINK_DURATION_MS = 100;
+
+      for (let i = 0; i < 2; i++) {
+        await action.setImage(flashImage);
+        await new Promise((resolve) => setTimeout(resolve, BLINK_DURATION_MS));
+        await this.updateDisplay(contextState);
+        await new Promise((resolve) => setTimeout(resolve, BLINK_DURATION_MS));
+      }
+    } catch (error) {
+      streamDeck.logger.error(`Failed to reset camera: ${error}`);
+      await action.showAlert();
+    }
+  }
+
+  /**
+   * Called when the key is released.
+   * If released before 500ms, cancels reset timer and executes camera select.
+   * If reset already triggered, does nothing.
+   */
+  override async onKeyUp(ev: KeyUpEvent<CameraSelectSettings>): Promise<void> {
     const contextId = ev.action.id;
     const contextState = this.contexts.get(contextId);
 
@@ -150,15 +241,31 @@ export class CameraSelectAction extends SingletonAction<CameraSelectSettings> {
       return;
     }
 
+    // Cancel the long press timer if it hasn't fired yet
+    if (contextState.longPressTimer) {
+      clearTimeout(contextState.longPressTimer);
+      contextState.longPressTimer = null;
+    }
+
+    // If long press already triggered the reset, don't also select
+    if (contextState.longPressTriggered) {
+      streamDeck.logger.debug("Long press was triggered, skipping select on keyUp");
+      contextState.longPressTriggered = false;
+      return;
+    }
+
+    // SHORT PRESS: Select camera
     const { settings, client } = contextState;
 
-    streamDeck.logger.info(
-      `Camera Select key pressed: context=${contextId}, camera=${settings.cameraId}, slot=${settings.gamepadSlot}`
-    );
-
     // Validate settings
-    if (!settings.serverAddress || !settings.gamepadSlot || !settings.cameraId) {
+    if (!settings.serverAddress || !settings.cameraId) {
       streamDeck.logger.warn("Camera Select action not configured");
+      await ev.action.showAlert();
+      return;
+    }
+
+    if (!settings.gamepadSlot) {
+      streamDeck.logger.warn("Gamepad slot not configured");
       await ev.action.showAlert();
       return;
     }
@@ -170,6 +277,7 @@ export class CameraSelectAction extends SingletonAction<CameraSelectSettings> {
       return;
     }
 
+    streamDeck.logger.info(`Short press - selecting camera ${settings.cameraId}`);
     try {
       await client.setCameraTarget(settings.gamepadSlot, settings.cameraId);
       streamDeck.logger.info(`Camera target set successfully: ${settings.gamepadSlot} -> ${settings.cameraId}`);

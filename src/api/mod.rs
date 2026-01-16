@@ -11,7 +11,7 @@ use axum::{
     },
     http::StatusCode,
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
@@ -34,6 +34,8 @@ pub struct ApiState {
     pub update_tx: broadcast::Sender<CameraStateMessage>,
     /// Current camera on air (by camera ID, derived from OBS program scene)
     pub current_on_air_camera: Arc<parking_lot::RwLock<Option<String>>>,
+    /// OBS driver for transform operations
+    pub obs_driver: Option<Arc<crate::drivers::ObsDriver>>,
 }
 
 /// WebSocket message types for camera state updates
@@ -65,6 +67,13 @@ pub enum CameraStateMessage {
 #[derive(Debug, Deserialize)]
 pub struct SetCameraRequest {
     pub camera_id: String,
+}
+
+/// Request body for resetting camera transform
+#[derive(Debug, Deserialize)]
+pub struct ResetCameraRequest {
+    /// Reset mode: "position", "zoom", or "both"
+    pub mode: String,
 }
 
 /// Response for get camera target
@@ -114,6 +123,7 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
         )
         .route("/api/gamepads", get(list_gamepads))
         .route("/api/cameras", get(list_cameras))
+        .route("/api/cameras/:camera_id/reset", post(reset_camera_transform))
         .route("/api/ws/camera-updates", get(camera_updates_ws))
         .route("/api/health", get(health_check))
         .with_state(state)
@@ -203,6 +213,66 @@ async fn list_gamepads(State(state): State<Arc<ApiState>>) -> Json<Vec<GamepadSl
 /// GET /api/cameras - List available cameras
 async fn list_cameras(State(state): State<Arc<ApiState>>) -> Json<Vec<CameraInfo>> {
     Json(state.available_cameras.read().clone())
+}
+
+/// POST /api/cameras/:camera_id/reset - Reset camera transform (position and/or zoom)
+async fn reset_camera_transform(
+    Path(camera_id): Path<String>,
+    State(state): State<Arc<ApiState>>,
+    Json(req): Json<ResetCameraRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    // Validate camera_id exists and get camera info
+    let camera = state
+        .available_cameras
+        .read()
+        .iter()
+        .find(|c| c.id == camera_id)
+        .cloned();
+
+    let camera = match camera {
+        Some(c) => c,
+        None => return Err(ApiError {
+            error: format!(
+                "Invalid camera_id: '{}'. Use GET /api/cameras to see available cameras.",
+                camera_id
+            ),
+        }),
+    };
+
+    // Validate mode
+    let mode = match req.mode.as_str() {
+        "position" | "zoom" | "both" => req.mode.clone(),
+        _ => return Err(ApiError {
+            error: format!(
+                "Invalid mode: '{}'. Must be 'position', 'zoom', or 'both'.",
+                req.mode
+            ),
+        }),
+    };
+
+    // Get OBS driver
+    let obs_driver = match &state.obs_driver {
+        Some(driver) => driver.clone(),
+        None => return Err(ApiError {
+            error: "OBS driver not available".to_string(),
+        }),
+    };
+
+    // Reset transform
+    if let Err(e) = obs_driver.reset_transform(&camera.scene, &camera.source, &mode).await {
+        error!("Failed to reset camera transform: {}", e);
+        return Err(ApiError {
+            error: format!("Failed to reset camera: {}", e),
+        });
+    }
+
+    info!("Camera reset successful: camera={}, mode={}", camera_id, mode);
+
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "camera_id": camera_id,
+        "mode": mode
+    })))
 }
 
 /// GET /api/ws/camera-updates - WebSocket for push notifications
