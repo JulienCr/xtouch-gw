@@ -6,6 +6,16 @@ import { createCanvas, type Canvas, type CanvasRenderingContext2D } from "canvas
 const DEFAULT_BUTTON_SIZE = 144;
 
 /**
+ * Scale a value proportionally to the button size.
+ * @param baseValue The value at DEFAULT_BUTTON_SIZE
+ * @param size Current button size
+ * @returns Scaled and rounded value
+ */
+function scaled(baseValue: number, size: number): number {
+  return Math.round((size * baseValue) / DEFAULT_BUTTON_SIZE);
+}
+
+/**
  * Color constants for button rendering
  */
 const Colors = {
@@ -197,11 +207,11 @@ export function renderButtonImage(state: ButtonState, size: number = DEFAULT_BUT
   const canvas: Canvas = createCanvas(size, size);
   const ctx = canvas.getContext("2d");
 
-  const borderWidth = Math.round(size * 10 / DEFAULT_BUTTON_SIZE);
-  const indicatorHeight = Math.round(size * 6 / DEFAULT_BUTTON_SIZE);
-  const fontSize = Math.round(size * 24 / DEFAULT_BUTTON_SIZE);
-  const padding = Math.round(size * 6 / DEFAULT_BUTTON_SIZE);
-  const iconSize = Math.round(size * 44 / DEFAULT_BUTTON_SIZE);
+  const borderWidth = scaled(10, size);
+  const indicatorHeight = scaled(6, size);
+  const fontSize = scaled(24, size);
+  const padding = scaled(6, size);
+  const iconSize = scaled(44, size);
 
   // Step 1: Draw background
   ctx.fillStyle = state.isControlled ? Colors.ACTIVE_BG : Colors.INACTIVE_BG;
@@ -265,8 +275,8 @@ export function renderDisconnectedImage(size: number = DEFAULT_BUTTON_SIZE): str
   const canvas: Canvas = createCanvas(size, size);
   const ctx = canvas.getContext("2d");
 
-  const fontSize = Math.round(size * 48 / DEFAULT_BUTTON_SIZE);
-  const labelFontSize = Math.round(size * 14 / DEFAULT_BUTTON_SIZE);
+  const fontSize = scaled(48, size);
+  const labelFontSize = scaled(14, size);
 
   // Draw background
   ctx.fillStyle = Colors.DISCONNECTED_BG;
@@ -296,8 +306,8 @@ export function renderNotConfiguredImage(size: number = DEFAULT_BUTTON_SIZE): st
   const canvas: Canvas = createCanvas(size, size);
   const ctx = canvas.getContext("2d");
 
-  const iconFontSize = Math.round(size * 36 / DEFAULT_BUTTON_SIZE);
-  const labelFontSize = Math.round(size * 14 / DEFAULT_BUTTON_SIZE);
+  const iconFontSize = scaled(36, size);
+  const labelFontSize = scaled(14, size);
 
   // Draw background
   ctx.fillStyle = Colors.INACTIVE_BG;

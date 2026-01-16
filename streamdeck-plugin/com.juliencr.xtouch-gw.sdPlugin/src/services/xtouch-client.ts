@@ -110,6 +110,9 @@ export class XTouchClient {
   private static readonly INITIAL_RECONNECT_DELAY_MS = 1000;
   private static readonly MAX_RECONNECT_DELAY_MS = 30000;
 
+  // WebSocket close codes
+  private static readonly CLOSE_NORMAL = 1000;
+
   constructor(serverAddress: string) {
     this._serverAddress = serverAddress;
   }
@@ -340,7 +343,7 @@ export class XTouchClient {
     }
 
     if (this._ws) {
-      this._ws.close(1000, "Client disconnecting");
+      this._ws.close(XTouchClient.CLOSE_NORMAL, "Client disconnecting");
       this._ws = null;
     }
 

@@ -277,7 +277,7 @@ class XTouchClient {
             this._reconnectTimer = null;
         }
         if (this._ws) {
-            this._ws.close(1000, "Client disconnecting");
+            this._ws.close(XTouchClient.CLOSE_NORMAL, "Client disconnecting");
             this._ws = null;
         }
         this.setConnectionStatus("disconnected");
@@ -377,6 +377,8 @@ class XTouchClient {
 // Reconnect configuration
 XTouchClient.INITIAL_RECONNECT_DELAY_MS = 1000;
 XTouchClient.MAX_RECONNECT_DELAY_MS = 30000;
+// WebSocket close codes
+XTouchClient.CLOSE_NORMAL = 1000;
 /**
  * Client instances per server address (singleton pattern)
  */
@@ -403,6 +405,15 @@ function getClient(serverAddress) {
  * Default button size in pixels (Stream Deck @2x resolution)
  */
 const DEFAULT_BUTTON_SIZE = 144;
+/**
+ * Scale a value proportionally to the button size.
+ * @param baseValue The value at DEFAULT_BUTTON_SIZE
+ * @param size Current button size
+ * @returns Scaled and rounded value
+ */
+function scaled(baseValue, size) {
+    return Math.round((size * baseValue) / DEFAULT_BUTTON_SIZE);
+}
 /**
  * Color constants for button rendering
  */
@@ -550,11 +561,11 @@ function drawCameraIcon(ctx, x, y, iconSize, color) {
 function renderButtonImage(state, size = DEFAULT_BUTTON_SIZE) {
     const canvas = createCanvas(size, size);
     const ctx = canvas.getContext("2d");
-    const borderWidth = Math.round(size * 10 / DEFAULT_BUTTON_SIZE);
-    const indicatorHeight = Math.round(size * 6 / DEFAULT_BUTTON_SIZE);
-    const fontSize = Math.round(size * 24 / DEFAULT_BUTTON_SIZE);
-    const padding = Math.round(size * 6 / DEFAULT_BUTTON_SIZE);
-    const iconSize = Math.round(size * 44 / DEFAULT_BUTTON_SIZE);
+    const borderWidth = scaled(10, size);
+    const indicatorHeight = scaled(6, size);
+    const fontSize = scaled(24, size);
+    const padding = scaled(6, size);
+    const iconSize = scaled(44, size);
     // Step 1: Draw background
     ctx.fillStyle = state.isControlled ? Colors.ACTIVE_BG : Colors.INACTIVE_BG;
     ctx.fillRect(0, 0, size, size);
@@ -605,8 +616,8 @@ function renderButtonImage(state, size = DEFAULT_BUTTON_SIZE) {
 function renderDisconnectedImage(size = DEFAULT_BUTTON_SIZE) {
     const canvas = createCanvas(size, size);
     const ctx = canvas.getContext("2d");
-    const fontSize = Math.round(size * 48 / DEFAULT_BUTTON_SIZE);
-    const labelFontSize = Math.round(size * 14 / DEFAULT_BUTTON_SIZE);
+    const fontSize = scaled(48, size);
+    const labelFontSize = scaled(14, size);
     // Draw background
     ctx.fillStyle = Colors.DISCONNECTED_BG;
     ctx.fillRect(0, 0, size, size);
@@ -630,8 +641,8 @@ function renderDisconnectedImage(size = DEFAULT_BUTTON_SIZE) {
 function renderNotConfiguredImage(size = DEFAULT_BUTTON_SIZE) {
     const canvas = createCanvas(size, size);
     const ctx = canvas.getContext("2d");
-    const iconFontSize = Math.round(size * 36 / DEFAULT_BUTTON_SIZE);
-    const labelFontSize = Math.round(size * 14 / DEFAULT_BUTTON_SIZE);
+    const iconFontSize = scaled(36, size);
+    const labelFontSize = scaled(14, size);
     // Draw background
     ctx.fillStyle = Colors.INACTIVE_BG;
     ctx.fillRect(0, 0, size, size);

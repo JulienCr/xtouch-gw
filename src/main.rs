@@ -267,15 +267,8 @@ async fn run_app(
     let active_page_name = router.get_active_page_name().await;
 
     if let Some(page) = active_page {
-        // Apply LCD labels and colors
         let labels = page.lcd.as_ref().and_then(|lcd| lcd.labels.as_ref());
-
-        // Convert LcdColor to u8 values
-        let colors_u8: Option<Vec<u8>> = page.lcd.as_ref().and_then(|lcd| {
-            lcd.colors.as_ref().map(|colors| {
-                colors.iter().map(|c| c.to_u8()).collect()
-            })
-        });
+        let colors_u8 = convert_lcd_colors(&page);
 
         if let Err(e) = xtouch
             .apply_lcd_for_page(labels, colors_u8.as_ref(), &active_page_name)
@@ -595,15 +588,8 @@ async fn run_app(
                     let active_page_name = router.get_active_page_name().await;
 
                     if let Some(page) = active_page {
-                        // Apply LCD labels and colors
                         let labels = page.lcd.as_ref().and_then(|lcd| lcd.labels.as_ref());
-
-                        // Convert LcdColor to u8 values
-                        let colors_u8: Option<Vec<u8>> = page.lcd.as_ref().and_then(|lcd| {
-                            lcd.colors.as_ref().map(|colors| {
-                                colors.iter().map(|c| c.to_u8()).collect()
-                            })
-                        });
+                        let colors_u8 = convert_lcd_colors(&page);
 
                         if let Err(e) = xtouch.apply_lcd_for_page(labels, colors_u8.as_ref(), &active_page_name).await {
                             warn!("Failed to apply LCD for page: {}", e);
@@ -938,6 +924,13 @@ fn build_gamepad_slot_infos(config: &AppConfig) -> Vec<api::GamepadSlotInfo> {
             current_camera: None,
         })
         .collect()
+}
+
+/// Convert LCD colors from config to u8 values.
+fn convert_lcd_colors(page: &crate::config::PageConfig) -> Option<Vec<u8>> {
+    page.lcd.as_ref().and_then(|lcd| {
+        lcd.colors.as_ref().map(|colors| colors.iter().map(|c| c.to_u8()).collect())
+    })
 }
 
 /// Extract PitchBend channel and 14-bit value from raw MIDI feedback data.
