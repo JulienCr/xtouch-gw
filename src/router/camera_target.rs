@@ -102,7 +102,6 @@ impl CameraTargetState {
             .insert(key.as_bytes(), value)
             .context("Failed to persist camera target to sled")?;
 
-        debug!("Set camera target: {} -> {}", gamepad_slot, camera_id);
         Ok(())
     }
 

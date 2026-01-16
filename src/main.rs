@@ -401,6 +401,36 @@ async fn run_app(
     // Create LED update channel for indicator system
     let (led_tx, mut led_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
+    // Create ApiState early so it can be captured by the OBS indicator callback
+    let api_state = Arc::new(api::ApiState {
+        camera_targets: router.get_camera_targets(),
+        available_cameras: Arc::new(parking_lot::RwLock::new(
+            config.obs.as_ref()
+                .and_then(|o| o.camera_control.as_ref())
+                .map(|cc| cc.cameras.iter().map(|c| api::CameraInfo {
+                    id: c.id.clone(),
+                    scene: c.scene.clone(),
+                    source: c.source.clone(),
+                    split_source: c.split_source.clone(),
+                    enable_ptz: c.enable_ptz,
+                }).collect())
+                .unwrap_or_default()
+        )),
+        gamepad_slots: Arc::new(parking_lot::RwLock::new(
+            config.gamepad.as_ref()
+                .and_then(|g| g.gamepads.as_ref())
+                .map(|slots| slots.iter().enumerate().map(|(i, slot)| api::GamepadSlotInfo {
+                    slot: format!("gamepad{}", i + 1),
+                    product_match: slot.product_match.clone(),
+                    camera_target_mode: slot.camera_target.clone().unwrap_or_else(|| "static".to_string()),
+                    current_camera: None,
+                }).collect())
+                .unwrap_or_default()
+        )),
+        update_tx: tokio::sync::broadcast::channel(16).0,
+        current_on_air_camera: Arc::new(parking_lot::RwLock::new(None)),
+    });
+
     // Register OBS driver if configured
     if let Some(obs_config) = &config.obs {
         let obs_driver = Arc::new(ObsDriver::from_config(obs_config));
@@ -410,12 +440,14 @@ async fn run_app(
         let control_db_clone = control_db.clone();
         let config_clone = config.clone();
         let led_tx_clone = led_tx.clone();
+        let api_state_clone = Arc::clone(&api_state);
 
         let indicator_callback: IndicatorCallback = Arc::new(move |signal: String, value: serde_json::Value| {
             let router = router_clone.clone();
             let control_db = control_db_clone.clone();
             let config = config_clone.clone();
             let led_tx = led_tx_clone.clone();
+            let api_state = api_state_clone.clone();
 
             tokio::spawn(async move {
                 // Evaluate which controls should be lit
@@ -436,6 +468,20 @@ async fn run_app(
                             if let Err(e) = led_tx.send(midi_msg) {
                                 warn!("Failed to send LED update to channel: {}", e);
                             }
+                        }
+                    }
+                }
+
+                // Check if this is a program scene change and broadcast to Stream Deck API
+                // The OBS driver emits "obs.currentProgramScene" with Value::String(scene_name)
+                if signal == "obs.currentProgramScene" {
+                    if let Some(scene_name) = value.as_str() {
+                        // Find camera matching this scene
+                        if let Some(camera_config) = config.obs.as_ref()
+                            .and_then(|o| o.camera_control.as_ref())
+                            .and_then(|cc| cc.cameras.iter().find(|c| c.scene == scene_name))
+                        {
+                            api::broadcast_on_air_change(&api_state, &camera_config.id, scene_name);
                         }
                     }
                 }
@@ -463,36 +509,7 @@ async fn run_app(
 
     debug!("All drivers registered and initialized");
 
-    // Start Stream Deck API server
-    let api_state = Arc::new(api::ApiState {
-        camera_targets: router.get_camera_targets(),
-        available_cameras: Arc::new(parking_lot::RwLock::new(
-            config.obs.as_ref()
-                .and_then(|o| o.camera_control.as_ref())
-                .map(|cc| cc.cameras.iter().map(|c| api::CameraInfo {
-                    id: c.id.clone(),
-                    scene: c.scene.clone(),
-                    source: c.source.clone(),
-                    split_source: c.split_source.clone(),
-                    enable_ptz: c.enable_ptz,
-                }).collect())
-                .unwrap_or_default()
-        )),
-        gamepad_slots: Arc::new(parking_lot::RwLock::new(
-            config.gamepad.as_ref()
-                .and_then(|g| g.gamepads.as_ref())
-                .map(|slots| slots.iter().enumerate().map(|(i, slot)| api::GamepadSlotInfo {
-                    slot: format!("gamepad{}", i + 1),
-                    product_match: slot.product_match.clone(),
-                    camera_target_mode: slot.camera_target.clone().unwrap_or_else(|| "static".to_string()),
-                    current_camera: None,
-                }).collect())
-                .unwrap_or_default()
-        )),
-        update_tx: tokio::sync::broadcast::channel(16).0,
-    });
-
-    // Spawn API server task
+    // Spawn Stream Deck API server task
     let api_port = api::DEFAULT_API_PORT;
     tokio::spawn({
         let api_state = Arc::clone(&api_state);

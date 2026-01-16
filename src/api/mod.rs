@@ -30,12 +30,41 @@ pub struct ApiState {
     pub available_cameras: Arc<parking_lot::RwLock<Vec<CameraInfo>>>,
     /// Gamepad slot configurations
     pub gamepad_slots: Arc<parking_lot::RwLock<Vec<GamepadSlotInfo>>>,
-    /// Broadcast channel for camera updates
-    pub update_tx: broadcast::Sender<CameraUpdate>,
+    /// Broadcast channel for camera state messages
+    pub update_tx: broadcast::Sender<CameraStateMessage>,
+    /// Current camera on air (by camera ID, derived from OBS program scene)
+    pub current_on_air_camera: Arc<parking_lot::RwLock<Option<String>>>,
 }
 
-/// Camera update notification (sent via WebSocket)
+/// WebSocket message types for camera state updates
 #[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[allow(dead_code)] // OnAirChanged variant is public API for OBS driver
+pub enum CameraStateMessage {
+    /// Full state snapshot (sent on connect)
+    Snapshot {
+        gamepads: Vec<GamepadSlotInfo>,
+        cameras: Vec<CameraInfo>,
+        on_air_camera: Option<String>,
+        timestamp: u64,
+    },
+    /// Camera target changed for a gamepad
+    TargetChanged {
+        gamepad_slot: String,
+        camera_id: String,
+        timestamp: u64,
+    },
+    /// OBS program scene changed (camera went on air)
+    OnAirChanged {
+        camera_id: String,
+        scene_name: String,
+        timestamp: u64,
+    },
+}
+
+/// Camera update notification (internal, for REST API response compatibility)
+#[derive(Debug, Clone, Serialize)]
+#[allow(dead_code)] // Public API for external use
 pub struct CameraUpdate {
     pub gamepad_slot: String,
     pub camera_id: String,
@@ -150,17 +179,14 @@ async fn set_camera_target(
     }
 
     // Broadcast update to WebSocket subscribers
-    let update = CameraUpdate {
+    let message = CameraStateMessage::TargetChanged {
         gamepad_slot: slot.clone(),
         camera_id: req.camera_id.clone(),
-        timestamp: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64,
+        timestamp: current_timestamp_millis(),
     };
 
     // Best-effort broadcast (ignore if no subscribers)
-    let _ = state.update_tx.send(update);
+    let _ = state.update_tx.send(message);
 
     info!("Camera target set: {} -> {}", slot, req.camera_id);
 
@@ -192,23 +218,39 @@ async fn camera_updates_ws(
     ws: WebSocketUpgrade,
     State(state): State<Arc<ApiState>>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_websocket(socket, state.update_tx.subscribe()))
+    ws.on_upgrade(move |socket| handle_websocket(socket, state))
 }
 
 /// Handle WebSocket connection for camera updates
-async fn handle_websocket(mut socket: WebSocket, mut rx: broadcast::Receiver<CameraUpdate>) {
+async fn handle_websocket(mut socket: WebSocket, state: Arc<ApiState>) {
     debug!("WebSocket client connected for camera updates");
 
-    // Send initial state
-    // (Could send current targets here if needed)
+    // Send initial snapshot on connect
+    let snapshot = build_snapshot(&state);
+    let snapshot_json = match serde_json::to_string(&snapshot) {
+        Ok(json) => json,
+        Err(e) => {
+            error!("Failed to serialize snapshot: {}", e);
+            return;
+        }
+    };
+
+    if socket.send(Message::Text(snapshot_json.into())).await.is_err() {
+        debug!("WebSocket client disconnected before receiving snapshot");
+        return;
+    }
+    debug!("Sent initial snapshot to WebSocket client");
+
+    // Subscribe to updates after sending snapshot
+    let mut rx = state.update_tx.subscribe();
 
     loop {
         tokio::select! {
             // Forward updates to WebSocket
             result = rx.recv() => {
                 match result {
-                    Ok(update) => {
-                        let msg = serde_json::to_string(&update).unwrap();
+                    Ok(message) => {
+                        let msg = serde_json::to_string(&message).unwrap();
                         if socket.send(Message::Text(msg.into())).await.is_err() {
                             debug!("WebSocket client disconnected");
                             break;
@@ -246,6 +288,57 @@ async fn handle_websocket(mut socket: WebSocket, mut rx: broadcast::Receiver<Cam
             }
         }
     }
+}
+
+/// Build a snapshot of the current camera state
+fn build_snapshot(state: &ApiState) -> CameraStateMessage {
+    // Get gamepad slots with current targets
+    let mut gamepads = state.gamepad_slots.read().clone();
+    for slot in &mut gamepads {
+        slot.current_camera = state.camera_targets.get_target(&slot.slot);
+    }
+
+    let cameras = state.available_cameras.read().clone();
+    let on_air_camera = state.current_on_air_camera.read().clone();
+
+    CameraStateMessage::Snapshot {
+        gamepads,
+        cameras,
+        on_air_camera,
+        timestamp: current_timestamp_millis(),
+    }
+}
+
+/// Broadcast an ON AIR change event
+///
+/// Call this when the OBS program scene changes to notify WebSocket clients.
+#[allow(dead_code)] // Public API - will be called by OBS driver when program scene changes
+pub fn broadcast_on_air_change(state: &ApiState, camera_id: &str, scene_name: &str) {
+    // Update the current on-air camera
+    {
+        let mut on_air = state.current_on_air_camera.write();
+        *on_air = Some(camera_id.to_string());
+    }
+
+    // Broadcast the change
+    let message = CameraStateMessage::OnAirChanged {
+        camera_id: camera_id.to_string(),
+        scene_name: scene_name.to_string(),
+        timestamp: current_timestamp_millis(),
+    };
+
+    // Best-effort broadcast (ignore if no subscribers)
+    let _ = state.update_tx.send(message);
+
+    info!("ON AIR changed: {} (scene: {})", camera_id, scene_name);
+}
+
+/// Get current timestamp in milliseconds since UNIX epoch
+fn current_timestamp_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
 }
 
 /// GET /api/health - Health check endpoint
