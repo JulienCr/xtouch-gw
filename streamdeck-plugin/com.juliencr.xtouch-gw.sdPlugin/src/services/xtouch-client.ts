@@ -277,7 +277,7 @@ export class XTouchClient {
 
     const gamepad = this._gamepads.get(message.gamepad_slot);
     if (gamepad) {
-      // Map holds reference to object, so mutation is sufficient
+      // Object retrieved from Map is mutated directly; no need to re-set since Map still references the same instance
       gamepad.current_camera = message.camera_id;
     } else {
       // Create a placeholder entry if gamepad not found
