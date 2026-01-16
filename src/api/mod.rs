@@ -39,7 +39,6 @@ pub struct ApiState {
 /// WebSocket message types for camera state updates
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-#[allow(dead_code)] // OnAirChanged variant is public API for OBS driver
 pub enum CameraStateMessage {
     /// Full state snapshot (sent on connect)
     Snapshot {
@@ -64,7 +63,6 @@ pub enum CameraStateMessage {
 
 /// Camera update notification (internal, for REST API response compatibility)
 #[derive(Debug, Clone, Serialize)]
-#[allow(dead_code)] // Public API for external use
 pub struct CameraUpdate {
     pub gamepad_slot: String,
     pub camera_id: String,
@@ -196,16 +194,18 @@ async fn set_camera_target(
     })))
 }
 
-/// GET /api/gamepads - List all gamepad slots with their current camera targets
-async fn list_gamepads(State(state): State<Arc<ApiState>>) -> Json<Vec<GamepadSlotInfo>> {
+/// Get gamepad slots with their current camera targets populated
+fn get_gamepads_with_targets(state: &ApiState) -> Vec<GamepadSlotInfo> {
     let mut slots = state.gamepad_slots.read().clone();
-
-    // Update current camera targets
     for slot in &mut slots {
         slot.current_camera = state.camera_targets.get_target(&slot.slot);
     }
+    slots
+}
 
-    Json(slots)
+/// GET /api/gamepads - List all gamepad slots with their current camera targets
+async fn list_gamepads(State(state): State<Arc<ApiState>>) -> Json<Vec<GamepadSlotInfo>> {
+    Json(get_gamepads_with_targets(&state))
 }
 
 /// GET /api/cameras - List available cameras
@@ -292,12 +292,7 @@ async fn handle_websocket(mut socket: WebSocket, state: Arc<ApiState>) {
 
 /// Build a snapshot of the current camera state
 fn build_snapshot(state: &ApiState) -> CameraStateMessage {
-    // Get gamepad slots with current targets
-    let mut gamepads = state.gamepad_slots.read().clone();
-    for slot in &mut gamepads {
-        slot.current_camera = state.camera_targets.get_target(&slot.slot);
-    }
-
+    let gamepads = get_gamepads_with_targets(state);
     let cameras = state.available_cameras.read().clone();
     let on_air_camera = state.current_on_air_camera.read().clone();
 
@@ -312,7 +307,6 @@ fn build_snapshot(state: &ApiState) -> CameraStateMessage {
 /// Broadcast an ON AIR change event
 ///
 /// Call this when the OBS program scene changes to notify WebSocket clients.
-#[allow(dead_code)] // Public API - will be called by OBS driver when program scene changes
 pub fn broadcast_on_air_change(state: &ApiState, camera_id: &str, scene_name: &str) {
     // Update the current on-air camera
     {

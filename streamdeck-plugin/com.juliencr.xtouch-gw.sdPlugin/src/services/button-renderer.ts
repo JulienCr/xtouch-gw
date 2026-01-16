@@ -1,6 +1,11 @@
 import { createCanvas, type Canvas, type CanvasRenderingContext2D } from "canvas";
 
 /**
+ * Default button size in pixels (Stream Deck @2x resolution)
+ */
+const DEFAULT_BUTTON_SIZE = 144;
+
+/**
  * Color constants for button rendering
  */
 const Colors = {
@@ -176,15 +181,15 @@ function drawCameraIcon(
  * @param size Canvas size in pixels (default 144 for @2x resolution)
  * @returns Base64 data URL of the rendered PNG image
  */
-export function renderButtonImage(state: ButtonState, size: number = 144): string {
+export function renderButtonImage(state: ButtonState, size: number = DEFAULT_BUTTON_SIZE): string {
   const canvas: Canvas = createCanvas(size, size);
   const ctx = canvas.getContext("2d");
 
-  const borderWidth = Math.round(size * 10 / 144); // 8px at 144px canvas
-  const indicatorHeight = Math.round(size * 6 / 144); // 6px at 144px canvas
-  const fontSize = Math.round(size * 24 / 144); // 24px at 144px canvas
-  const padding = Math.round(size * 6 / 144); // 6px padding
-  const iconSize = Math.round(size * 44 / 144); // 44px icon at 144px canvas
+  const borderWidth = Math.round(size * 10 / DEFAULT_BUTTON_SIZE);
+  const indicatorHeight = Math.round(size * 6 / DEFAULT_BUTTON_SIZE);
+  const fontSize = Math.round(size * 24 / DEFAULT_BUTTON_SIZE);
+  const padding = Math.round(size * 6 / DEFAULT_BUTTON_SIZE);
+  const iconSize = Math.round(size * 44 / DEFAULT_BUTTON_SIZE);
 
   // Step 1: Draw background
   ctx.fillStyle = state.isControlled ? Colors.ACTIVE_BG : Colors.INACTIVE_BG;
@@ -244,12 +249,12 @@ export function renderButtonImage(state: ButtonState, size: number = 144): strin
  * @param size Canvas size in pixels (default 144 for @2x resolution)
  * @returns Base64 data URL of the rendered PNG image
  */
-export function renderDisconnectedImage(size: number = 144): string {
+export function renderDisconnectedImage(size: number = DEFAULT_BUTTON_SIZE): string {
   const canvas: Canvas = createCanvas(size, size);
   const ctx = canvas.getContext("2d");
 
-  const fontSize = Math.round(size * 48 / 144); // 48px at 144px canvas for the icon
-  const labelFontSize = Math.round(size * 14 / 144); // 14px for label
+  const fontSize = Math.round(size * 48 / DEFAULT_BUTTON_SIZE);
+  const labelFontSize = Math.round(size * 14 / DEFAULT_BUTTON_SIZE);
 
   // Draw background
   ctx.fillStyle = Colors.DISCONNECTED_BG;
@@ -275,12 +280,12 @@ export function renderDisconnectedImage(size: number = 144): string {
  * @param size Canvas size in pixels (default 144 for @2x resolution)
  * @returns Base64 data URL of the rendered PNG image
  */
-export function renderNotConfiguredImage(size: number = 144): string {
+export function renderNotConfiguredImage(size: number = DEFAULT_BUTTON_SIZE): string {
   const canvas: Canvas = createCanvas(size, size);
   const ctx = canvas.getContext("2d");
 
-  const iconFontSize = Math.round(size * 36 / 144); // 36px at 144px canvas
-  const labelFontSize = Math.round(size * 14 / 144); // 14px for label
+  const iconFontSize = Math.round(size * 36 / DEFAULT_BUTTON_SIZE);
+  const labelFontSize = Math.round(size * 14 / DEFAULT_BUTTON_SIZE);
 
   // Draw background
   ctx.fillStyle = Colors.INACTIVE_BG;

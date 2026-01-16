@@ -352,12 +352,7 @@ class XTouchClient {
      */
     async getGamepadSlots() {
         const url = `http://${this._serverAddress}/api/gamepads`;
-        const response = await fetch(url, {
-            method: "GET",
-            headers: {
-                "Content-Type": "application/json",
-            },
-        });
+        const response = await fetch(url);
         if (!response.ok) {
             const errorText = await response.text();
             throw new Error(`Failed to fetch gamepad slots: HTTP ${response.status} - ${errorText}`);
@@ -370,12 +365,7 @@ class XTouchClient {
      */
     async getCameras() {
         const url = `http://${this._serverAddress}/api/cameras`;
-        const response = await fetch(url, {
-            method: "GET",
-            headers: {
-                "Content-Type": "application/json",
-            },
-        });
+        const response = await fetch(url);
         if (!response.ok) {
             const errorText = await response.text();
             throw new Error(`Failed to fetch cameras: HTTP ${response.status} - ${errorText}`);
@@ -409,6 +399,10 @@ function getClient(serverAddress) {
     return client;
 }
 
+/**
+ * Default button size in pixels (Stream Deck @2x resolution)
+ */
+const DEFAULT_BUTTON_SIZE = 144;
 /**
  * Color constants for button rendering
  */
@@ -543,14 +537,14 @@ function drawCameraIcon(ctx, x, y, iconSize, color) {
  * @param size Canvas size in pixels (default 144 for @2x resolution)
  * @returns Base64 data URL of the rendered PNG image
  */
-function renderButtonImage(state, size = 144) {
+function renderButtonImage(state, size = DEFAULT_BUTTON_SIZE) {
     const canvas = createCanvas(size, size);
     const ctx = canvas.getContext("2d");
-    const borderWidth = Math.round(size * 10 / 144); // 8px at 144px canvas
-    const indicatorHeight = Math.round(size * 6 / 144); // 6px at 144px canvas
-    const fontSize = Math.round(size * 24 / 144); // 24px at 144px canvas
-    const padding = Math.round(size * 6 / 144); // 6px padding
-    const iconSize = Math.round(size * 44 / 144); // 44px icon at 144px canvas
+    const borderWidth = Math.round(size * 10 / DEFAULT_BUTTON_SIZE);
+    const indicatorHeight = Math.round(size * 6 / DEFAULT_BUTTON_SIZE);
+    const fontSize = Math.round(size * 24 / DEFAULT_BUTTON_SIZE);
+    const padding = Math.round(size * 6 / DEFAULT_BUTTON_SIZE);
+    const iconSize = Math.round(size * 44 / DEFAULT_BUTTON_SIZE);
     // Step 1: Draw background
     ctx.fillStyle = state.isControlled ? Colors.ACTIVE_BG : Colors.INACTIVE_BG;
     ctx.fillRect(0, 0, size, size);
@@ -598,11 +592,11 @@ function renderButtonImage(state, size = 144) {
  * @param size Canvas size in pixels (default 144 for @2x resolution)
  * @returns Base64 data URL of the rendered PNG image
  */
-function renderDisconnectedImage(size = 144) {
+function renderDisconnectedImage(size = DEFAULT_BUTTON_SIZE) {
     const canvas = createCanvas(size, size);
     const ctx = canvas.getContext("2d");
-    const fontSize = Math.round(size * 48 / 144); // 48px at 144px canvas for the icon
-    const labelFontSize = Math.round(size * 14 / 144); // 14px for label
+    const fontSize = Math.round(size * 48 / DEFAULT_BUTTON_SIZE);
+    const labelFontSize = Math.round(size * 14 / DEFAULT_BUTTON_SIZE);
     // Draw background
     ctx.fillStyle = Colors.DISCONNECTED_BG;
     ctx.fillRect(0, 0, size, size);
@@ -623,11 +617,11 @@ function renderDisconnectedImage(size = 144) {
  * @param size Canvas size in pixels (default 144 for @2x resolution)
  * @returns Base64 data URL of the rendered PNG image
  */
-function renderNotConfiguredImage(size = 144) {
+function renderNotConfiguredImage(size = DEFAULT_BUTTON_SIZE) {
     const canvas = createCanvas(size, size);
     const ctx = canvas.getContext("2d");
-    const iconFontSize = Math.round(size * 36 / 144); // 36px at 144px canvas
-    const labelFontSize = Math.round(size * 14 / 144); // 14px for label
+    const iconFontSize = Math.round(size * 36 / DEFAULT_BUTTON_SIZE);
+    const labelFontSize = Math.round(size * 14 / DEFAULT_BUTTON_SIZE);
     // Draw background
     ctx.fillStyle = Colors.INACTIVE_BG;
     ctx.fillRect(0, 0, size, size);

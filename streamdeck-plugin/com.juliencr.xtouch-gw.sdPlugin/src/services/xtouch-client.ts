@@ -426,12 +426,7 @@ export class XTouchClient {
   async getGamepadSlots(): Promise<GamepadSlotInfo[]> {
     const url = `http://${this._serverAddress}/api/gamepads`;
 
-    const response = await fetch(url, {
-      method: "GET",
-      headers: {
-        "Content-Type": "application/json",
-      },
-    });
+    const response = await fetch(url);
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -448,12 +443,7 @@ export class XTouchClient {
   async getCameras(): Promise<CameraInfo[]> {
     const url = `http://${this._serverAddress}/api/cameras`;
 
-    const response = await fetch(url, {
-      method: "GET",
-      headers: {
-        "Content-Type": "application/json",
-      },
-    });
+    const response = await fetch(url);
 
     if (!response.ok) {
       const errorText = await response.text();
