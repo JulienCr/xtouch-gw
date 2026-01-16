@@ -61,14 +61,6 @@ pub enum CameraStateMessage {
     },
 }
 
-/// Camera update notification (internal, for REST API response compatibility)
-#[derive(Debug, Clone, Serialize)]
-pub struct CameraUpdate {
-    pub gamepad_slot: String,
-    pub camera_id: String,
-    pub timestamp: u64,
-}
-
 /// Request body for setting camera target
 #[derive(Debug, Deserialize)]
 pub struct SetCameraRequest {

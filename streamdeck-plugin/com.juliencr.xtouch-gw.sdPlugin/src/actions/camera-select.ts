@@ -39,6 +39,17 @@ type CameraSelectSettings = {
 };
 
 /**
+ * Normalize settings by providing empty string defaults for missing values.
+ */
+function normalizeSettings(settings: CameraSelectSettings): CameraSelectSettings {
+  return {
+    serverAddress: settings.serverAddress || "",
+    gamepadSlot: settings.gamepadSlot || "",
+    cameraId: settings.cameraId || "",
+  };
+}
+
+/**
  * Context state for tracking individual button instances
  */
 interface ContextState {
@@ -94,11 +105,7 @@ export class CameraSelectAction extends SingletonAction<CameraSelectSettings> {
 
     // Initialize context state
     const contextState: ContextState = {
-      settings: {
-        serverAddress: settings.serverAddress || "",
-        gamepadSlot: settings.gamepadSlot || "",
-        cameraId: settings.cameraId || "",
-      },
+      settings: normalizeSettings(settings),
       client: null,
       keyAction,
       isActive: false,
@@ -192,11 +199,7 @@ export class CameraSelectAction extends SingletonAction<CameraSelectSettings> {
     const oldServerAddress = contextState.settings.serverAddress;
 
     // Update settings
-    contextState.settings = {
-      serverAddress: newSettings.serverAddress || "",
-      gamepadSlot: newSettings.gamepadSlot || "",
-      cameraId: newSettings.cameraId || "",
-    };
+    contextState.settings = normalizeSettings(newSettings);
 
     // Reconnect if server address changed
     if (newSettings.serverAddress !== oldServerAddress) {

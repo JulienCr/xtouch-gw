@@ -74,6 +74,18 @@ interface OnAirChangedMessage {
 type WebSocketMessage = SnapshotMessage | TargetChangedMessage | OnAirChangedMessage;
 
 /**
+ * Check HTTP response and throw an error if not OK.
+ * @param response The fetch Response object
+ * @param operation Description of the operation for error messages
+ */
+async function checkResponse(response: Response, operation: string): Promise<void> {
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Failed to ${operation}: HTTP ${response.status} - ${errorText}`);
+  }
+}
+
+/**
  * Client for communicating with the XTouch GW server.
  * Handles WebSocket connection for real-time state updates and HTTP API calls for camera targeting.
  */
@@ -262,8 +274,8 @@ export class XTouchClient {
 
     const gamepad = this._gamepads.get(message.gamepad_slot);
     if (gamepad) {
+      // Map holds reference to object, so mutation is sufficient
       gamepad.current_camera = message.camera_id;
-      this._gamepads.set(message.gamepad_slot, gamepad);
     } else {
       // Create a placeholder entry if gamepad not found
       this._gamepads.set(message.gamepad_slot, {
@@ -412,10 +424,7 @@ export class XTouchClient {
       }),
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Failed to set camera target: HTTP ${response.status} - ${errorText}`);
-    }
+    await checkResponse(response, "set camera target");
 
     streamDeck.logger.info(`Camera target set successfully: ${slot} -> ${cameraId}`);
   }
@@ -425,16 +434,9 @@ export class XTouchClient {
    */
   async getGamepadSlots(): Promise<GamepadSlotInfo[]> {
     const url = `http://${this._serverAddress}/api/gamepads`;
-
     const response = await fetch(url);
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Failed to fetch gamepad slots: HTTP ${response.status} - ${errorText}`);
-    }
-
-    const data = (await response.json()) as GamepadSlotInfo[];
-    return data;
+    await checkResponse(response, "fetch gamepad slots");
+    return (await response.json()) as GamepadSlotInfo[];
   }
 
   /**
@@ -442,16 +444,9 @@ export class XTouchClient {
    */
   async getCameras(): Promise<CameraInfo[]> {
     const url = `http://${this._serverAddress}/api/cameras`;
-
     const response = await fetch(url);
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Failed to fetch cameras: HTTP ${response.status} - ${errorText}`);
-    }
-
-    const data = (await response.json()) as CameraInfo[];
-    return data;
+    await checkResponse(response, "fetch cameras");
+    return (await response.json()) as CameraInfo[];
   }
 }
 

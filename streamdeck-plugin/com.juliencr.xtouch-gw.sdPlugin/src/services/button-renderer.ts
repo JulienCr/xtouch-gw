@@ -79,6 +79,42 @@ function drawCenteredText(ctx: CanvasRenderingContext2D, text: string, x: number
 }
 
 /**
+ * Draw a rounded rectangle path.
+ * Falls back to manual path construction if roundRect is not available.
+ * @param ctx Canvas rendering context
+ * @param x Top-left X coordinate
+ * @param y Top-left Y coordinate
+ * @param w Width
+ * @param h Height
+ * @param r Corner radius
+ */
+function drawRoundedRect(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number
+): void {
+  const rr = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.beginPath();
+  // Fallback for contexts without roundRect
+  if (typeof (ctx as any).roundRect === "function") {
+    (ctx as any).roundRect(x, y, w, h, rr);
+    return;
+  }
+  ctx.moveTo(x + rr, y);
+  ctx.lineTo(x + w - rr, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + rr);
+  ctx.lineTo(x + w, y + h - rr);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - rr, y + h);
+  ctx.lineTo(x + rr, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - rr);
+  ctx.lineTo(x, y + rr);
+  ctx.quadraticCurveTo(x, y, x + rr, y);
+}
+
+/**
  * Draw a video camera icon using canvas paths
  * @param ctx Canvas rendering context
  * @param x Center X coordinate
@@ -94,30 +130,6 @@ function drawCameraIcon(
   color: string
 ): void {
   const lineWidth = Math.max(2, iconSize / 12);
-  const rrect = (
-    cx: number,
-    cy: number,
-    w: number,
-    h: number,
-    r: number
-  ): void => {
-    const rr = Math.max(0, Math.min(r, w / 2, h / 2));
-    ctx.beginPath();
-    // Fallback for browsers without roundRect
-    if (typeof (ctx as any).roundRect === "function") {
-      (ctx as any).roundRect(cx, cy, w, h, rr);
-      return;
-    }
-    ctx.moveTo(cx + rr, cy);
-    ctx.lineTo(cx + w - rr, cy);
-    ctx.quadraticCurveTo(cx + w, cy, cx + w, cy + rr);
-    ctx.lineTo(cx + w, cy + h - rr);
-    ctx.quadraticCurveTo(cx + w, cy + h, cx + w - rr, cy + h);
-    ctx.lineTo(cx + rr, cy + h);
-    ctx.quadraticCurveTo(cx, cy + h, cx, cy + h - rr);
-    ctx.lineTo(cx, cy + rr);
-    ctx.quadraticCurveTo(cx, cy, cx + rr, cy);
-  };
 
   ctx.save();
 
@@ -128,22 +140,22 @@ function drawCameraIcon(
   ctx.lineJoin = "round";
 
   // Body (centered)
-  const bodyWidth = iconSize * 0.62; // tweaked proportions
+  const bodyWidth = iconSize * 0.62;
   const bodyHeight = iconSize * 0.44;
-  const bodyX = x - (bodyWidth / 2 + iconSize * 0.08); // moved left to make room for "lens hood"
+  const bodyX = x - (bodyWidth / 2 + iconSize * 0.08);
   const bodyY = y - bodyHeight / 2;
   const cornerRadius = iconSize * 0.10;
 
-  rrect(bodyX, bodyY, bodyWidth, bodyHeight, cornerRadius);
+  drawRoundedRect(ctx, bodyX, bodyY, bodyWidth, bodyHeight, cornerRadius);
   ctx.fill();
 
-  // Lens (highlight + pupil) - removed external Colors dependency
+  // Lens (highlight + pupil)
   const lensRadius = iconSize * 0.12;
   const lensX = bodyX + iconSize * 0.18;
   const lensY = y;
 
   ctx.save();
-  ctx.globalAlpha = 0.28; // subtle highlight
+  ctx.globalAlpha = 0.28;
   ctx.beginPath();
   ctx.arc(lensX, lensY, lensRadius, 0, Math.PI * 2);
   ctx.fill();
@@ -153,14 +165,14 @@ function drawCameraIcon(
   ctx.arc(lensX, lensY, lensRadius * 0.45, 0, Math.PI * 2);
   ctx.fill();
 
-  // Right "viewfinder" block (instead of a play triangle)
+  // Right viewfinder block
   const vfW = iconSize * 0.22;
   const vfH = iconSize * 0.26;
   const vfX = bodyX + bodyWidth;
   const vfY = y - vfH / 2;
   const vfR = iconSize * 0.06;
 
-  rrect(vfX, vfY, vfW, vfH, vfR);
+  drawRoundedRect(ctx, vfX, vfY, vfW, vfH, vfR);
   ctx.fill();
 
   ctx.restore();

@@ -63,6 +63,17 @@ typeof SuppressedError === "function" ? SuppressedError : function (error, suppr
 };
 
 /**
+ * Check HTTP response and throw an error if not OK.
+ * @param response The fetch Response object
+ * @param operation Description of the operation for error messages
+ */
+async function checkResponse(response, operation) {
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to ${operation}: HTTP ${response.status} - ${errorText}`);
+    }
+}
+/**
  * Client for communicating with the XTouch GW server.
  * Handles WebSocket connection for real-time state updates and HTTP API calls for camera targeting.
  */
@@ -217,8 +228,8 @@ class XTouchClient {
         streamDeck.logger.info(`Camera target changed: ${message.gamepad_slot} -> ${message.camera_id}`);
         const gamepad = this._gamepads.get(message.gamepad_slot);
         if (gamepad) {
+            // Map holds reference to object, so mutation is sufficient
             gamepad.current_camera = message.camera_id;
-            this._gamepads.set(message.gamepad_slot, gamepad);
         }
         else {
             // Create a placeholder entry if gamepad not found
@@ -341,10 +352,7 @@ class XTouchClient {
                 camera_id: cameraId,
             }),
         });
-        if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`Failed to set camera target: HTTP ${response.status} - ${errorText}`);
-        }
+        await checkResponse(response, "set camera target");
         streamDeck.logger.info(`Camera target set successfully: ${slot} -> ${cameraId}`);
     }
     /**
@@ -353,12 +361,8 @@ class XTouchClient {
     async getGamepadSlots() {
         const url = `http://${this._serverAddress}/api/gamepads`;
         const response = await fetch(url);
-        if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`Failed to fetch gamepad slots: HTTP ${response.status} - ${errorText}`);
-        }
-        const data = (await response.json());
-        return data;
+        await checkResponse(response, "fetch gamepad slots");
+        return (await response.json());
     }
     /**
      * Fetch available cameras via HTTP API
@@ -366,12 +370,8 @@ class XTouchClient {
     async getCameras() {
         const url = `http://${this._serverAddress}/api/cameras`;
         const response = await fetch(url);
-        if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`Failed to fetch cameras: HTTP ${response.status} - ${errorText}`);
-        }
-        const data = (await response.json());
-        return data;
+        await checkResponse(response, "fetch cameras");
+        return (await response.json());
     }
 }
 // Reconnect configuration
@@ -459,6 +459,34 @@ function drawCenteredText(ctx, text, x, y) {
     ctx.fillText(text, x, y);
 }
 /**
+ * Draw a rounded rectangle path.
+ * Falls back to manual path construction if roundRect is not available.
+ * @param ctx Canvas rendering context
+ * @param x Top-left X coordinate
+ * @param y Top-left Y coordinate
+ * @param w Width
+ * @param h Height
+ * @param r Corner radius
+ */
+function drawRoundedRect(ctx, x, y, w, h, r) {
+    const rr = Math.max(0, Math.min(r, w / 2, h / 2));
+    ctx.beginPath();
+    // Fallback for contexts without roundRect
+    if (typeof ctx.roundRect === "function") {
+        ctx.roundRect(x, y, w, h, rr);
+        return;
+    }
+    ctx.moveTo(x + rr, y);
+    ctx.lineTo(x + w - rr, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + rr);
+    ctx.lineTo(x + w, y + h - rr);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - rr, y + h);
+    ctx.lineTo(x + rr, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - rr);
+    ctx.lineTo(x, y + rr);
+    ctx.quadraticCurveTo(x, y, x + rr, y);
+}
+/**
  * Draw a video camera icon using canvas paths
  * @param ctx Canvas rendering context
  * @param x Center X coordinate
@@ -468,24 +496,6 @@ function drawCenteredText(ctx, text, x, y) {
  */
 function drawCameraIcon(ctx, x, y, iconSize, color) {
     const lineWidth = Math.max(2, iconSize / 12);
-    const rrect = (cx, cy, w, h, r) => {
-        const rr = Math.max(0, Math.min(r, w / 2, h / 2));
-        ctx.beginPath();
-        // Fallback for browsers without roundRect
-        if (typeof ctx.roundRect === "function") {
-            ctx.roundRect(cx, cy, w, h, rr);
-            return;
-        }
-        ctx.moveTo(cx + rr, cy);
-        ctx.lineTo(cx + w - rr, cy);
-        ctx.quadraticCurveTo(cx + w, cy, cx + w, cy + rr);
-        ctx.lineTo(cx + w, cy + h - rr);
-        ctx.quadraticCurveTo(cx + w, cy + h, cx + w - rr, cy + h);
-        ctx.lineTo(cx + rr, cy + h);
-        ctx.quadraticCurveTo(cx, cy + h, cx, cy + h - rr);
-        ctx.lineTo(cx, cy + rr);
-        ctx.quadraticCurveTo(cx, cy, cx + rr, cy);
-    };
     ctx.save();
     ctx.fillStyle = color;
     ctx.strokeStyle = color;
@@ -493,19 +503,19 @@ function drawCameraIcon(ctx, x, y, iconSize, color) {
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
     // Body (centered)
-    const bodyWidth = iconSize * 0.62; // tweaked proportions
+    const bodyWidth = iconSize * 0.62;
     const bodyHeight = iconSize * 0.44;
-    const bodyX = x - (bodyWidth / 2 + iconSize * 0.08); // moved left to make room for "lens hood"
+    const bodyX = x - (bodyWidth / 2 + iconSize * 0.08);
     const bodyY = y - bodyHeight / 2;
     const cornerRadius = iconSize * 0.10;
-    rrect(bodyX, bodyY, bodyWidth, bodyHeight, cornerRadius);
+    drawRoundedRect(ctx, bodyX, bodyY, bodyWidth, bodyHeight, cornerRadius);
     ctx.fill();
-    // Lens (highlight + pupil) - removed external Colors dependency
+    // Lens (highlight + pupil)
     const lensRadius = iconSize * 0.12;
     const lensX = bodyX + iconSize * 0.18;
     const lensY = y;
     ctx.save();
-    ctx.globalAlpha = 0.28; // subtle highlight
+    ctx.globalAlpha = 0.28;
     ctx.beginPath();
     ctx.arc(lensX, lensY, lensRadius, 0, Math.PI * 2);
     ctx.fill();
@@ -513,13 +523,13 @@ function drawCameraIcon(ctx, x, y, iconSize, color) {
     ctx.beginPath();
     ctx.arc(lensX, lensY, lensRadius * 0.45, 0, Math.PI * 2);
     ctx.fill();
-    // Right "viewfinder" block (instead of a play triangle)
+    // Right viewfinder block
     const vfW = iconSize * 0.22;
     const vfH = iconSize * 0.26;
     const vfX = bodyX + bodyWidth;
     const vfY = y - vfH / 2;
     const vfR = iconSize * 0.06;
-    rrect(vfX, vfY, vfW, vfH, vfR);
+    drawRoundedRect(ctx, vfX, vfY, vfW, vfH, vfR);
     ctx.fill();
     ctx.restore();
 }
@@ -636,6 +646,16 @@ function renderNotConfiguredImage(size = DEFAULT_BUTTON_SIZE) {
 }
 
 /**
+ * Normalize settings by providing empty string defaults for missing values.
+ */
+function normalizeSettings(settings) {
+    return {
+        serverAddress: settings.serverAddress || "",
+        gamepadSlot: settings.gamepadSlot || "",
+        cameraId: settings.cameraId || "",
+    };
+}
+/**
  * Action that selects a camera for XTouch GW fader control.
  * When pressed, this action sends a camera target request to the XTouch GW server.
  *
@@ -676,11 +696,7 @@ let CameraSelectAction = (() => {
             const keyAction = ev.action;
             // Initialize context state
             const contextState = {
-                settings: {
-                    serverAddress: settings.serverAddress || "",
-                    gamepadSlot: settings.gamepadSlot || "",
-                    cameraId: settings.cameraId || "",
-                },
+                settings: normalizeSettings(settings),
                 client: null,
                 keyAction,
                 isActive: false,
@@ -756,11 +772,7 @@ let CameraSelectAction = (() => {
             }
             const oldServerAddress = contextState.settings.serverAddress;
             // Update settings
-            contextState.settings = {
-                serverAddress: newSettings.serverAddress || "",
-                gamepadSlot: newSettings.gamepadSlot || "",
-                cameraId: newSettings.cameraId || "",
-            };
+            contextState.settings = normalizeSettings(newSettings);
             // Reconnect if server address changed
             if (newSettings.serverAddress !== oldServerAddress) {
                 streamDeck.logger.info(`Server address changed: ${oldServerAddress} -> ${newSettings.serverAddress}`);
