@@ -145,10 +145,9 @@ impl GamepadMapper {
         let is_lt_held = lt_held.get(prefix).copied().unwrap_or(false);
 
         // Check if this is a camera button (A/B/X/Y)
-        let is_camera_button = control_id.ends_with(".btn.a")
-            || control_id.ends_with(".btn.b")
-            || control_id.ends_with(".btn.x")
-            || control_id.ends_with(".btn.y");
+        let is_camera_button = [".btn.a", ".btn.b", ".btn.x", ".btn.y"]
+            .iter()
+            .any(|suffix| control_id.ends_with(suffix));
 
         // Determine extra params based on button type and LT state
         let extra_params = if is_camera_button {

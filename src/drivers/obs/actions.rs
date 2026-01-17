@@ -22,24 +22,27 @@ impl ObsDriver {
             .map(|c| (c.scene.clone(), c.source.clone()))
     }
 
-    /// Check if PTZ is enabled for a camera by ID.
+    /// Check if PTZ is enabled for a camera matching the given predicate.
     /// Returns true by default if camera not found (legacy compatibility).
-    fn is_ptz_enabled(&self, camera_id: &str) -> bool {
+    fn is_ptz_enabled_where<F>(&self, predicate: F) -> bool
+    where
+        F: Fn(&crate::config::CameraConfig) -> bool,
+    {
         let config_guard = self.camera_control_config.read();
         config_guard.as_ref()
-            .and_then(|cc| cc.cameras.iter().find(|c| c.id == camera_id))
+            .and_then(|cc| cc.cameras.iter().find(|c| predicate(c)))
             .map(|c| c.enable_ptz)
-            .unwrap_or(true) // Default: PTZ enabled for unknown cameras
+            .unwrap_or(true)
+    }
+
+    /// Check if PTZ is enabled for a camera by ID.
+    fn is_ptz_enabled(&self, camera_id: &str) -> bool {
+        self.is_ptz_enabled_where(|c| c.id == camera_id)
     }
 
     /// Check if PTZ is enabled for a camera by scene name.
-    /// Returns true by default if camera not found (legacy compatibility).
     fn is_ptz_enabled_by_scene(&self, scene: &str) -> bool {
-        let config_guard = self.camera_control_config.read();
-        config_guard.as_ref()
-            .and_then(|cc| cc.cameras.iter().find(|c| c.scene == scene))
-            .map(|c| c.enable_ptz)
-            .unwrap_or(true) // Default: PTZ enabled for unknown cameras
+        self.is_ptz_enabled_where(|c| c.scene == scene)
     }
 
     /// Parse camera params with step for nudgeX, nudgeY, scaleUniform.
@@ -436,11 +439,10 @@ impl Driver for ObsDriver {
                 let current = self.read_transform(&scene_name, item_id).await?;
 
                 // Detect if this source uses bounds-based or scale-based transform
-                let is_bounds_based = if let (Some(bw), Some(bh)) = (current.bounds_width, current.bounds_height) {
-                    bw > 0.0 && bh > 0.0
-                } else {
-                    false
-                };
+                let is_bounds_based = matches!(
+                    (current.bounds_width, current.bounds_height),
+                    (Some(bw), Some(bh)) if bw > 0.0 && bh > 0.0
+                );
 
                 // Build transform to reset zoom
                 let mut transform = obws::requests::scene_items::SceneItemTransform::default();
