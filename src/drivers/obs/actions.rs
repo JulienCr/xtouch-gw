@@ -736,3 +736,168 @@ impl Driver for ObsDriver {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Test encoder_value_to_delta with various MIDI encoder values.
+    /// Standard encoder protocol: 0/64=no change, 1-63=clockwise, 65-127=counter-clockwise
+    mod encoder_value_to_delta_tests {
+        use super::*;
+
+        #[test]
+        fn zero_returns_no_change() {
+            assert_eq!(ObsDriver::encoder_value_to_delta(&json!(0.0), 2.0), 0.0);
+        }
+
+        #[test]
+        fn center_64_returns_no_change() {
+            assert_eq!(ObsDriver::encoder_value_to_delta(&json!(64.0), 2.0), 0.0);
+        }
+
+        #[test]
+        fn clockwise_min_1_returns_positive_step() {
+            assert_eq!(ObsDriver::encoder_value_to_delta(&json!(1.0), 2.0), 2.0);
+        }
+
+        #[test]
+        fn clockwise_max_63_returns_positive_step() {
+            assert_eq!(ObsDriver::encoder_value_to_delta(&json!(63.0), 2.0), 2.0);
+        }
+
+        #[test]
+        fn clockwise_mid_32_returns_positive_step() {
+            assert_eq!(ObsDriver::encoder_value_to_delta(&json!(32.0), 5.0), 5.0);
+        }
+
+        #[test]
+        fn counter_clockwise_min_65_returns_negative_step() {
+            assert_eq!(ObsDriver::encoder_value_to_delta(&json!(65.0), 2.0), -2.0);
+        }
+
+        #[test]
+        fn counter_clockwise_max_127_returns_negative_step() {
+            assert_eq!(ObsDriver::encoder_value_to_delta(&json!(127.0), 2.0), -2.0);
+        }
+
+        #[test]
+        fn counter_clockwise_mid_96_returns_negative_step() {
+            assert_eq!(ObsDriver::encoder_value_to_delta(&json!(96.0), 3.0), -3.0);
+        }
+
+        #[test]
+        fn out_of_range_negative_returns_zero() {
+            assert_eq!(ObsDriver::encoder_value_to_delta(&json!(-1.0), 2.0), 0.0);
+        }
+
+        #[test]
+        fn out_of_range_above_127_returns_zero() {
+            assert_eq!(ObsDriver::encoder_value_to_delta(&json!(128.0), 2.0), 0.0);
+        }
+
+        #[test]
+        fn string_value_returns_zero() {
+            assert_eq!(ObsDriver::encoder_value_to_delta(&json!("invalid"), 2.0), 0.0);
+        }
+
+        #[test]
+        fn null_value_returns_zero() {
+            assert_eq!(ObsDriver::encoder_value_to_delta(&Value::Null, 2.0), 0.0);
+        }
+
+        #[test]
+        fn boolean_value_returns_zero() {
+            assert_eq!(ObsDriver::encoder_value_to_delta(&json!(true), 2.0), 0.0);
+        }
+
+        #[test]
+        fn array_value_returns_zero() {
+            assert_eq!(ObsDriver::encoder_value_to_delta(&json!([1, 2, 3]), 2.0), 0.0);
+        }
+
+        #[test]
+        fn object_value_returns_zero() {
+            assert_eq!(ObsDriver::encoder_value_to_delta(&json!({"key": "value"}), 2.0), 0.0);
+        }
+
+        #[test]
+        fn respects_custom_step_value() {
+            // Clockwise with step=10
+            assert_eq!(ObsDriver::encoder_value_to_delta(&json!(10.0), 10.0), 10.0);
+            // Counter-clockwise with step=0.5
+            assert_eq!(ObsDriver::encoder_value_to_delta(&json!(100.0), 0.5), -0.5);
+        }
+    }
+
+    /// Test the preview/program target parameter parsing logic
+    mod select_camera_target_tests {
+        use super::*;
+
+        /// Helper to extract target from params (mirrors selectCamera logic)
+        fn parse_explicit_target(params: &[Value]) -> Option<&str> {
+            params.get(1).and_then(|v| v.as_str())
+        }
+
+        /// Helper to determine use_preview based on target and studio_mode
+        fn determine_use_preview(explicit_target: Option<&str>, studio_mode: bool) -> bool {
+            match explicit_target {
+                Some("preview") => true,
+                Some("program") => false,
+                _ => studio_mode, // Legacy behavior
+            }
+        }
+
+        #[test]
+        fn explicit_preview_target_forces_preview() {
+            let params = vec![json!("camera_a"), json!("preview")];
+            let target = parse_explicit_target(&params);
+            assert_eq!(target, Some("preview"));
+            // Should use preview regardless of studio_mode
+            assert!(determine_use_preview(target, false));
+            assert!(determine_use_preview(target, true));
+        }
+
+        #[test]
+        fn explicit_program_target_forces_program() {
+            let params = vec![json!("camera_a"), json!("program")];
+            let target = parse_explicit_target(&params);
+            assert_eq!(target, Some("program"));
+            // Should NOT use preview regardless of studio_mode
+            assert!(!determine_use_preview(target, false));
+            assert!(!determine_use_preview(target, true));
+        }
+
+        #[test]
+        fn no_target_uses_legacy_behavior() {
+            let params = vec![json!("camera_a")];
+            let target = parse_explicit_target(&params);
+            assert_eq!(target, None);
+            // Should follow studio_mode
+            assert!(!determine_use_preview(target, false)); // studio_mode=false → program
+            assert!(determine_use_preview(target, true));   // studio_mode=true → preview
+        }
+
+        #[test]
+        fn invalid_target_uses_legacy_behavior() {
+            let params = vec![json!("camera_a"), json!("invalid")];
+            let target = parse_explicit_target(&params);
+            assert_eq!(target, Some("invalid"));
+            // Unknown target falls through to legacy behavior
+            let use_preview = match target {
+                Some("preview") => true,
+                Some("program") => false,
+                _ => true, // Simulating studio_mode=true
+            };
+            assert!(use_preview);
+        }
+
+        #[test]
+        fn numeric_target_is_ignored() {
+            let params = vec![json!("camera_a"), json!(123)];
+            let target = parse_explicit_target(&params);
+            assert_eq!(target, None); // as_str() returns None for numbers
+        }
+    }
+}
+
