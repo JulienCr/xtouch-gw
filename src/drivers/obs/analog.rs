@@ -129,7 +129,7 @@ impl ObsDriver {
         let rates = Arc::clone(&self.analog_rates);
         let last_tick = Arc::clone(&self.last_analog_tick);
         let timer_active = Arc::clone(&self.analog_timer_active);
-        let driver_self = Arc::new(self.clone_for_timer());
+        let driver_self = Arc::new(self.clone_for_task());
 
         tokio::spawn(async move {
             let mut interval = interval(Duration::from_millis(16)); // ~60Hz
