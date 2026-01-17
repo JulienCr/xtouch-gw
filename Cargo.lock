@@ -5089,6 +5089,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tracing-appender"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "786d480bce6247ab75f005b14ae1624ad978d3029d9113f0a22fa1ac773faeaf"
+dependencies = [
+ "crossbeam-channel",
+ "thiserror 2.0.17",
+ "time",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "tracing-attributes"
 version = "0.1.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6276,7 +6288,7 @@ checksum = "3ae8337f8a065cfc972643663ea4279e04e7256de865aa66fe25cec5fb912d3f"
 
 [[package]]
 name = "xtouch-gw"
-version = "3.0.0"
+version = "1.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6289,6 +6301,7 @@ dependencies = [
  "crossbeam",
  "csv",
  "dashmap",
+ "dirs",
  "dotenvy",
  "eframe",
  "egui",
@@ -6321,6 +6334,7 @@ dependencies = [
  "tower",
  "tower-http",
  "tracing",
+ "tracing-appender",
  "tracing-subscriber",
  "tray-icon",
  "windows 0.56.0",

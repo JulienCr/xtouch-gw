@@ -5,8 +5,8 @@
 use anyhow::Result;
 use clap::Parser;
 use tokio::sync::mpsc;
-use tracing::{debug, info, trace, warn};
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use tracing::{debug, info, warn};
+use tracing_subscriber::util::SubscriberInitExt;
 
 mod api;
 mod config;
@@ -14,6 +14,7 @@ mod control_mapping;
 mod drivers;
 mod input;
 mod midi;
+mod paths;
 mod router;
 mod sniffer;
 mod state;
@@ -25,6 +26,7 @@ use crate::control_mapping::{warm_default_mappings, ControlMappingDB, MidiSpec};
 use crate::drivers::midibridge::MidiBridgeDriver;
 use crate::drivers::obs::ObsDriver;
 use crate::drivers::{Driver, IndicatorCallback};
+use crate::paths::AppPaths;
 use crate::router::Router;
 use crate::xtouch::XTouchDriver;
 use std::sync::Arc;
@@ -33,9 +35,9 @@ use std::sync::Arc;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Path to configuration file
-    #[arg(short, long, default_value = "config.yaml")]
-    config: String,
+    /// Path to configuration file (overrides auto-detection)
+    #[arg(short, long)]
+    config: Option<String>,
 
     /// Log level (error, warn, info, debug, trace)
     #[arg(short, long, env = "LOG_LEVEL", default_value = "info")]
@@ -74,11 +76,37 @@ async fn main() -> Result<()> {
     // Parse command line arguments
     let args = Args::parse();
 
-    // Initialize logging
-    init_logging(&args.log_level)?;
+    // Detect application paths (portable vs installed mode)
+    let app_paths = AppPaths::detect();
+
+    // Resolve config path: CLI override > auto-detected
+    let config_path = args
+        .config
+        .clone()
+        .unwrap_or_else(|| app_paths.config.to_string_lossy().to_string());
+
+    // Ensure directories exist (creates %APPDATA%\XTouch GW if needed)
+    if let Err(e) = app_paths.ensure_directories() {
+        eprintln!("Warning: Failed to create directories: {}", e);
+        eprintln!("  State dir: {}", app_paths.state_dir.display());
+        eprintln!("  Logs dir: {}", app_paths.logs_dir.display());
+        eprintln!("  Config: {}", app_paths.config.display());
+    }
+
+    // Initialize logging (with file output in release mode)
+    let _log_guard = init_logging(&args.log_level, &app_paths)?;
 
     info!("Starting XTouch GW v3...");
-    info!("Configuration file: {}", args.config);
+    info!(
+        "Mode: {}",
+        if app_paths.is_portable {
+            "portable"
+        } else {
+            "installed"
+        }
+    );
+    info!("Configuration file: {}", config_path);
+    info!("State directory: {}", app_paths.state_dir.display());
 
     // Parse and cache control mappings up-front to avoid per-event parsing
     warm_default_mappings()?;
@@ -113,34 +141,53 @@ async fn main() -> Result<()> {
     }
 
     // Load configuration with hot-reload watcher
-    let (config_watcher, initial_config) = ConfigWatcher::new(args.config.clone()).await?;
+    let (config_watcher, initial_config) = ConfigWatcher::new(config_path.clone()).await?;
     debug!("Configuration loaded successfully with hot-reload enabled");
 
-    // Create .state directory for persistence
-    tokio::fs::create_dir_all(".state").await?;
+    // State directory already created by app_paths.ensure_directories()
+    // but ensure sled subdirectory exists
+    let sled_path = app_paths.sled_db_path();
+    if let Some(parent) = sled_path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
 
     // Create tray channels
-    let (tray_update_tx, tray_update_rx) = crossbeam::channel::unbounded::<crate::tray::TrayUpdate>();
-    let (tray_command_tx, tray_command_rx) = crossbeam::channel::unbounded::<crate::tray::TrayCommand>();
+    let (tray_update_tx, tray_update_rx) =
+        crossbeam::channel::unbounded::<crate::tray::TrayUpdate>();
+    let (tray_command_tx, tray_command_rx) =
+        crossbeam::channel::unbounded::<crate::tray::TrayCommand>();
 
     // Create activity tracker for tray UI
     let activity_tracker = Arc::new(crate::tray::ActivityTracker::new(
-        initial_config.tray.as_ref().map(|t| t.activity_led_duration_ms).unwrap_or(200),
+        initial_config
+            .tray
+            .as_ref()
+            .map(|t| t.activity_led_duration_ms)
+            .unwrap_or(200),
         Some(tray_update_tx.clone()),
     ));
 
     // Spawn tray manager on dedicated OS thread
-    let tray_handle = if initial_config.tray.as_ref().map(|t| t.enabled).unwrap_or(true) {
+    let tray_handle = if initial_config
+        .tray
+        .as_ref()
+        .map(|t| t.enabled)
+        .unwrap_or(true)
+    {
         debug!("Starting system tray...");
-        let tray_config = initial_config.tray.clone().unwrap_or_else(|| crate::config::TrayConfig {
-            enabled: true,
-            activity_led_duration_ms: 200,
-            status_poll_interval_ms: 100,
-            show_activity_leds: true,
-            show_connection_status: true,
-        });
+        let tray_config = initial_config
+            .tray
+            .clone()
+            .unwrap_or(crate::config::TrayConfig {
+                enabled: true,
+                activity_led_duration_ms: 200,
+                status_poll_interval_ms: 100,
+                show_activity_leds: true,
+                show_connection_status: true,
+            });
 
-        let tray_manager = crate::tray::TrayManager::new(tray_update_rx, tray_command_tx, tray_config);
+        let tray_manager =
+            crate::tray::TrayManager::new(tray_update_rx, tray_command_tx, tray_config);
 
         Some(std::thread::spawn(move || {
             if let Err(e) = tray_manager.run() {
@@ -152,11 +199,15 @@ async fn main() -> Result<()> {
         None
     };
 
-    // Initialize router
-    let mut router = Router::new((*initial_config).clone());
+    // Initialize router with detected state path
+    let sled_path_str = sled_path.to_string_lossy().to_string();
+    let mut router = Router::with_db_path((*initial_config).clone(), &sled_path_str);
     router.set_activity_tracker(Arc::clone(&activity_tracker));
     let router = Arc::new(router);
-    debug!("Router initialized with activity tracking");
+    debug!(
+        "Router initialized with activity tracking (db: {})",
+        sled_path_str
+    );
 
     // Load state snapshot from sled database if it exists
     // IMPORTANT: Use _and_wait() to ensure state is fully loaded before page refresh
@@ -170,13 +221,13 @@ async fn main() -> Result<()> {
                     .await;
             }
             info!("State snapshot loaded from sled database");
-        }
+        },
         Ok(None) => {
             debug!("No state snapshot found in sled database");
-        }
+        },
         Err(e) => {
             warn!("Failed to load state snapshot: {}", e);
-        }
+        },
     }
 
     // Set up shutdown signal
@@ -228,7 +279,9 @@ async fn run_app(
     debug!("Starting main application loop...");
 
     // Create tray message handler for driver status updates
-    let activity_poll_interval = config.tray.as_ref()
+    let activity_poll_interval = config
+        .tray
+        .as_ref()
         .map(|t| t.status_poll_interval_ms)
         .unwrap_or(100);
 
@@ -245,7 +298,10 @@ async fn run_app(
             handler.run().await;
         }
     });
-    debug!("TrayMessageHandler spawned with {}ms activity polling", activity_poll_interval);
+    debug!(
+        "TrayMessageHandler spawned with {}ms activity polling",
+        activity_poll_interval
+    );
 
     // Create and connect X-Touch driver
     let mut xtouch = XTouchDriver::new(&config)?;
@@ -279,7 +335,7 @@ async fn run_app(
     }
 
     // Update F-key LEDs to show active page
-    let paging_channel = config.paging.as_ref().map(|p| p.channel).unwrap_or(1) as u8;
+    let paging_channel = config.paging.as_ref().map(|p| p.channel).unwrap_or(1);
     if let Err(e) = router
         .update_fkey_leds_for_active_page(&xtouch, paging_channel)
         .await
@@ -290,7 +346,7 @@ async fn run_app(
     // Update prev/next navigation LEDs (always on)
     if let Some(paging) = &config.paging {
         if let Err(e) = router
-            .update_prev_next_leds(&xtouch, paging.prev_note as u8, paging.next_note as u8)
+            .update_prev_next_leds(&xtouch, paging.prev_note, paging.next_note)
             .await
         {
             warn!("Failed to update prev/next LEDs: {}", e);
@@ -373,19 +429,28 @@ async fn run_app(
     // Try external file first for hot-reload, fall back to embedded CSV
     let control_db = match ControlMappingDB::load_from_csv("docs/xtouch-matching.csv").await {
         Ok(db) => {
-            info!("✅ Loaded control database ({} controls)", db.mappings.len());
+            info!(
+                "✅ Loaded control database ({} controls)",
+                db.mappings.len()
+            );
             Arc::new(db)
         },
         Err(_) => {
             // Use embedded CSV (always available)
             match control_mapping::load_default_mappings() {
                 Ok(db) => {
-                    info!("✅ Loaded embedded control database ({} controls)", db.mappings.len());
+                    info!(
+                        "✅ Loaded embedded control database ({} controls)",
+                        db.mappings.len()
+                    );
                     Arc::new(db)
                 },
                 Err(e) => {
                     warn!("⚠️  Failed to load control database: {}", e);
-                    Arc::new(ControlMappingDB { mappings: Default::default(), groups: Default::default() })
+                    Arc::new(ControlMappingDB {
+                        mappings: Default::default(),
+                        groups: Default::default(),
+                    })
                 },
             }
         },
@@ -395,9 +460,10 @@ async fn run_app(
     let (led_tx, mut led_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
     // Create OBS driver early so it can be passed to ApiState
-    let obs_driver: Option<Arc<ObsDriver>> = config.obs.as_ref().map(|obs_config| {
-        Arc::new(ObsDriver::from_config(obs_config))
-    });
+    let obs_driver: Option<Arc<ObsDriver>> = config
+        .obs
+        .as_ref()
+        .map(|obs_config| Arc::new(ObsDriver::from_config(obs_config)));
 
     // Create ApiState early so it can be captured by the OBS indicator callback
     let api_state = Arc::new(api::ApiState {
@@ -411,7 +477,6 @@ async fn run_app(
 
     // Register OBS driver if configured
     if let Some(obs_driver) = obs_driver {
-
         // Subscribe to OBS indicator signals before registering
         let router_clone = router.clone();
         let control_db_clone = control_db.clone();
@@ -419,91 +484,116 @@ async fn run_app(
         let led_tx_clone = led_tx.clone();
         let api_state_clone = Arc::clone(&api_state);
 
-        let indicator_callback: IndicatorCallback = Arc::new(move |signal: String, value: serde_json::Value| {
-            let router = router_clone.clone();
-            let control_db = control_db_clone.clone();
-            let config = config_clone.clone();
-            let led_tx = led_tx_clone.clone();
-            let api_state = api_state_clone.clone();
+        let indicator_callback: IndicatorCallback =
+            Arc::new(move |signal: String, value: serde_json::Value| {
+                let router = router_clone.clone();
+                let control_db = control_db_clone.clone();
+                let config = config_clone.clone();
+                let led_tx = led_tx_clone.clone();
+                let api_state = api_state_clone.clone();
 
-            tokio::spawn(async move {
-                // Evaluate which controls should be lit
-                let lit_controls = router.evaluate_indicators(&signal, &value).await;
+                tokio::spawn(async move {
+                    // Evaluate which controls should be lit
+                    let lit_controls = router.evaluate_indicators(&signal, &value).await;
 
-                // Get MCU mode from config
-                let is_mcu_mode = config.xtouch.as_ref()
-                    .map(|x| matches!(x.mode, crate::config::XTouchMode::Mcu))
-                    .unwrap_or(true);
+                    // Get MCU mode from config
+                    let is_mcu_mode = config
+                        .xtouch
+                        .as_ref()
+                        .map(|x| matches!(x.mode, crate::config::XTouchMode::Mcu))
+                        .unwrap_or(true);
 
-                // Send LED updates to channel for each control
-                for (control_id, should_be_lit) in lit_controls.iter() {
-                    if let Some(midi_spec) = control_db.get_midi_spec(control_id, is_mcu_mode) {
-                        if let MidiSpec::Note { note } = midi_spec {
-                            let velocity = if *should_be_lit { 127 } else { 0 };
-                            let midi_msg = vec![0x90, note, velocity]; // Note On, channel 1
+                    // Send LED updates to channel for each control
+                    for (control_id, should_be_lit) in lit_controls.iter() {
+                        if let Some(midi_spec) = control_db.get_midi_spec(control_id, is_mcu_mode) {
+                            if let MidiSpec::Note { note } = midi_spec {
+                                let velocity = if *should_be_lit { 127 } else { 0 };
+                                let midi_msg = vec![0x90, note, velocity]; // Note On, channel 1
 
-                            if let Err(e) = led_tx.send(midi_msg) {
-                                warn!("Failed to send LED update to channel: {}", e);
+                                if let Err(e) = led_tx.send(midi_msg) {
+                                    warn!("Failed to send LED update to channel: {}", e);
+                                }
                             }
                         }
                     }
-                }
 
-                // Check if this is a program scene change and broadcast to Stream Deck API
-                // The OBS driver emits "obs.currentProgramScene" with Value::String(scene_name)
-                if signal == "obs.currentProgramScene" {
-                    if let Some(scene_name) = value.as_str() {
-                        // Find camera matching this scene
-                        if let Some(camera_config) = config.obs.as_ref()
-                            .and_then(|o| o.camera_control.as_ref())
-                            .and_then(|cc| cc.cameras.iter().find(|c| c.scene == scene_name))
-                        {
-                            api::broadcast_on_air_change(&api_state, &camera_config.id, scene_name);
+                    // Check if this is a program scene change and broadcast to Stream Deck API
+                    // The OBS driver emits "obs.currentProgramScene" with Value::String(scene_name)
+                    if signal == "obs.currentProgramScene" {
+                        if let Some(scene_name) = value.as_str() {
+                            // Find camera matching this scene
+                            if let Some(camera_config) = config
+                                .obs
+                                .as_ref()
+                                .and_then(|o| o.camera_control.as_ref())
+                                .and_then(|cc| cc.cameras.iter().find(|c| c.scene == scene_name))
+                            {
+                                api::broadcast_on_air_change(
+                                    &api_state,
+                                    &camera_config.id,
+                                    scene_name,
+                                );
+                            }
                         }
                     }
-                }
 
-                // Handle preview scene change for auto-targeting (studio mode only)
-                // When preview changes in OBS, auto-update the dynamic gamepad target
-                if signal == "obs.currentPreviewScene" {
-                    if let Some(scene_name) = value.as_str() {
-                        // Only process if studio mode is enabled
-                        let is_studio_mode = api_state.obs_driver.as_ref()
-                            .map(|d| d.is_studio_mode())
-                            .unwrap_or(false);
+                    // Handle preview scene change for auto-targeting (studio mode only)
+                    // When preview changes in OBS, auto-update the dynamic gamepad target
+                    if signal == "obs.currentPreviewScene" {
+                        if let Some(scene_name) = value.as_str() {
+                            // Only process if studio mode is enabled
+                            let is_studio_mode = api_state
+                                .obs_driver
+                                .as_ref()
+                                .map(|d| d.is_studio_mode())
+                                .unwrap_or(false);
 
-                        if !is_studio_mode {
-                            return; // Preview changes don't affect PTZ in non-studio mode
-                        }
-
-                        // Find camera matching this scene
-                        if let Some(camera_config) = config.obs.as_ref()
-                            .and_then(|o| o.camera_control.as_ref())
-                            .and_then(|cc| cc.cameras.iter().find(|c| c.scene == scene_name))
-                        {
-                            if !camera_config.enable_ptz {
-                                return; // PTZ disabled for this camera
+                            if !is_studio_mode {
+                                return; // Preview changes don't affect PTZ in non-studio mode
                             }
 
-                            let camera_id = &camera_config.id;
+                            // Find camera matching this scene
+                            if let Some(camera_config) = config
+                                .obs
+                                .as_ref()
+                                .and_then(|o| o.camera_control.as_ref())
+                                .and_then(|cc| cc.cameras.iter().find(|c| c.scene == scene_name))
+                            {
+                                if !camera_config.enable_ptz {
+                                    return; // PTZ disabled for this camera
+                                }
 
-                            // Find the dynamic gamepad slot
-                            if let Some(gamepad_slot) = find_dynamic_gamepad_slot(&config) {
-                                let current = api_state.camera_targets.get_target(&gamepad_slot);
+                                let camera_id = &camera_config.id;
 
-                                if current.as_ref() != Some(&camera_id.to_string()) {
-                                    // Update target and broadcast
-                                    if api_state.camera_targets.set_target(&gamepad_slot, camera_id).is_ok() {
-                                        api::broadcast_target_change(&api_state, &gamepad_slot, camera_id);
-                                        info!("Auto-targeted {} -> {} (preview: {})", gamepad_slot, camera_id, scene_name);
+                                // Find the dynamic gamepad slot
+                                if let Some(gamepad_slot) = find_dynamic_gamepad_slot(&config) {
+                                    let current =
+                                        api_state.camera_targets.get_target(&gamepad_slot);
+
+                                    if current.as_ref() != Some(&camera_id.to_string()) {
+                                        // Update target and broadcast
+                                        if api_state
+                                            .camera_targets
+                                            .set_target(&gamepad_slot, camera_id)
+                                            .is_ok()
+                                        {
+                                            api::broadcast_target_change(
+                                                &api_state,
+                                                &gamepad_slot,
+                                                camera_id,
+                                            );
+                                            info!(
+                                                "Auto-targeted {} -> {} (preview: {})",
+                                                gamepad_slot, camera_id, scene_name
+                                            );
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                }
+                });
             });
-        });
 
         obs_driver.subscribe_indicators(indicator_callback);
         debug!("Subscribed to OBS indicator signals");
@@ -514,7 +604,10 @@ async fn run_app(
 
         match router.register_driver("obs".to_string(), obs_driver).await {
             Ok(_) => info!("✅ Registered OBS driver"),
-            Err(e) => warn!("⚠️  Failed to register OBS driver (will continue without it): {}", e),
+            Err(e) => warn!(
+                "⚠️  Failed to register OBS driver (will continue without it): {}",
+                e
+            ),
         }
     }
 
@@ -547,12 +640,17 @@ async fn run_app(
     // The delay is configurable via xtouch.startup_refresh_delay_ms (default: 500ms).
     // Fresh feedback arriving during this delay will be stored with stale=false,
     // which takes priority over snapshot values (stale=true) per BUG-005 fix.
-    let startup_delay_ms = config.xtouch.as_ref()
+    let startup_delay_ms = config
+        .xtouch
+        .as_ref()
         .map(|x| x.startup_refresh_delay_ms)
         .unwrap_or(500);
 
     if startup_delay_ms > 0 {
-        debug!("Waiting {}ms for drivers to sync before initial refresh (BUG-008 fix)...", startup_delay_ms);
+        debug!(
+            "Waiting {}ms for drivers to sync before initial refresh (BUG-008 fix)...",
+            startup_delay_ms
+        );
         tokio::time::sleep(std::time::Duration::from_millis(startup_delay_ms)).await;
     }
 
@@ -642,14 +740,14 @@ async fn run_app(
                     }
 
                     // Update F-key LEDs to show active page
-                    let paging_channel = config.paging.as_ref().map(|p| p.channel).unwrap_or(1) as u8;
+                    let paging_channel = config.paging.as_ref().map(|p| p.channel).unwrap_or(1);
                     if let Err(e) = router.update_fkey_leds_for_active_page(&xtouch, paging_channel).await {
                         warn!("Failed to update F-key LEDs: {}", e);
                     }
 
                     // Also update prev/next navigation LEDs (keep them on)
                     if let Some(paging) = &config.paging {
-                        if let Err(e) = router.update_prev_next_leds(&xtouch, paging.prev_note as u8, paging.next_note as u8).await {
+                        if let Err(e) = router.update_prev_next_leds(&xtouch, paging.prev_note, paging.next_note).await {
                             warn!("Failed to update prev/next LEDs: {}", e);
                         }
                     }
@@ -829,24 +927,88 @@ async fn run_app(
     Ok(())
 }
 
-fn init_logging(level: &str) -> Result<()> {
+/// Initialize logging with console and optional file output.
+///
+/// In release builds, logs are also written to daily rolling files.
+/// Returns a guard that must be held for the duration of the program
+/// to ensure async file writes complete.
+fn init_logging(
+    level: &str,
+    paths: &AppPaths,
+) -> Result<Option<tracing_appender::non_blocking::WorkerGuard>> {
+    use tracing_subscriber::layer::SubscriberExt;
+
     // Build filter with sled logs suppressed to reduce noise
     // sled emits many DEBUG logs (advancing offset, wrote lsns, etc.)
     let filter_str = format!("{},sled=warn", level);
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(&filter_str));
 
-    tracing_subscriber::registry()
-        .with(filter)
-        .with(
-            tracing_subscriber::fmt::layer()
-                .with_target(false)
-                .with_thread_ids(false)
-                .with_thread_names(false),
-        )
-        .init();
+    // Console layer (always enabled)
+    let console_layer = tracing_subscriber::fmt::layer()
+        .with_target(false)
+        .with_thread_ids(false)
+        .with_thread_names(false);
 
-    Ok(())
+    // File layer (release builds only)
+    #[cfg(not(debug_assertions))]
+    {
+        // Try to create logs directory - if it fails, fall back to console-only
+        let can_write_logs = match std::fs::create_dir_all(&paths.logs_dir) {
+            Ok(_) => true,
+            Err(e) => {
+                eprintln!(
+                    "Warning: Cannot create logs directory '{}': {}",
+                    paths.logs_dir.display(),
+                    e
+                );
+                eprintln!("File logging disabled, using console only.");
+                false
+            },
+        };
+
+        if can_write_logs {
+            // Daily rolling log file
+            let file_appender = tracing_appender::rolling::daily(&paths.logs_dir, "xtouch-gw.log");
+            let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+
+            let file_layer = tracing_subscriber::fmt::layer()
+                .with_target(true)
+                .with_thread_ids(false)
+                .with_thread_names(false)
+                .with_ansi(false) // No colors in file
+                .with_writer(non_blocking);
+
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(console_layer)
+                .with(file_layer)
+                .init();
+
+            return Ok(Some(guard));
+        } else {
+            // Fall back to console-only logging
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(console_layer)
+                .init();
+
+            return Ok(None);
+        }
+    }
+
+    // Debug builds: console only
+    #[cfg(debug_assertions)]
+    {
+        let _ = paths; // Suppress unused warning in debug builds
+
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(console_layer)
+            .init();
+
+        Ok(None)
+    }
 }
 
 async fn shutdown_signal() {
@@ -975,7 +1137,9 @@ fn build_gamepad_slot_infos(config: &AppConfig) -> Vec<api::GamepadSlotInfo> {
 ///
 /// Returns the slot name (e.g., "gamepad1") if found, or None if no dynamic slot exists.
 fn find_dynamic_gamepad_slot(config: &AppConfig) -> Option<String> {
-    config.gamepad.as_ref()
+    config
+        .gamepad
+        .as_ref()
         .and_then(|g| g.gamepads.as_ref())
         .and_then(|slots| {
             slots.iter().enumerate().find_map(|(i, slot)| {
@@ -991,7 +1155,9 @@ fn find_dynamic_gamepad_slot(config: &AppConfig) -> Option<String> {
 /// Convert LCD colors from config to u8 values.
 fn convert_lcd_colors(page: &crate::config::PageConfig) -> Option<Vec<u8>> {
     page.lcd.as_ref().and_then(|lcd| {
-        lcd.colors.as_ref().map(|colors| colors.iter().map(|c| c.to_u8()).collect())
+        lcd.colors
+            .as_ref()
+            .map(|colors| colors.iter().map(|c| c.to_u8()).collect())
     })
 }
 
