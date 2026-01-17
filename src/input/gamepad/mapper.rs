@@ -149,20 +149,18 @@ impl GamepadMapper {
             .iter()
             .any(|suffix| control_id.ends_with(suffix));
 
-        // Determine extra params based on button type and LT state
-        let extra_params = if is_camera_button {
-            if is_lt_held {
-                // LT+button: Preview mode + PTZ target
-                if let Err(e) = Self::handle_ptz_target(control_id, prefix, router, update_tx).await {
-                    debug!("PTZ target error: {}", e);
-                }
-                Some(vec![Value::String("preview".to_string())])
-            } else {
-                // Camera button alone: Direct to program
-                Some(vec![Value::String("program".to_string())])
-            }
-        } else {
+        // Camera buttons get extra params: LT+button = preview, button alone = program
+        let extra_params = if !is_camera_button {
             None
+        } else if is_lt_held {
+            // LT+button: Preview mode + set PTZ target
+            if let Err(e) = Self::handle_ptz_target(control_id, prefix, router, update_tx).await {
+                debug!("PTZ target error: {}", e);
+            }
+            Some(vec![Value::String("preview".to_string())])
+        } else {
+            // Camera button alone: Direct to program
+            Some(vec![Value::String("program".to_string())])
         };
 
         // Route the control event

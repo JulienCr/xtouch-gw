@@ -110,20 +110,17 @@ impl ObsDriver {
     /// # Returns
     /// Returns `step` for clockwise input, `-step` for counter-clockwise, or `0.0` for no movement.
     fn encoder_value_to_delta(value: &Value, step: f64) -> f64 {
-        match value {
-            Value::Number(n) if n.is_f64() => {
-                let v = n.as_f64().unwrap();
-                if v == 0.0 || v == 64.0 {
-                    0.0
-                } else if v >= 1.0 && v <= 63.0 {
-                    step
-                } else if v >= 65.0 && v <= 127.0 {
-                    -step
-                } else {
-                    0.0
-                }
-            }
-            _ => 0.0,
+        let v = match value.as_f64() {
+            Some(v) => v,
+            None => return 0.0,
+        };
+
+        if (1.0..=63.0).contains(&v) {
+            step
+        } else if (65.0..=127.0).contains(&v) {
+            -step
+        } else {
+            0.0
         }
     }
 
@@ -508,34 +505,28 @@ impl Driver for ObsDriver {
                 // Parse optional target parameter: "preview", "program", or absent (legacy behavior)
                 let explicit_target = params.get(1).and_then(|v| v.as_str());
 
-                let (view_mode, camera_scene_opt, split_scene_opt) = {
-                    let view_mode = self.camera_control_state.read().current_view_mode;
+                // Get view mode and resolve scene names from config
+                let view_mode = self.camera_control_state.read().current_view_mode;
+                let (camera_scene, split_scene) = {
                     let config_guard = self.camera_control_config.read();
                     let config = config_guard.as_ref()
                         .context("Camera control not configured")?;
 
-                    // Find camera config
                     let camera = config.cameras.iter()
                         .find(|c| c.id == camera_id)
                         .with_context(|| format!("Camera '{}' not found", camera_id))?;
 
-                    match view_mode {
-                        ViewMode::Full => {
-                            (view_mode, Some(camera.scene.clone()), None)
-                        },
-                        ViewMode::SplitLeft => {
-                            (view_mode, None, Some(config.splits.left.clone()))
-                        },
-                        ViewMode::SplitRight => {
-                            (view_mode, None, Some(config.splits.right.clone()))
-                        },
-                    }
+                    let split = match view_mode {
+                        ViewMode::Full => None,
+                        ViewMode::SplitLeft => Some(config.splits.left.clone()),
+                        ViewMode::SplitRight => Some(config.splits.right.clone()),
+                    };
+
+                    (camera.scene.clone(), split)
                 };
 
                 match view_mode {
                     ViewMode::Full => {
-                        let camera_scene = camera_scene_opt.unwrap();
-
                         let guard = self.client.read().await;
                         let client = guard.as_ref()
                             .context("OBS not connected")?;
@@ -551,48 +542,34 @@ impl Driver for ObsDriver {
                                 }
                                 true
                             }
-                            Some("program") => {
-                                // Force program mode
-                                false
-                            }
-                            _ => {
-                                // Legacy behavior: based on current studio_mode
-                                *self.studio_mode.read()
-                            }
+                            Some("program") => false,
+                            _ => *self.studio_mode.read(), // Legacy behavior
                         };
 
+                        let target_name = if use_preview { "preview" } else { "program" };
+                        info!("🎬 OBS: Select camera '{}' (FULL mode) → {} '{}'", camera_id, target_name, camera_scene);
+
                         if use_preview {
-                            info!("🎬 OBS: Select camera '{}' (FULL mode) → preview '{}'", camera_id, camera_scene);
                             client.scenes().set_current_preview_scene(&camera_scene).await?;
                         } else {
-                            info!("🎬 OBS: Select camera '{}' (FULL mode) → program '{}'", camera_id, camera_scene);
                             client.scenes().set_current_program_scene(&camera_scene).await?;
                         }
-
-                        // Update last_camera
-                        self.camera_control_state.write().last_camera = camera_id.to_string();
-                    },
+                    }
                     ViewMode::SplitLeft | ViewMode::SplitRight => {
-                        let split_scene = split_scene_opt.unwrap();
+                        let split_scene = split_scene.expect("split_scene must be Some for split modes");
 
-                        // Note: explicit_target (preview/program) is ignored in split mode.
-                        // Split mode modifies sources within a single scene rather than switching
-                        // between preview/program scenes, so the target parameter doesn't apply.
-                        if explicit_target.is_some() {
-                            debug!(
-                                "🎬 OBS: Ignoring target '{}' in SPLIT mode (split modifies sources, not scenes)",
-                                explicit_target.unwrap_or_default()
-                            );
+                        // Note: explicit_target is ignored in split mode (modifies sources, not scenes)
+                        if let Some(target) = explicit_target {
+                            debug!("🎬 OBS: Ignoring target '{}' in SPLIT mode (split modifies sources, not scenes)", target);
                         }
 
                         info!("🎬 OBS: Select camera '{}' (SPLIT mode) in '{}'", camera_id, split_scene);
-
                         self.set_split_camera(&split_scene, camera_id).await?;
-
-                        // Update last_camera
-                        self.camera_control_state.write().last_camera = camera_id.to_string();
-                    },
+                    }
                 }
+
+                // Update last_camera for all modes
+                self.camera_control_state.write().last_camera = camera_id.to_string();
 
                 Ok(())
             },
