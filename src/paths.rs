@@ -12,6 +12,7 @@
 //! - **Installed mode** (default): Data is stored in `%APPDATA%\XTouch GW`
 //!   (or equivalent on other platforms).
 
+use anyhow::Context;
 use std::path::PathBuf;
 use tracing::{debug, info};
 
@@ -48,6 +49,7 @@ impl AppPaths {
             .and_then(|p| p.parent().map(|p| p.to_path_buf()))
             .unwrap_or_else(|| PathBuf::from("."));
 
+        #[cfg(debug_assertions)]
         eprintln!("[paths] Executable directory: {}", exe_dir.display());
 
         // Check for explicit portable mode marker file
@@ -55,6 +57,7 @@ impl AppPaths {
         let portable_marker = exe_dir.join(".portable");
 
         if portable_marker.exists() {
+            #[cfg(debug_assertions)]
             eprintln!("[paths] Running in PORTABLE mode (.portable marker found)");
             Self {
                 config: exe_dir.join("config.yaml"),
@@ -65,6 +68,7 @@ impl AppPaths {
         } else {
             // Installed mode - use %APPDATA% on Windows, ~/.local/share on Linux
             let data_dir = dirs::data_dir();
+            #[cfg(debug_assertions)]
             eprintln!("[paths] dirs::data_dir() = {:?}", data_dir);
 
             let app_data = data_dir
@@ -76,6 +80,7 @@ impl AppPaths {
                 })
                 .join(APP_NAME);
 
+            #[cfg(debug_assertions)]
             eprintln!(
                 "[paths] Running in INSTALLED mode (data dir: {})",
                 app_data.display()
@@ -109,7 +114,7 @@ impl AppPaths {
     ///
     /// In installed mode, also copies `config.example.yaml` to the config
     /// location if the config file doesn't exist.
-    pub fn ensure_directories(&self) -> std::io::Result<()> {
+    pub fn ensure_directories(&self) -> anyhow::Result<()> {
         // Create state directory
         if !self.state_dir.exists() {
             debug!("Creating state directory: {}", self.state_dir.display());
@@ -145,7 +150,7 @@ impl AppPaths {
     /// Looks for config.yaml or config.example.yaml next to the executable.
     /// The installer places config.yaml in Program Files, which we copy to
     /// AppData for the user to customize.
-    fn copy_example_config(&self) -> std::io::Result<()> {
+    fn copy_example_config(&self) -> anyhow::Result<()> {
         let exe_dir = std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|p| p.to_path_buf()))
@@ -155,7 +160,13 @@ impl AppPaths {
         let installed_config = exe_dir.join("config.yaml");
         if installed_config.exists() {
             info!("Copying installed config to {}", self.config.display());
-            std::fs::copy(&installed_config, &self.config)?;
+            std::fs::copy(&installed_config, &self.config).with_context(|| {
+                format!(
+                    "Failed to copy config from {} to {}",
+                    installed_config.display(),
+                    self.config.display()
+                )
+            })?;
             return Ok(());
         }
 
@@ -163,7 +174,13 @@ impl AppPaths {
         let example_config = exe_dir.join("config.example.yaml");
         if example_config.exists() {
             info!("Copying example config to {}", self.config.display());
-            std::fs::copy(&example_config, &self.config)?;
+            std::fs::copy(&example_config, &self.config).with_context(|| {
+                format!(
+                    "Failed to copy example config from {} to {}",
+                    example_config.display(),
+                    self.config.display()
+                )
+            })?;
             return Ok(());
         }
 
@@ -174,7 +191,12 @@ impl AppPaths {
                 "Copying example config from cwd to {}",
                 self.config.display()
             );
-            std::fs::copy(&cwd_example, &self.config)?;
+            std::fs::copy(&cwd_example, &self.config).with_context(|| {
+                format!(
+                    "Failed to copy example config from cwd to {}",
+                    self.config.display()
+                )
+            })?;
             return Ok(());
         }
 
