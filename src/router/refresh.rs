@@ -328,6 +328,124 @@ impl super::Router {
         })
     }
 
+    /// Try to transform CC value to Note for page refresh (reverse transformation)
+    ///
+    /// When a button is mapped to send CC to an app (like QLC+), the StateStore
+    /// will have CC values. But X-Touch buttons need Note messages. This function:
+    /// 1. Looks up which control uses the given Note number
+    /// 2. Checks if that control has a CC mapping in the page config
+    /// 3. Queries StateActor for the CC value
+    /// 4. Returns Note velocity based on CC value
+    ///
+    /// Returns transformed Note entry if CC value found, None otherwise
+    async fn try_cc_to_note_transform(
+        &self,
+        page: &PageConfig,
+        app: &AppKey,
+        note: u8,
+    ) -> Option<MidiStateEntry> {
+        use crate::control_mapping::{load_default_mappings, MidiSpec};
+
+        // 1. Reverse lookup: Find control ID for this Note (e.g., "mute1" for note=16)
+        let mapping_db = match load_default_mappings() {
+            Ok(db) => db,
+            Err(_) => return None,
+        };
+
+        let control_id = mapping_db
+            .mappings
+            .iter()
+            .find(|(_, mapping)| {
+                if let Ok(spec) = MidiSpec::parse(&mapping.mcu_message) {
+                    matches!(spec, MidiSpec::Note { note: n } if n == note)
+                } else {
+                    false
+                }
+            })
+            .map(|(id, _)| id.clone());
+
+        let control_id = match control_id {
+            Some(id) => id,
+            None => return None,
+        };
+
+        // 2. Get control config from page OR pages_global
+        let control_config = {
+            let from_page = page.controls.as_ref().and_then(|c| c.get(&control_id));
+
+            if let Some(config) = from_page {
+                config.clone()
+            } else {
+                let config_guard = self.config.try_read().expect("Config lock poisoned");
+                let from_global = config_guard
+                    .pages_global
+                    .as_ref()
+                    .and_then(|g| g.controls.as_ref())
+                    .and_then(|c| c.get(&control_id))
+                    .cloned();
+                drop(config_guard);
+
+                match from_global {
+                    Some(config) => config,
+                    None => return None,
+                }
+            }
+        };
+
+        // Ensure control's app matches the app we're querying for
+        if control_config.app != app.as_str() {
+            return None;
+        }
+
+        // 3. Check if control has CC mapping
+        let midi_spec = match control_config.midi.as_ref() {
+            Some(spec) => spec,
+            None => return None,
+        };
+
+        if !matches!(midi_spec.midi_type, crate::config::MidiType::Cc) {
+            return None;
+        }
+
+        // 4. Query StateActor for CC value
+        let cc_channel = midi_spec.channel?;
+        let cc_num = midi_spec.cc?;
+
+        let cc_entry = self
+            .state_actor
+            .get_known_latest(*app, MidiStatus::CC, Some(cc_channel), Some(cc_num))
+            .await?;
+
+        // 5. Transform CC value to Note velocity
+        // CC value > 0 means button is ON
+        let cc_value = cc_entry.value.as_number().unwrap_or(0) as u8;
+        let velocity = if cc_value > 0 { 127 } else { 0 };
+
+        trace!(
+            "CC->Note transform: {} CC {} -> Note {} velocity {}",
+            control_id,
+            cc_value,
+            note,
+            velocity
+        );
+
+        // 6. Create transformed Note entry
+        Some(MidiStateEntry {
+            addr: MidiAddr {
+                port_id: app.as_str().to_string(),
+                status: MidiStatus::Note,
+                channel: Some(1), // X-Touch buttons are on channel 1
+                data1: Some(note),
+            },
+            value: MidiValue::Number(velocity as u16),
+            ts: cc_entry.ts,
+            origin: Origin::App,
+            known: true,
+            stale: false,
+            hash: None,
+        })
+    }
+
     /// Plan page refresh: build ordered list of MIDI entries to send
     ///
     /// Returns entries in order: Notes -> CC -> SysEx -> PB
@@ -447,26 +565,34 @@ impl super::Router {
                 // Don't fall back to setpoint or zero here - let other apps try first
             }
 
-            // Notes: 0-31 - Always send Note Off to clear previous page buttons
-            // Then let drivers send feedback to turn on buttons that should be ON
-            for &ch in &channels {
-                for note in 0..=31 {
-                    let off = MidiStateEntry {
-                        addr: MidiAddr {
-                            port_id: app.as_str().to_string(),
-                            status: MidiStatus::Note,
-                            channel: Some(ch),
-                            data1: Some(note),
-                        },
-                        value: MidiValue::Number(0),
-                        ts: Self::now_ms(),
-                        origin: Origin::XTouch,
-                        known: false,
-                        stale: false,
-                        hash: None,
-                    };
-                    push_note(&mut note_plan, off, 1);
+            // Notes: 0-31 - Query state for known values, fallback to Note Off
+            // Priority 2: Known state from CC transform
+            // Priority 1: Note Off to clear button
+            for note in 0..=31 {
+                // Priority 2: Try to get known state from CC transform
+                if let Some(transformed_note) =
+                    self.try_cc_to_note_transform(_page, app, note).await
+                {
+                    push_note(&mut note_plan, transformed_note, 2);
+                    continue;
                 }
+
+                // Priority 1: Fall back to Note Off
+                let off = MidiStateEntry {
+                    addr: MidiAddr {
+                        port_id: app.as_str().to_string(),
+                        status: MidiStatus::Note,
+                        channel: Some(1), // X-Touch buttons are on channel 1
+                        data1: Some(note),
+                    },
+                    value: MidiValue::Number(0),
+                    ts: Self::now_ms(),
+                    origin: Origin::XTouch,
+                    known: false,
+                    stale: false,
+                    hash: None,
+                };
+                push_note(&mut note_plan, off, 1);
             }
 
             // CC (rings): 0-31 - Always send 0 to clear previous page
