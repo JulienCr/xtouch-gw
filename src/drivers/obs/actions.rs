@@ -99,9 +99,16 @@ impl ObsDriver {
         }
     }
 
-    /// Convert encoder MIDI value to direction delta.
+    /// Convert a MIDI encoder value into a signed directional delta for PTZ operations.
     ///
-    /// Standard encoder values: 0/64=no change, 1-63=clockwise, 65-127=counter-clockwise
+    /// Standard encoder values: 0/64=no change, 1-63=clockwise, 65-127=counter-clockwise.
+    ///
+    /// # Arguments
+    /// * `value` - The MIDI encoder value as a JSON Value
+    /// * `step` - The amount to move per encoder tick
+    ///
+    /// # Returns
+    /// Returns `step` for clockwise input, `-step` for counter-clockwise, or `0.0` for no movement.
     fn encoder_value_to_delta(value: &Value, step: f64) -> f64 {
         match value {
             Value::Number(n) if n.is_f64() => {
@@ -124,6 +131,7 @@ impl ObsDriver {
     ///
     /// Processes raw gamepad value with gamma shaping and gain scaling,
     /// then sets the appropriate analog rate for continuous movement.
+    /// This function updates the internal analog rate state directly and does not return a value.
     fn handle_gamepad_analog(
         &self,
         value: Option<&Value>,
@@ -566,6 +574,17 @@ impl Driver for ObsDriver {
                     },
                     ViewMode::SplitLeft | ViewMode::SplitRight => {
                         let split_scene = split_scene_opt.unwrap();
+
+                        // Note: explicit_target (preview/program) is ignored in split mode.
+                        // Split mode modifies sources within a single scene rather than switching
+                        // between preview/program scenes, so the target parameter doesn't apply.
+                        if explicit_target.is_some() {
+                            debug!(
+                                "🎬 OBS: Ignoring target '{}' in SPLIT mode (split modifies sources, not scenes)",
+                                explicit_target.unwrap_or_default()
+                            );
+                        }
+
                         info!("🎬 OBS: Select camera '{}' (SPLIT mode) in '{}'", camera_id, split_scene);
 
                         self.set_split_camera(&split_scene, camera_id).await?;
@@ -830,7 +849,10 @@ mod tests {
         }
     }
 
-    /// Test the preview/program target parameter parsing logic
+    /// Test the preview/program target parameter parsing logic.
+    ///
+    /// Note: These tests verify the parameter parsing and use_preview decision logic only.
+    /// Side effects like auto-enabling studio mode require integration tests with OBS client.
     mod select_camera_target_tests {
         use super::*;
 
