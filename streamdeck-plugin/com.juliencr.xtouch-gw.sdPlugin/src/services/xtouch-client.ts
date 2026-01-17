@@ -431,12 +431,16 @@ export class XTouchClient {
 
   /**
    * Set the camera target for a gamepad slot via HTTP API.
+   *
+   * @param slot The gamepad slot identifier
+   * @param cameraId The camera ID to target
+   * @param target Optional: "preview" or "program" to also switch OBS scene (default: "preview")
    */
-  async setCameraTarget(slot: string, cameraId: string): Promise<void> {
-    streamDeck.logger.info(`Setting camera target: slot=${slot}, camera=${cameraId}`);
+  async setCameraTarget(slot: string, cameraId: string, target: "preview" | "program" = "preview"): Promise<void> {
+    streamDeck.logger.info(`Setting camera target: slot=${slot}, camera=${cameraId}, target=${target}`);
     const path = `/api/gamepad/${encodeURIComponent(slot)}/camera`;
-    await apiRequest(this._serverAddress, path, { method: "PUT", body: { camera_id: cameraId } });
-    streamDeck.logger.info(`Camera target set successfully: ${slot} -> ${cameraId}`);
+    await apiRequest(this._serverAddress, path, { method: "PUT", body: { camera_id: cameraId, target } });
+    streamDeck.logger.info(`Camera target set successfully: ${slot} -> ${cameraId} (${target})`);
   }
 
   /**

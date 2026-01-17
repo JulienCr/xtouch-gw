@@ -241,7 +241,7 @@ class XTouchClient {
         streamDeck.logger.info(`Camera target changed: ${message.gamepad_slot} -> ${message.camera_id}`);
         const gamepad = this._gamepads.get(message.gamepad_slot);
         if (gamepad) {
-            // Map holds reference to object, so mutation is sufficient
+            // Object retrieved from Map is mutated directly; no need to re-set since Map still references the same instance
             gamepad.current_camera = message.camera_id;
         }
         else {
@@ -350,12 +350,16 @@ class XTouchClient {
     }
     /**
      * Set the camera target for a gamepad slot via HTTP API.
+     *
+     * @param slot The gamepad slot identifier
+     * @param cameraId The camera ID to target
+     * @param target Optional: "preview" or "program" to also switch OBS scene (default: "preview")
      */
-    async setCameraTarget(slot, cameraId) {
-        streamDeck.logger.info(`Setting camera target: slot=${slot}, camera=${cameraId}`);
+    async setCameraTarget(slot, cameraId, target = "preview") {
+        streamDeck.logger.info(`Setting camera target: slot=${slot}, camera=${cameraId}, target=${target}`);
         const path = `/api/gamepad/${encodeURIComponent(slot)}/camera`;
-        await apiRequest(this._serverAddress, path, { method: "PUT", body: { camera_id: cameraId } });
-        streamDeck.logger.info(`Camera target set successfully: ${slot} -> ${cameraId}`);
+        await apiRequest(this._serverAddress, path, { method: "PUT", body: { camera_id: cameraId, target } });
+        streamDeck.logger.info(`Camera target set successfully: ${slot} -> ${cameraId} (${target})`);
     }
     /**
      * Fetch available gamepad slots via HTTP API.
