@@ -146,6 +146,11 @@ impl ObsDriver {
         }
     }
 
+    /// Check if OBS is currently in studio mode
+    pub fn is_studio_mode(&self) -> bool {
+        *self.studio_mode.read()
+    }
+
     /// Clone fields needed for the timer task
     pub(super) fn clone_for_timer(&self) -> Self {
         Self {

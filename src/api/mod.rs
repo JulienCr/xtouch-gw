@@ -420,8 +420,24 @@ pub fn broadcast_on_air_change(state: &ApiState, camera_id: &str, scene_name: &s
     info!("ON AIR changed: {} (scene: {})", camera_id, scene_name);
 }
 
+/// Broadcast camera target change to all connected Stream Deck clients
+///
+/// Call this when the gamepad camera target changes (e.g., from OBS preview scene change).
+pub fn broadcast_target_change(state: &ApiState, gamepad_slot: &str, camera_id: &str) {
+    let message = CameraStateMessage::TargetChanged {
+        gamepad_slot: gamepad_slot.to_string(),
+        camera_id: camera_id.to_string(),
+        timestamp: current_timestamp_millis(),
+    };
+
+    // Best-effort broadcast (ignore if no subscribers)
+    let _ = state.update_tx.send(message);
+
+    info!("Target changed: {} -> {}", gamepad_slot, camera_id);
+}
+
 /// Get current timestamp in milliseconds since UNIX epoch
-fn current_timestamp_millis() -> u64 {
+pub fn current_timestamp_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()

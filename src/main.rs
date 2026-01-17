@@ -462,6 +462,46 @@ async fn run_app(
                         }
                     }
                 }
+
+                // Handle preview scene change for auto-targeting (studio mode only)
+                // When preview changes in OBS, auto-update the dynamic gamepad target
+                if signal == "obs.currentPreviewScene" {
+                    if let Some(scene_name) = value.as_str() {
+                        // Only process if studio mode is enabled
+                        let is_studio_mode = api_state.obs_driver.as_ref()
+                            .map(|d| d.is_studio_mode())
+                            .unwrap_or(false);
+
+                        if !is_studio_mode {
+                            return; // Preview changes don't affect PTZ in non-studio mode
+                        }
+
+                        // Find camera matching this scene
+                        if let Some(camera_config) = config.obs.as_ref()
+                            .and_then(|o| o.camera_control.as_ref())
+                            .and_then(|cc| cc.cameras.iter().find(|c| c.scene == scene_name))
+                        {
+                            if !camera_config.enable_ptz {
+                                return; // PTZ disabled for this camera
+                            }
+
+                            let camera_id = &camera_config.id;
+
+                            // Find the dynamic gamepad slot
+                            if let Some(gamepad_slot) = find_dynamic_gamepad_slot(&config) {
+                                let current = api_state.camera_targets.get_target(&gamepad_slot);
+
+                                if current.as_ref() != Some(&camera_id.to_string()) {
+                                    // Update target and broadcast
+                                    if api_state.camera_targets.set_target(&gamepad_slot, camera_id).is_ok() {
+                                        api::broadcast_target_change(&api_state, &gamepad_slot, camera_id);
+                                        info!("Auto-targeted {} -> {} (preview: {})", gamepad_slot, camera_id, scene_name);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             });
         });
 
@@ -929,6 +969,23 @@ fn build_gamepad_slot_infos(config: &AppConfig) -> Vec<api::GamepadSlotInfo> {
             current_camera: None,
         })
         .collect()
+}
+
+/// Find the first gamepad slot configured with "dynamic" camera_target mode.
+///
+/// Returns the slot name (e.g., "gamepad1") if found, or None if no dynamic slot exists.
+fn find_dynamic_gamepad_slot(config: &AppConfig) -> Option<String> {
+    config.gamepad.as_ref()
+        .and_then(|g| g.gamepads.as_ref())
+        .and_then(|slots| {
+            slots.iter().enumerate().find_map(|(i, slot)| {
+                if slot.camera_target.as_deref() == Some("dynamic") {
+                    Some(format!("gamepad{}", i + 1))
+                } else {
+                    None
+                }
+            })
+        })
 }
 
 /// Convert LCD colors from config to u8 values.
