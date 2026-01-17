@@ -1,28 +1,28 @@
 //! GilRs gamepad provider with hot-plug support
 
-use anyhow::Result;
-use gilrs::{Gilrs, Event, EventType, Button, Axis};
-use std::sync::Arc;
-use tokio::sync::RwLock;
-use tokio::sync::mpsc;
-use tracing::{info, warn, debug};
-use std::time::Duration;
-use crate::config::AnalogConfig;
 use super::slot::SlotManager;
+use crate::config::AnalogConfig;
+use anyhow::Result;
+use gilrs::{Axis, Button, Event, EventType, Gilrs};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::mpsc;
+use tokio::sync::RwLock;
+use tracing::{debug, info, warn};
 
 /// Standardized gamepad event
 #[derive(Debug, Clone)]
 pub enum GamepadEvent {
     /// Button press/release
     Button {
-        control_id: String,  // Full ID: "gamepad1.btn.a"
-        pressed: bool
+        control_id: String, // Full ID: "gamepad1.btn.a"
+        pressed: bool,
     },
     /// Analog axis movement
     Axis {
-        control_id: String,  // Full ID: "gamepad1.axis.lx"
+        control_id: String, // Full ID: "gamepad1.axis.lx"
         value: f32,
-        analog_config: Option<AnalogConfig>,  // Per-slot config
+        analog_config: Option<AnalogConfig>, // Per-slot config
         /// Monotonic sequence number for ordering (prevents race conditions under CPU load)
         sequence: u64,
     },
@@ -91,11 +91,11 @@ impl GilrsProvider {
             Ok(g) => {
                 info!("GilRs initialized");
                 g
-            }
+            },
             Err(e) => {
                 warn!("Failed to initialize GilRs: {:?}", e);
                 return;
-            }
+            },
         };
 
         // Create slot manager (or use legacy mode if empty)
@@ -119,18 +119,16 @@ impl GilrsProvider {
         while scan_start.elapsed() < scan_duration {
             // Process events to allow gilrs to detect gamepads
             while let Some(Event { id, event, .. }) = gilrs.next_event() {
-                match event {
-                    EventType::Connected => {
-                        debug!("Gamepad connected during initial scan: {:?}", id);
-                    }
-                    _ => {}
+                if event == EventType::Connected {
+                    debug!("Gamepad connected during initial scan: {:?}", id);
                 }
             }
             std::thread::sleep(Duration::from_millis(100));
         }
 
         // Now scan for connected gamepads
-        let all_gamepads: Vec<_> = gilrs.gamepads()
+        let all_gamepads: Vec<_> = gilrs
+            .gamepads()
             .filter(|(_, gp)| gp.is_connected())
             .map(|(id, gp)| (id, gp.name().to_string()))
             .collect();
@@ -160,8 +158,8 @@ impl GilrsProvider {
                 Ok(_) | Err(mpsc::error::TryRecvError::Disconnected) => {
                     info!("Gamepad provider shutting down");
                     break;
-                }
-                Err(mpsc::error::TryRecvError::Empty) => {}
+                },
+                Err(mpsc::error::TryRecvError::Empty) => {},
             }
 
             // Reconnection check (every 2 seconds)
@@ -201,7 +199,8 @@ impl GilrsProvider {
                 };
 
                 // Convert event with slot prefix
-                if let Some(gamepad_event) = Self::convert_event(event, &slot_prefix, analog_config) {
+                if let Some(gamepad_event) = Self::convert_event(event, &slot_prefix, analog_config)
+                {
                     debug!("Gamepad event: {:?}", gamepad_event);
 
                     if event_tx.send(gamepad_event).is_err() {
@@ -216,26 +215,21 @@ impl GilrsProvider {
         }
     }
 
-
     /// Convert GilRs event to standardized gamepad event
     fn convert_event(
         event: EventType,
         prefix: &str,
-        analog_config: Option<AnalogConfig>
+        analog_config: Option<AnalogConfig>,
     ) -> Option<GamepadEvent> {
         match event {
-            EventType::ButtonPressed(button, _) => {
-                Some(GamepadEvent::Button {
-                    control_id: Self::button_to_id(button, prefix),
-                    pressed: true,
-                })
-            }
-            EventType::ButtonReleased(button, _) => {
-                Some(GamepadEvent::Button {
-                    control_id: Self::button_to_id(button, prefix),
-                    pressed: false,
-                })
-            }
+            EventType::ButtonPressed(button, _) => Some(GamepadEvent::Button {
+                control_id: Self::button_to_id(button, prefix),
+                pressed: true,
+            }),
+            EventType::ButtonReleased(button, _) => Some(GamepadEvent::Button {
+                control_id: Self::button_to_id(button, prefix),
+                pressed: false,
+            }),
             EventType::AxisChanged(axis, value, _) => {
                 // Normalize Y-axis convention to match HID behavior:
                 // - gilrs: up=positive, down=negative
@@ -252,15 +246,15 @@ impl GilrsProvider {
                     analog_config,
                     sequence: 0, // Legacy provider - sequence not used (use HybridGamepadProvider instead)
                 })
-            }
+            },
             EventType::Connected => {
                 debug!("Gamepad connected event");
                 None
-            }
+            },
             EventType::Disconnected => {
                 debug!("Gamepad disconnected event");
                 None
-            }
+            },
             _ => None,
         }
     }
@@ -290,7 +284,7 @@ impl GilrsProvider {
             _ => {
                 warn!("Unknown button: {:?}", button);
                 "unknown"
-            }
+            },
         };
 
         format!("{}.btn.{}", prefix, name)
@@ -308,7 +302,7 @@ impl GilrsProvider {
             _ => {
                 warn!("Unknown axis: {:?}", axis);
                 "unknown"
-            }
+            },
         };
 
         format!("{}.axis.{}", prefix, name)

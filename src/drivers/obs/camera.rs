@@ -2,7 +2,7 @@
 //!
 //! Handles camera selection and split view modes (left/right/full).
 
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 use tracing::{debug, info};
 
 use super::driver::ObsDriver;
@@ -74,30 +74,46 @@ impl ObsDriver {
             state.current_view_mode = view_mode;
 
             if old_mode != view_mode {
-                debug!("ViewMode synced from scene '{}': {:?} → {:?}", scene_name, old_mode, view_mode);
+                debug!(
+                    "ViewMode synced from scene '{}': {:?} → {:?}",
+                    scene_name, old_mode, view_mode
+                );
             }
         }
         // If None, preserve current ViewMode (non-camera scene like "BRB Screen")
     }
 
     /// Helper: Set scene item enabled/disabled
-    pub(super) async fn set_scene_item_enabled(&self, scene_name: &str, source_name: &str, enabled: bool) -> Result<()> {
+    pub(super) async fn set_scene_item_enabled(
+        &self,
+        scene_name: &str,
+        source_name: &str,
+        enabled: bool,
+    ) -> Result<()> {
         let item_id = self.resolve_item_id(scene_name, source_name).await?;
-        
+
         let guard = self.client.read().await;
-        let client = guard.as_ref()
-            .context("OBS client not connected")?;
-        
-        client.scene_items()
+        let client = guard.as_ref().context("OBS client not connected")?;
+
+        client
+            .scene_items()
             .set_enabled(obws::requests::scene_items::SetEnabled {
                 scene: scene_name,
                 item_id,
                 enabled,
             })
             .await
-            .with_context(|| format!("Failed to set item '{}' enabled={} in scene '{}'", source_name, enabled, scene_name))?;
-        
-        debug!("OBS: Set '{}' in '{}' enabled={}", source_name, scene_name, enabled);
+            .with_context(|| {
+                format!(
+                    "Failed to set item '{}' enabled={} in scene '{}'",
+                    source_name, enabled, scene_name
+                )
+            })?;
+
+        debug!(
+            "OBS: Set '{}' in '{}' enabled={}",
+            source_name, scene_name, enabled
+        );
         Ok(())
     }
 
@@ -105,31 +121,41 @@ impl ObsDriver {
     pub(super) async fn set_split_camera(&self, split_scene: &str, camera_id: &str) -> Result<()> {
         let (cameras, target_split_source) = {
             let config_guard = self.camera_control_config.read();
-            let config = config_guard.as_ref()
+            let config = config_guard
+                .as_ref()
                 .context("Camera control not configured")?;
-            
+
             // Get all camera split sources
-            let cameras: Vec<String> = config.cameras.iter()
+            let cameras: Vec<String> = config
+                .cameras
+                .iter()
                 .map(|c| c.split_source.clone())
                 .collect();
-            
+
             // Find target camera
-            let target_camera = config.cameras.iter()
+            let target_camera = config
+                .cameras
+                .iter()
                 .find(|c| c.id == camera_id)
                 .with_context(|| format!("Camera '{}' not found in config", camera_id))?;
-            
+
             (cameras, target_camera.split_source.clone())
         };
-        
+
         // Hide all SPLIT CAM sources
         for camera_source in &cameras {
-            self.set_scene_item_enabled(split_scene, camera_source, false).await?;
+            self.set_scene_item_enabled(split_scene, camera_source, false)
+                .await?;
         }
-        
+
         // Show the target camera
-        self.set_scene_item_enabled(split_scene, &target_split_source, true).await?;
-        
-        info!("🎬 OBS: Set split camera '{}' in '{}'", camera_id, split_scene);
+        self.set_scene_item_enabled(split_scene, &target_split_source, true)
+            .await?;
+
+        info!(
+            "🎬 OBS: Set split camera '{}' in '{}'",
+            camera_id, split_scene
+        );
         Ok(())
     }
 
@@ -145,10 +171,13 @@ impl ObsDriver {
         // Get camera scene from config
         let camera_scene = {
             let config_guard = self.camera_control_config.read();
-            let config = config_guard.as_ref()
+            let config = config_guard
+                .as_ref()
                 .context("Camera control not configured")?;
 
-            let camera = config.cameras.iter()
+            let camera = config
+                .cameras
+                .iter()
                 .find(|c| c.id == camera_id)
                 .with_context(|| format!("Camera '{}' not found", camera_id))?;
 
@@ -156,8 +185,7 @@ impl ObsDriver {
         };
 
         let guard = self.client.read().await;
-        let client = guard.as_ref()
-            .context("OBS not connected")?;
+        let client = guard.as_ref().context("OBS not connected")?;
 
         match target {
             "preview" => {
@@ -167,16 +195,31 @@ impl ObsDriver {
                     client.ui().set_studio_mode_enabled(true).await?;
                     *self.studio_mode.write() = true;
                 }
-                info!("🎬 OBS: Select camera '{}' → preview '{}'", camera_id, camera_scene);
-                client.scenes().set_current_preview_scene(&camera_scene).await?;
-            }
+                info!(
+                    "🎬 OBS: Select camera '{}' → preview '{}'",
+                    camera_id, camera_scene
+                );
+                client
+                    .scenes()
+                    .set_current_preview_scene(&camera_scene)
+                    .await?;
+            },
             "program" => {
-                info!("🎬 OBS: Select camera '{}' → program '{}'", camera_id, camera_scene);
-                client.scenes().set_current_program_scene(&camera_scene).await?;
-            }
+                info!(
+                    "🎬 OBS: Select camera '{}' → program '{}'",
+                    camera_id, camera_scene
+                );
+                client
+                    .scenes()
+                    .set_current_program_scene(&camera_scene)
+                    .await?;
+            },
             _ => {
-                return Err(anyhow::anyhow!("Invalid target '{}', expected 'preview' or 'program'", target));
-            }
+                return Err(anyhow::anyhow!(
+                    "Invalid target '{}', expected 'preview' or 'program'",
+                    target
+                ));
+            },
         }
 
         // Update last_camera
@@ -185,4 +228,3 @@ impl ObsDriver {
         Ok(())
     }
 }
-

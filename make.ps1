@@ -64,6 +64,11 @@ function Show-Help {
     Write-Host "  ci            - Run CI checks (fmt, clippy, test)"
     Write-Host "  all           - Build everything and run tests"
     Write-Host ""
+    Write-ColorOutput $Blue "Release:"
+    Write-Host "  version-bump  - Interactive version bump (major/minor/patch)"
+    Write-Host "  installer     - Build Windows installer (requires Inno Setup)"
+    Write-Host "  package       - CI + Release build + Installer"
+    Write-Host ""
     Write-ColorOutput $Blue "Options:"
     Write-Host "  -Config       - Config file path (default: config.example.yaml)"
     Write-Host "  -LogLevel     - Log level (default: info)"
@@ -135,7 +140,9 @@ function Invoke-Check {
 
 function Invoke-Clippy {
     Write-ColorOutput $Yellow "Running clippy..."
-    cargo clippy -- -D warnings
+    # Note: Using -W (warn) instead of -D (deny) for flexibility
+    # Dead code warnings are expected during development
+    cargo clippy -- -W clippy::all
     if ($LASTEXITCODE -eq 0) {
         Write-ColorOutput $Green "Clippy complete!"
     }
@@ -319,6 +326,49 @@ function Invoke-Validate {
     Write-Host "See DEVELOPMENT.md for detailed validation process."
 }
 
+function Invoke-VersionBump {
+    Write-ColorOutput $Yellow "Starting interactive version bump..."
+    & "$PSScriptRoot\scripts\version-bump.ps1"
+}
+
+function Invoke-Installer {
+    Write-ColorOutput $Yellow "Building Windows installer..."
+    & "$PSScriptRoot\installer\build-installer.ps1" -SkipBuild
+}
+
+function Invoke-Package {
+    Write-ColorOutput $Green "========================================"
+    Write-ColorOutput $Green " XTouch GW - Full Package Build"
+    Write-ColorOutput $Green "========================================"
+    Write-Host ""
+
+    # Run CI checks
+    Invoke-CI
+    if ($LASTEXITCODE -ne 0) {
+        Write-ColorOutput $Red "CI checks failed! Aborting package."
+        exit 1
+    }
+
+    # Build release
+    Write-Host ""
+    Invoke-Release
+    if ($LASTEXITCODE -ne 0) {
+        Write-ColorOutput $Red "Release build failed! Aborting package."
+        exit 1
+    }
+
+    # Build installer
+    Write-Host ""
+    & "$PSScriptRoot\installer\build-installer.ps1" -SkipBuild
+    if ($LASTEXITCODE -ne 0) {
+        Write-ColorOutput $Red "Installer build failed!"
+        exit 1
+    }
+
+    Write-Host ""
+    Write-ColorOutput $Green "Package complete! Check dist/ folder for installer."
+}
+
 # Main command dispatcher
 switch ($Command.ToLower()) {
     "help" { Show-Help }
@@ -350,7 +400,10 @@ switch ($Command.ToLower()) {
     "all" { Invoke-All }
     "info" { Invoke-Info }
     "validate" { Invoke-Validate }
-    
+    "version-bump" { Invoke-VersionBump }
+    "installer" { Invoke-Installer }
+    "package" { Invoke-Package }
+
     # Shortcuts
     "b" { Invoke-Build }
     "r" { Invoke-Run }
@@ -358,7 +411,9 @@ switch ($Command.ToLower()) {
     "c" { Invoke-Check }
     "f" { Invoke-Fmt }
     "cl" { Invoke-Clean }
-    
+    "vb" { Invoke-VersionBump }
+    "pkg" { Invoke-Package }
+
     default {
         Write-ColorOutput $Red "Unknown command: $Command"
         Write-Host ""

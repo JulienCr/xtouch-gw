@@ -2,12 +2,12 @@
 //!
 //! Handles WebSocket connection, reconnection, event listening, and state synchronization.
 
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{info, debug, warn};
+use tracing::{debug, info, warn};
 
 use super::driver::ObsDriver;
 
@@ -87,7 +87,10 @@ impl ObsDriver {
                         state.current_view_mode = new_mode;
 
                         if old_mode != new_mode {
-                            debug!("ViewMode synced from scene '{}': {:?} → {:?}", scene_name, old_mode, new_mode);
+                            debug!(
+                                "ViewMode synced from scene '{}': {:?} → {:?}",
+                                scene_name, old_mode, new_mode
+                            );
                         }
                     }
                 }
@@ -109,13 +112,13 @@ impl ObsDriver {
                                 warn!("Failed to get OBS event stream: {}", e);
                                 tokio::time::sleep(Duration::from_secs(2)).await;
                                 continue;
-                            }
+                            },
                         },
                         None => {
                             // Not connected, wait and retry
                             tokio::time::sleep(Duration::from_secs(1)).await;
                             continue;
-                        }
+                        },
                     }
                 };
 
@@ -147,7 +150,10 @@ impl ObsDriver {
                             // Emit signals
                             let emitters_guard = emitters.read();
                             for emit in emitters_guard.iter() {
-                                emit("obs.currentProgramScene".to_string(), Value::String(name.clone()));
+                                emit(
+                                    "obs.currentProgramScene".to_string(),
+                                    Value::String(name.clone()),
+                                );
                             }
 
                             // Schedule selectedScene emission (debounced)
@@ -158,7 +164,7 @@ impl ObsDriver {
                                 Arc::clone(&emitters),
                                 Arc::clone(&last_selected),
                             );
-                        }
+                        },
 
                         Event::StudioModeStateChanged { enabled } => {
                             debug!("OBS studio mode changed: {}", enabled);
@@ -186,7 +192,7 @@ impl ObsDriver {
                                 Arc::clone(&emitters),
                                 Arc::clone(&last_selected),
                             );
-                        }
+                        },
 
                         Event::CurrentPreviewSceneChanged { name } => {
                             debug!("OBS preview scene changed: {}", name);
@@ -200,7 +206,10 @@ impl ObsDriver {
                             // Emit signal
                             let emitters_guard = emitters.read();
                             for emit in emitters_guard.iter() {
-                                emit("obs.currentPreviewScene".to_string(), Value::String(name.clone()));
+                                emit(
+                                    "obs.currentPreviewScene".to_string(),
+                                    Value::String(name.clone()),
+                                );
                             }
 
                             // Schedule selectedScene emission (debounced)
@@ -211,11 +220,11 @@ impl ObsDriver {
                                 Arc::clone(&emitters),
                                 Arc::clone(&last_selected),
                             );
-                        }
+                        },
 
                         _ => {
                             // Ignore other events
-                        }
+                        },
                     }
                 }
 
@@ -254,14 +263,21 @@ impl ObsDriver {
             // Debounce for 80ms
             tokio::time::sleep(Duration::from_millis(80)).await;
 
-            let selected = if studio_mode { preview_scene } else { program_scene };
+            let selected = if studio_mode {
+                preview_scene
+            } else {
+                program_scene
+            };
 
             // Only emit if changed
             let mut last = last_selected.write();
             if last.as_ref() != Some(&selected) {
                 let emitters_guard = emitters.read();
                 for emit in emitters_guard.iter() {
-                    emit("obs.selectedScene".to_string(), Value::String(selected.clone()));
+                    emit(
+                        "obs.selectedScene".to_string(),
+                        Value::String(selected.clone()),
+                    );
                 }
                 *last = Some(selected);
             }
@@ -271,8 +287,7 @@ impl ObsDriver {
     /// Refresh OBS state (studio mode, current scenes)
     pub(super) async fn refresh_state(&self) -> Result<()> {
         let guard = self.client.read().await;
-        let client = guard.as_ref()
-            .context("OBS client not connected")?;
+        let client = guard.as_ref().context("OBS client not connected")?;
 
         // Get studio mode state
         let studio_mode = client.ui().studio_mode_enabled().await?;
@@ -342,7 +357,7 @@ impl ObsDriver {
                 Err(e) => {
                     debug!("OBS reconnect #{} failed: {}", retry_count, e);
                     // Continue loop for next attempt
-                }
+                },
             }
         }
     }
@@ -363,11 +378,21 @@ impl ObsDriver {
 
         // Emit individual signals
         self.emit_signal("obs.studioMode", Value::Bool(studio_mode));
-        self.emit_signal("obs.currentProgramScene", Value::String(program_scene.clone()));
-        self.emit_signal("obs.currentPreviewScene", Value::String(preview_scene.clone()));
+        self.emit_signal(
+            "obs.currentProgramScene",
+            Value::String(program_scene.clone()),
+        );
+        self.emit_signal(
+            "obs.currentPreviewScene",
+            Value::String(preview_scene.clone()),
+        );
 
         // Emit composite selectedScene signal (studioMode ? preview : program)
-        let selected = if studio_mode { preview_scene } else { program_scene };
+        let selected = if studio_mode {
+            preview_scene
+        } else {
+            program_scene
+        };
 
         // Only emit if changed (deduplication)
         let mut last = self.last_selected_sent.write();
@@ -390,18 +415,24 @@ impl ObsDriver {
             // Debounce for 80ms
             tokio::time::sleep(Duration::from_millis(80)).await;
 
-            let selected = if studio_mode { preview_scene } else { program_scene };
+            let selected = if studio_mode {
+                preview_scene
+            } else {
+                program_scene
+            };
 
             // Only emit if changed
             let mut last = last_selected.write();
             if last.as_ref() != Some(&selected) {
                 let emitters_guard = emitters.read();
                 for emit in emitters_guard.iter() {
-                    emit("obs.selectedScene".to_string(), Value::String(selected.clone()));
+                    emit(
+                        "obs.selectedScene".to_string(),
+                        Value::String(selected.clone()),
+                    );
                 }
                 *last = Some(selected);
             }
         });
     }
 }
-

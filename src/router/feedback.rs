@@ -46,7 +46,7 @@ impl super::Router {
             None => {
                 trace!("No active page, skipping feedback forward to X-Touch");
                 return None;
-            }
+            },
         };
 
         let apps_on_page = self.get_apps_for_page(active_page, &config_snapshot);
@@ -61,8 +61,7 @@ impl super::Router {
 
         debug!(
             "✓ App '{}' is mapped on page '{}', forwarding feedback to X-Touch",
-            app_name,
-            active_page.name
+            app_name, active_page.name
         );
 
         // CRITICAL: Schedule motor setpoints AFTER page filtering
@@ -288,11 +287,9 @@ impl super::Router {
 
         // Mark this as sent to app (for anti-echo) - fire-and-forget
         // Now handled by the state actor, so atomicity is guaranteed
-        self.state_actor
-            .update_shadow(app_key.to_string(), entry);
+        self.state_actor.update_shadow(app_key.to_string(), entry);
 
         // TODO: Forward to X-Touch if relevant for active page
         // This will be implemented in the forward module (Phase 6.2)
     }
 }
-

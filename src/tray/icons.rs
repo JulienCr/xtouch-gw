@@ -78,7 +78,7 @@ mod tests {
 
         // Center pixel should be colored
         assert_eq!(green.get_pixel(8, 8)[1], 200); // Green channel
-        assert_eq!(red.get_pixel(8, 8)[0], 200);   // Red channel
+        assert_eq!(red.get_pixel(8, 8)[0], 200); // Red channel
     }
 
     #[test]

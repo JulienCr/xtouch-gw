@@ -139,11 +139,15 @@ mod tests {
     fn test_last_activity() {
         let tracker = ActivityTracker::new(100, None);
 
-        assert!(tracker.last_activity("test", ActivityDirection::Inbound).is_none());
+        assert!(tracker
+            .last_activity("test", ActivityDirection::Inbound)
+            .is_none());
 
         tracker.record("test", ActivityDirection::Inbound);
 
-        assert!(tracker.last_activity("test", ActivityDirection::Inbound).is_some());
+        assert!(tracker
+            .last_activity("test", ActivityDirection::Inbound)
+            .is_some());
     }
 
     #[test]

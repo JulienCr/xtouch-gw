@@ -3,9 +3,9 @@
 //! Converts rusty_xinput controller state to standardized GamepadEvent format,
 //! ensuring consistency with gilrs-based events.
 
-use rusty_xinput::{XInputHandle, XInputState, XInputUsageError};
-use crate::config::AnalogConfig;
 use super::provider::GamepadEvent;
+use crate::config::AnalogConfig;
+use rusty_xinput::{XInputHandle, XInputState, XInputUsageError};
 
 /// XInput button bit flags
 ///
@@ -85,7 +85,7 @@ pub fn convert_xinput_buttons(
     ];
 
     for (button_flag, name) in button_mappings {
-        let old_pressed = old_buttons.map_or(false, |b| (b & button_flag) != 0);
+        let old_pressed = old_buttons.is_some_and(|b| (b & button_flag) != 0);
         let new_pressed = (new_buttons & button_flag) != 0;
 
         if old_pressed != new_pressed {
@@ -143,26 +143,34 @@ pub fn convert_xinput_axes(
 
     // Build axis list with change detection
     // Note: old_state values also need radial normalization for accurate change detection
-    let (old_lx, old_ly) = old_state.map(|s| {
-        normalize_stick_radial(s.thumb_lx, s.thumb_ly, DEADZONE)
-    }).unwrap_or((0.0, 0.0));
+    let (old_lx, old_ly) = old_state
+        .map(|s| normalize_stick_radial(s.thumb_lx, s.thumb_ly, DEADZONE))
+        .unwrap_or((0.0, 0.0));
 
-    let (old_rx, old_ry) = old_state.map(|s| {
-        normalize_stick_radial(s.thumb_rx, s.thumb_ry, DEADZONE)
-    }).unwrap_or((0.0, 0.0));
+    let (old_rx, old_ry) = old_state
+        .map(|s| normalize_stick_radial(s.thumb_rx, s.thumb_ry, DEADZONE))
+        .unwrap_or((0.0, 0.0));
 
     let axes = [
         ("lx", lx, old_state.map(|_| old_lx)),
         ("ly", -ly, old_state.map(|_| -old_ly)), // Invert Y
         ("rx", rx, old_state.map(|_| old_rx)),
         ("ry", -ry, old_state.map(|_| -old_ry)), // Invert Y
-        ("zl", lt, old_state.map(|s| (s.left_trigger as f32 / 255.0) * 2.0 - 1.0)),
-        ("zr", rt, old_state.map(|s| (s.right_trigger as f32 / 255.0) * 2.0 - 1.0)),
+        (
+            "zl",
+            lt,
+            old_state.map(|s| (s.left_trigger as f32 / 255.0) * 2.0 - 1.0),
+        ),
+        (
+            "zr",
+            rt,
+            old_state.map(|s| (s.right_trigger as f32 / 255.0) * 2.0 - 1.0),
+        ),
     ];
 
     for (axis_name, new_value, old_value) in axes {
         // Emit if changed from previous value (mapper will handle redundant event filtering)
-        if old_value.map_or(true, |old| new_value != old) {
+        if old_value != Some(new_value) {
             *sequence_counter += 1;
             events.push(GamepadEvent::Axis {
                 control_id: format!("{}.axis.{}", prefix, axis_name),
@@ -282,10 +290,13 @@ mod tests {
         let events = convert_xinput_buttons(None, button_flags::A, "gamepad1");
         assert_eq!(events.len(), 1);
         match &events[0] {
-            GamepadEvent::Button { control_id, pressed } => {
+            GamepadEvent::Button {
+                control_id,
+                pressed,
+            } => {
                 assert_eq!(control_id, "gamepad1.btn.a");
                 assert_eq!(*pressed, true);
-            }
+            },
             _ => panic!("Expected button event"),
         }
     }
@@ -293,11 +304,7 @@ mod tests {
     #[test]
     fn test_button_no_change() {
         // Same state, no events
-        let events = convert_xinput_buttons(
-            Some(button_flags::A),
-            button_flags::A,
-            "gamepad1"
-        );
+        let events = convert_xinput_buttons(Some(button_flags::A), button_flags::A, "gamepad1");
         assert_eq!(events.len(), 0);
     }
 
@@ -309,7 +316,7 @@ mod tests {
         match &events[0] {
             GamepadEvent::Button { control_id, .. } => {
                 assert_eq!(control_id, "gamepad1.dpad.up");
-            }
+            },
             _ => panic!("Expected button event"),
         }
     }

@@ -173,7 +173,7 @@ impl XTouchDriver {
                     let timestamp = Instant::now();
 
                     // Check if this is a pitch bend message
-                    if data.len() >= 1 {
+                    if !data.is_empty() {
                         let status = data[0];
                         let message_type_nibble = (status & 0xF0) >> 4;
                         let is_pitch_bend = message_type_nibble == 0xE; // 0xE0-0xEF
@@ -414,7 +414,7 @@ impl XTouchDriver {
         let header = vec![0x00, 0x00, 0x66, 0x14, 0x12];
 
         // Position for upper line (0x00 + strip * 7)
-        let pos_top = 0x00 + strip_index * 7;
+        let pos_top = strip_index * 7;
 
         // Position for lower line (0x38 + strip * 7)
         let pos_bot = 0x38 + strip_index * 7;
@@ -615,7 +615,7 @@ impl XTouchDriver {
                         // Split on newline
                         let parts: Vec<&str> = text.splitn(2, '\n').collect();
                         (
-                            parts.get(0).copied().unwrap_or(""),
+                            parts.first().copied().unwrap_or(""),
                             parts.get(1).copied().unwrap_or(""),
                         )
                     },

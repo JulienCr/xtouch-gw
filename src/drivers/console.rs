@@ -6,10 +6,10 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{info, debug, warn};
+use tracing::{debug, info, warn};
 
 /// ConsoleDriver logs all driver actions to console/logs
-/// 
+///
 /// This is useful for:
 /// - Testing control mappings without real applications
 /// - Debugging driver execution flow
@@ -59,7 +59,10 @@ impl Driver for ConsoleDriver {
     async fn execute(&self, action: &str, params: Vec<Value>, ctx: ExecutionContext) -> Result<()> {
         // Check if initialized
         if !*self.initialized.read().await {
-            warn!("⚠️  ConsoleDriver '{}' not initialized, skipping execution", self.name);
+            warn!(
+                "⚠️  ConsoleDriver '{}' not initialized, skipping execution",
+                self.name
+            );
             return Ok(());
         }
 
@@ -117,7 +120,7 @@ impl Driver for ConsoleDriver {
 
     async fn shutdown(&self) -> Result<()> {
         let was_initialized = *self.initialized.read().await;
-        
+
         if was_initialized {
             let final_count = *self.execution_count.read().await;
             info!(
@@ -182,7 +185,7 @@ mod tests {
             .execute("action1", vec![Value::from("param1")], ctx.clone())
             .await
             .unwrap();
-        
+
         driver
             .execute("action2", vec![Value::from(42)], ctx.clone())
             .await
@@ -205,10 +208,8 @@ mod tests {
         let ctx = make_test_context();
 
         // Should succeed but warn (not error)
-        let result = driver
-            .execute("test_action", vec![], ctx)
-            .await;
-        
+        let result = driver.execute("test_action", vec![], ctx).await;
+
         assert!(result.is_ok());
         assert_eq!(*driver.execution_count.read().await, 0);
     }
@@ -223,11 +224,7 @@ mod tests {
         // Execute many actions
         for i in 0..10 {
             driver
-                .execute(
-                    "test_action",
-                    vec![Value::from(i)],
-                    ctx.clone(),
-                )
+                .execute("test_action", vec![Value::from(i)], ctx.clone())
                 .await
                 .unwrap();
         }
@@ -235,4 +232,3 @@ mod tests {
         assert_eq!(*driver.execution_count.read().await, 10);
     }
 }
-

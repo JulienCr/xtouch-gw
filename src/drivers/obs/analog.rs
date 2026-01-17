@@ -38,26 +38,36 @@ pub(super) fn shape_analog(value: f64, gamma: f64) -> f64 {
 pub(super) struct AnalogRate {
     pub(super) scene: String,
     pub(super) source: String,
-    pub(super) vx: f64,  // pixels per tick (at 60Hz)
-    pub(super) vy: f64,  // pixels per tick
-    pub(super) vs: f64,  // scale delta per tick
+    pub(super) vx: f64, // pixels per tick (at 60Hz)
+    pub(super) vy: f64, // pixels per tick
+    pub(super) vs: f64, // scale delta per tick
 }
 
 impl ObsDriver {
     /// Set analog velocity for a scene/source
-    pub(super) fn set_analog_rate(&self, scene_name: &str, source_name: &str, vx: Option<f64>, vy: Option<f64>, vs: Option<f64>) {
+    pub(super) fn set_analog_rate(
+        &self,
+        scene_name: &str,
+        source_name: &str,
+        vx: Option<f64>,
+        vy: Option<f64>,
+        vs: Option<f64>,
+    ) {
         let cache_key = self.cache_key(scene_name, source_name);
 
         let mut rates = self.analog_rates.write();
 
         // Get existing rate or create default
-        let current = rates.get(&cache_key).cloned().unwrap_or_else(|| AnalogRate {
-            scene: scene_name.to_string(),
-            source: source_name.to_string(),
-            vx: 0.0,
-            vy: 0.0,
-            vs: 0.0,
-        });
+        let current = rates
+            .get(&cache_key)
+            .cloned()
+            .unwrap_or_else(|| AnalogRate {
+                scene: scene_name.to_string(),
+                source: source_name.to_string(),
+                vx: 0.0,
+                vy: 0.0,
+                vs: 0.0,
+            });
 
         // Apply partial updates (only update provided values)
         let new_vx = vx.unwrap_or(current.vx);
@@ -66,10 +76,14 @@ impl ObsDriver {
 
         debug!(
             "OBS analog rate: {}/{} → vx={:.3} ({}), vy={:.3} ({}), vs={:.3} ({})",
-            scene_name, source_name,
-            new_vx, if vx.is_some() { "new" } else { "keep" },
-            new_vy, if vy.is_some() { "new" } else { "keep" },
-            new_vs, if vs.is_some() { "new" } else { "keep" }
+            scene_name,
+            source_name,
+            new_vx,
+            if vx.is_some() { "new" } else { "keep" },
+            new_vy,
+            if vy.is_some() { "new" } else { "keep" },
+            new_vs,
+            if vs.is_some() { "new" } else { "keep" }
         );
 
         if new_vx == 0.0 && new_vy == 0.0 && new_vs == 0.0 {
@@ -79,13 +93,16 @@ impl ObsDriver {
             self.analog_error_count.write().remove(&cache_key);
         } else {
             // Update or insert velocity with merged values
-            rates.insert(cache_key.clone(), AnalogRate {
-                scene: scene_name.to_string(),
-                source: source_name.to_string(),
-                vx: new_vx,
-                vy: new_vy,
-                vs: new_vs,
-            });
+            rates.insert(
+                cache_key.clone(),
+                AnalogRate {
+                    scene: scene_name.to_string(),
+                    source: source_name.to_string(),
+                    vx: new_vx,
+                    vy: new_vy,
+                    vs: new_vs,
+                },
+            );
             // Clear error count when rate is updated (fresh start)
             self.analog_error_count.write().remove(&cache_key);
         }
@@ -155,17 +172,14 @@ impl ObsDriver {
 
                         let cache_key = driver_self.cache_key(&rate.scene, &rate.source);
 
-                        match driver_self.apply_delta(
-                            &rate.scene,
-                            &rate.source,
-                            dx_opt,
-                            dy_opt,
-                            ds_opt
-                        ).await {
+                        match driver_self
+                            .apply_delta(&rate.scene, &rate.source, dx_opt, dy_opt, ds_opt)
+                            .await
+                        {
                             Ok(_) => {
                                 // Success - clear error count
                                 driver_self.analog_error_count.write().remove(&cache_key);
-                            }
+                            },
                             Err(e) => {
                                 // Increment error count
                                 let mut error_counts = driver_self.analog_error_count.write();
@@ -183,7 +197,7 @@ impl ObsDriver {
                                     // Only trace on early attempts
                                     trace!("OBS analog tick error (attempt {}): {}", count, e);
                                 }
-                            }
+                            },
                         }
                     }
                 }
@@ -203,4 +217,3 @@ impl ObsDriver {
         *self.analog_timer_active.lock() = false;
     }
 }
-

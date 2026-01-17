@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{debug, warn, trace};
+use tracing::{debug, trace, warn};
 
 use super::{ActivityDirection, ConnectionStatus, TrayCommand, TrayUpdate};
 use crate::config::TrayConfig;
@@ -103,50 +103,67 @@ impl TrayManager {
                         let _ = self.command_tx.try_send(TrayCommand::Shutdown);
                         // Exit the loop to shut down
                         return Ok(());
-                    }
+                    },
                     "connect_obs" => {
                         debug!("Connect OBS selected");
                         let _ = self.command_tx.try_send(TrayCommand::ConnectObs);
-                    }
+                    },
                     "recheck_all" => {
                         debug!("Recheck all selected");
                         let _ = self.command_tx.try_send(TrayCommand::RecheckAll);
-                    }
+                    },
                     "toggle_activity_leds" => {
                         debug!("Toggle activity LEDs");
                         self.config.show_activity_leds = !self.config.show_activity_leds;
-                        debug!("Activity LEDs {}", if self.config.show_activity_leds { "enabled" } else { "disabled" });
+                        debug!(
+                            "Activity LEDs {}",
+                            if self.config.show_activity_leds {
+                                "enabled"
+                            } else {
+                                "disabled"
+                            }
+                        );
 
                         // Rebuild menu to reflect new setting
                         if let Ok(new_menu) = self.build_menu_with_all_statuses() {
                             tray_icon.set_menu(Some(Box::new(new_menu.clone())));
                             *menu_clone.lock() = new_menu;
                         }
-                    }
+                    },
                     "toggle_connection_status" => {
                         debug!("Toggle connection status");
                         self.config.show_connection_status = !self.config.show_connection_status;
-                        debug!("Connection status {}", if self.config.show_connection_status { "enabled" } else { "disabled" });
+                        debug!(
+                            "Connection status {}",
+                            if self.config.show_connection_status {
+                                "enabled"
+                            } else {
+                                "disabled"
+                            }
+                        );
 
                         // Rebuild menu to reflect new setting
                         if let Ok(new_menu) = self.build_menu_with_all_statuses() {
                             tray_icon.set_menu(Some(Box::new(new_menu.clone())));
                             *menu_clone.lock() = new_menu;
                         }
-                    }
+                    },
                     "about" => {
                         debug!("About selected");
                         // Note: In a real implementation, this would show a dialog
                         // For now, we just log it
-                    }
+                    },
                     _ => {
                         debug!("Unknown menu item: {:?}", event.id);
-                    }
+                    },
                 }
             }
 
             // Check for updates with a timeout
-            let update = match self.update_rx.recv_timeout(std::time::Duration::from_millis(50)) {
+            let update = match self
+                .update_rx
+                .recv_timeout(std::time::Duration::from_millis(50))
+            {
                 Ok(update) => update,
                 Err(crossbeam::channel::RecvTimeoutError::Timeout) => continue,
                 Err(crossbeam::channel::RecvTimeoutError::Disconnected) => break,
@@ -180,11 +197,11 @@ impl TrayManager {
                         *menu_clone.lock() = new_menu;
                         trace!("Menu rebuilt with {} items", item_count);
                     }
-                }
+                },
                 TrayUpdate::Activity { driver, direction } => {
                     // Legacy activity update (deprecated)
                     trace!("Tray: activity from {} {:?}", driver, direction);
-                }
+                },
                 TrayUpdate::ActivitySnapshot { activities } => {
                     // Update activity states
                     self.driver_activities = activities;
@@ -198,10 +215,14 @@ impl TrayManager {
                             tray_icon.set_menu(Some(Box::new(new_menu.clone())));
                             *menu_clone.lock() = new_menu;
                             self.last_menu_hash = new_hash;
-                            trace!("Menu rebuilt (hash changed: {} -> {})", self.last_menu_hash, new_hash);
+                            trace!(
+                                "Menu rebuilt (hash changed: {} -> {})",
+                                self.last_menu_hash,
+                                new_hash
+                            );
                         }
                     }
-                }
+                },
             }
         }
 
@@ -281,25 +302,29 @@ impl TrayManager {
                     let status_text = match status {
                         ConnectionStatus::Connected => {
                             format!("✓ {}: Connected", driver_name)
-                        }
+                        },
                         ConnectionStatus::Disconnected => {
                             format!("✗ {}: Disconnected", driver_name)
-                        }
+                        },
                         ConnectionStatus::Reconnecting { attempt } => {
                             format!("⏳ {}: Reconnecting ({})", driver_name, attempt)
-                        }
+                        },
                     };
 
                     let status_item = muda::MenuItem::new(&status_text, false, None);
                     menu.append(&status_item)?;
 
                     // Activity LEDs (only show for connected drivers and if enabled)
-                    if self.config.show_activity_leds && matches!(status, ConnectionStatus::Connected) {
-                        let inbound_active = self.driver_activities
+                    if self.config.show_activity_leds
+                        && matches!(status, ConnectionStatus::Connected)
+                    {
+                        let inbound_active = self
+                            .driver_activities
                             .get(&(driver_name.to_string(), ActivityDirection::Inbound))
                             .copied()
                             .unwrap_or(false);
-                        let outbound_active = self.driver_activities
+                        let outbound_active = self
+                            .driver_activities
                             .get(&(driver_name.to_string(), ActivityDirection::Outbound))
                             .copied()
                             .unwrap_or(false);
@@ -329,19 +354,27 @@ impl TrayManager {
         // Settings submenu
         let settings_menu = muda::Submenu::new("Settings", true);
 
-        let led_check = if self.config.show_activity_leds { "✓ " } else { "" };
+        let led_check = if self.config.show_activity_leds {
+            "✓ "
+        } else {
+            ""
+        };
         let toggle_leds = muda::MenuItem::with_id(
             "toggle_activity_leds",
-            &format!("{}Show Activity LEDs", led_check),
+            format!("{}Show Activity LEDs", led_check),
             true,
             None,
         );
         settings_menu.append(&toggle_leds)?;
 
-        let status_check = if self.config.show_connection_status { "✓ " } else { "" };
+        let status_check = if self.config.show_connection_status {
+            "✓ "
+        } else {
+            ""
+        };
         let toggle_status = muda::MenuItem::with_id(
             "toggle_connection_status",
-            &format!("{}Show Connection Status", status_check),
+            format!("{}Show Connection Status", status_check),
             true,
             None,
         );
@@ -471,7 +504,7 @@ impl TrayManager {
                 ConnectionStatus::Reconnecting { attempt } => {
                     3u8.hash(&mut hasher);
                     attempt.hash(&mut hasher);
-                }
+                },
             }
         }
 

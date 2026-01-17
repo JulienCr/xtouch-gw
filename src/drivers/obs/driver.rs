@@ -4,10 +4,10 @@
 
 use obws::Client as ObsClient;
 use parking_lot::Mutex;
-use tokio::sync::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::sync::RwLock;
 use tracing::debug;
 
 use super::analog::AnalogRate;
@@ -43,7 +43,8 @@ pub struct ObsDriver {
     pub(super) current_status: Arc<parking_lot::RwLock<crate::tray::ConnectionStatus>>,
 
     // Activity tracking
-    pub(super) activity_tracker: Arc<parking_lot::RwLock<Option<Arc<crate::tray::ActivityTracker>>>>,
+    pub(super) activity_tracker:
+        Arc<parking_lot::RwLock<Option<Arc<crate::tray::ActivityTracker>>>>,
 
     // Reconnection state
     pub(super) reconnect_count: Arc<Mutex<usize>>,
@@ -68,7 +69,8 @@ pub struct ObsDriver {
 
     // Camera control state (for split views)
     pub(super) camera_control_state: Arc<parking_lot::RwLock<CameraControlState>>,
-    pub(super) camera_control_config: Arc<parking_lot::RwLock<Option<crate::config::CameraControlConfig>>>,
+    pub(super) camera_control_config:
+        Arc<parking_lot::RwLock<Option<crate::config::CameraControlConfig>>>,
 }
 
 impl ObsDriver {
@@ -88,7 +90,9 @@ impl ObsDriver {
             indicator_emitters: Arc::new(parking_lot::RwLock::new(Vec::new())),
             last_selected_sent: Arc::new(parking_lot::RwLock::new(None)),
             status_callbacks: Arc::new(parking_lot::RwLock::new(Vec::new())),
-            current_status: Arc::new(parking_lot::RwLock::new(crate::tray::ConnectionStatus::Disconnected)),
+            current_status: Arc::new(parking_lot::RwLock::new(
+                crate::tray::ConnectionStatus::Disconnected,
+            )),
             activity_tracker: Arc::new(parking_lot::RwLock::new(None)),
             reconnect_count: Arc::new(Mutex::new(0)),
             shutdown_flag: Arc::new(Mutex::new(false)),
@@ -113,22 +117,18 @@ impl ObsDriver {
 
     /// Create from config
     pub fn from_config(config: &crate::config::ObsConfig) -> Self {
-        let driver = Self::new(
-            config.host.clone(),
-            config.port,
-            config.password.clone(),
-        );
-        
+        let driver = Self::new(config.host.clone(), config.port, config.password.clone());
+
         // Load camera control config if present
         if let Some(camera_control) = &config.camera_control {
             *driver.camera_control_config.write() = Some(camera_control.clone());
-            
+
             // Initialize last_camera to first camera if available
             if let Some(first_camera) = camera_control.cameras.first() {
                 driver.camera_control_state.write().last_camera = first_camera.id.clone();
             }
         }
-        
+
         driver
     }
 
@@ -140,8 +140,10 @@ impl ObsDriver {
                 *self.analog_zoom_gain.write() = analog.zoom_gain as f64;
                 *self.analog_deadzone.write() = analog.deadzone as f64;
                 *self.analog_gamma.write() = analog.gamma as f64;
-                debug!("OBS: analog config loaded (pan_gain={}, zoom_gain={}, deadzone={}, gamma={})",
-                    analog.pan_gain, analog.zoom_gain, analog.deadzone, analog.gamma);
+                debug!(
+                    "OBS: analog config loaded (pan_gain={}, zoom_gain={}, deadzone={}, gamma={})",
+                    analog.pan_gain, analog.zoom_gain, analog.deadzone, analog.gamma
+                );
             }
         }
     }
@@ -219,4 +221,3 @@ impl ObsDriver {
         }
     }
 }
-

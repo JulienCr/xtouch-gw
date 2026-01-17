@@ -5,22 +5,22 @@
 //! multiple controller types in a headless tray application.
 
 use anyhow::Result;
-use gilrs::{Gilrs, Event, EventType};
+use gilrs::{Event, EventType, Gilrs};
 use rusty_xinput::XInputHandle;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
 use tokio::sync::mpsc;
-use tracing::{warn, debug, trace};
+use tokio::sync::RwLock;
+use tracing::{debug, trace, warn};
 
-use crate::config::AnalogConfig;
 use super::hybrid_id::HybridControllerId;
 use super::provider::GamepadEvent;
 use super::slot::SlotManager;
 use super::xinput_convert::{
-    CachedXInputState, convert_xinput_buttons, convert_xinput_axes, poll_xinput_controller
+    convert_xinput_axes, convert_xinput_buttons, poll_xinput_controller, CachedXInputState,
 };
+use crate::config::AnalogConfig;
 
 /// Callback type for gamepad events
 pub type EventCallback = Arc<dyn Fn(GamepadEvent) + Send + Sync>;
@@ -86,7 +86,7 @@ impl HybridGamepadProvider {
             Err(e) => {
                 warn!("Failed to initialize hybrid gamepad provider: {}", e);
                 return;
-            }
+            },
         };
 
         // Initial scan (3 seconds for Bluetooth controllers)
@@ -102,8 +102,8 @@ impl HybridGamepadProvider {
                 Ok(_) | Err(mpsc::error::TryRecvError::Disconnected) => {
                     debug!("Hybrid gamepad provider shutting down");
                     break;
-                }
-                Err(mpsc::error::TryRecvError::Empty) => {}
+                },
+                Err(mpsc::error::TryRecvError::Empty) => {},
             }
 
             // Reconnection check (every 2 seconds)
@@ -170,11 +170,11 @@ impl HybridProviderState {
             Ok(g) => {
                 debug!("gilrs initialized (WGI backend enabled)");
                 g
-            }
+            },
             Err(e) => {
                 warn!("Failed to initialize gilrs: {:?}", e);
                 return Err(anyhow::anyhow!("gilrs initialization failed: {}", e));
-            }
+            },
         };
 
         // Try to initialize XInput (optional, graceful fallback)
@@ -182,11 +182,14 @@ impl HybridProviderState {
             Ok(handle) => {
                 debug!("XInput initialized successfully");
                 (Some(handle), true)
-            }
+            },
             Err(e) => {
-                warn!("XInput library not available (falling back to WGI-only): {:?}", e);
+                warn!(
+                    "XInput library not available (falling back to WGI-only): {:?}",
+                    e
+                );
                 (None, false)
-            }
+            },
         };
 
         // Create slot manager (or use legacy mode if empty)
@@ -221,11 +224,8 @@ impl HybridProviderState {
         while scan_start.elapsed() < scan_duration {
             // Process gilrs events
             while let Some(Event { id, event, .. }) = self.gilrs.next_event() {
-                match event {
-                    EventType::Connected => {
-                        trace!("gilrs gamepad connected during initial scan: {:?}", id);
-                    }
-                    _ => {}
+                if event == EventType::Connected {
+                    trace!("gilrs gamepad connected during initial scan: {:?}", id);
                 }
             }
 
@@ -252,7 +252,10 @@ impl HybridProviderState {
 
                 // Check if this is a duplicate Xbox controller (prefer XInput)
                 if xinput_has_controllers && Self::is_xbox_name(name) {
-                    debug!("Skipping gilrs detection of Xbox controller (using XInput instead): {}", name);
+                    debug!(
+                        "Skipping gilrs detection of Xbox controller (using XInput instead): {}",
+                        name
+                    );
                     continue;
                 }
 
@@ -293,16 +296,18 @@ impl HybridProviderState {
         let name_lower = name.to_lowercase();
 
         // Check if name suggests Xbox controller
-        name_lower.contains("xbox") ||
-        name_lower.contains("xinput") ||
-        name_lower.contains("x-box") ||
-        name_lower.contains("microsoft")
+        name_lower.contains("xbox")
+            || name_lower.contains("xinput")
+            || name_lower.contains("x-box")
+            || name_lower.contains("microsoft")
     }
 
     /// Report connected gamepads after initial scan
     fn report_connected_gamepads(&mut self) {
         // Count gilrs gamepads
-        let gilrs_count = self.gilrs.gamepads()
+        let gilrs_count = self
+            .gilrs
+            .gamepads()
             .filter(|(_, gp)| gp.is_connected())
             .count();
 
@@ -319,7 +324,10 @@ impl HybridProviderState {
         if gilrs_count == 0 && xinput_count == 0 {
             warn!("⚠️  No gamepads detected at all");
         } else {
-            debug!("Found {} gilrs gamepad(s) and {} XInput gamepad(s):", gilrs_count, xinput_count);
+            debug!(
+                "Found {} gilrs gamepad(s) and {} XInput gamepad(s):",
+                gilrs_count, xinput_count
+            );
 
             // List gilrs gamepads
             let xinput_has_controllers = self.xinput_connected.iter().any(|&c| c);
@@ -336,7 +344,11 @@ impl HybridProviderState {
             if let Some(ref handle) = self.xinput_handle {
                 for user_index in 0..4u32 {
                     if let Ok(Some(_)) = poll_xinput_controller(handle, user_index) {
-                        debug!("  - XInput {}: \"XInput Controller {}\"", user_index, user_index + 1);
+                        debug!(
+                            "  - XInput {}: \"XInput Controller {}\"",
+                            user_index,
+                            user_index + 1
+                        );
                     }
                 }
             }
@@ -425,7 +437,8 @@ impl HybridProviderState {
             };
 
             // Convert event with slot prefix (with zero-detection and sequence)
-            if let Some(gamepad_event) = self.convert_gilrs_event(id, event, &prefix, analog_config) {
+            if let Some(gamepad_event) = self.convert_gilrs_event(id, event, &prefix, analog_config)
+            {
                 debug!("gilrs event: {:?}", gamepad_event);
 
                 if event_tx.send(gamepad_event).is_err() {
@@ -442,23 +455,19 @@ impl HybridProviderState {
         id: gilrs::GamepadId,
         event: EventType,
         prefix: &str,
-        analog_config: Option<AnalogConfig>
+        analog_config: Option<AnalogConfig>,
     ) -> Option<GamepadEvent> {
         use gilrs::Axis;
 
         match event {
-            EventType::ButtonPressed(button, _) => {
-                Some(GamepadEvent::Button {
-                    control_id: Self::button_to_id(button, prefix),
-                    pressed: true,
-                })
-            }
-            EventType::ButtonReleased(button, _) => {
-                Some(GamepadEvent::Button {
-                    control_id: Self::button_to_id(button, prefix),
-                    pressed: false,
-                })
-            }
+            EventType::ButtonPressed(button, _) => Some(GamepadEvent::Button {
+                control_id: Self::button_to_id(button, prefix),
+                pressed: true,
+            }),
+            EventType::ButtonReleased(button, _) => Some(GamepadEvent::Button {
+                control_id: Self::button_to_id(button, prefix),
+                pressed: false,
+            }),
             EventType::AxisChanged(axis, value, _) => {
                 // Normalize Y-axis convention to match HID behavior
                 let normalized_value = match axis {
@@ -473,15 +482,17 @@ impl HybridProviderState {
                 // Check if axis is returning to zero (within threshold)
                 const ZERO_THRESHOLD: f32 = 0.05;
                 let is_near_zero = normalized_value.abs() < ZERO_THRESHOLD;
-                let was_non_zero = last_value.map_or(false, |v| v.abs() >= ZERO_THRESHOLD);
+                let was_non_zero = last_value.is_some_and(|v| v.abs() >= ZERO_THRESHOLD);
 
                 // If axis is returning to center from non-zero position, emit explicit 0.0
                 if is_near_zero {
                     if was_non_zero {
-                        debug!("gilrs axis {} returning to zero (was {:.3}, now {:.3})",
-                               Self::axis_to_id(axis, prefix),
-                               last_value.unwrap_or(0.0),
-                               normalized_value);
+                        debug!(
+                            "gilrs axis {} returning to zero (was {:.3}, now {:.3})",
+                            Self::axis_to_id(axis, prefix),
+                            last_value.unwrap_or(0.0),
+                            normalized_value
+                        );
                         // Remove from tracking (axis is now at rest)
                         self.last_gilrs_axis_values.remove(&key);
                         // Increment sequence for ordering
@@ -495,7 +506,7 @@ impl HybridProviderState {
                         });
                     }
                     // Already at zero, no event needed
-                    return None;
+                    None
                 } else {
                     // Non-zero value, track it
                     self.last_gilrs_axis_values.insert(key, normalized_value);
@@ -508,17 +519,18 @@ impl HybridProviderState {
                         sequence: self.axis_sequence,
                     })
                 }
-            }
+            },
             EventType::Connected => {
                 trace!("gilrs gamepad connected event");
                 None
-            }
+            },
             EventType::Disconnected => {
                 debug!("gilrs gamepad disconnected event");
                 // Clean up axis tracking for disconnected gamepad
-                self.last_gilrs_axis_values.retain(|(gp_id, _), _| *gp_id != id);
+                self.last_gilrs_axis_values
+                    .retain(|(gp_id, _), _| *gp_id != id);
                 None
-            }
+            },
             _ => None,
         }
     }
@@ -550,7 +562,7 @@ impl HybridProviderState {
             _ => {
                 warn!("Unknown gilrs button: {:?}", button);
                 "unknown"
-            }
+            },
         };
 
         format!("{}.btn.{}", prefix, name)
@@ -570,7 +582,7 @@ impl HybridProviderState {
             _ => {
                 warn!("Unknown gilrs axis: {:?}", axis);
                 "unknown"
-            }
+            },
         };
 
         format!("{}.axis.{}", prefix, name)
@@ -598,11 +610,11 @@ impl HybridProviderState {
                             self.last_xinput_state[idx] = None;
                         }
                         continue;
-                    }
+                    },
                     Err(e) => {
                         warn!("XInput error for user {}: {:?}", user_index, e);
                         continue;
-                    }
+                    },
                 }
             }; // handle borrow ends here
 
@@ -623,7 +635,7 @@ impl HybridProviderState {
         &mut self,
         user_index: usize,
         state: rusty_xinput::XInputState,
-        event_tx: &mpsc::UnboundedSender<GamepadEvent>
+        event_tx: &mpsc::UnboundedSender<GamepadEvent>,
     ) {
         let hybrid_id = HybridControllerId::from_xinput(user_index);
 
@@ -652,7 +664,9 @@ impl HybridProviderState {
         };
 
         // Generate button events
-        let old_buttons = self.last_xinput_state[user_index].as_ref().map(|s| s.buttons);
+        let old_buttons = self.last_xinput_state[user_index]
+            .as_ref()
+            .map(|s| s.buttons);
         let new_buttons = state.raw.Gamepad.wButtons;
         let button_events = convert_xinput_buttons(old_buttons, new_buttons, &prefix);
 
@@ -667,7 +681,7 @@ impl HybridProviderState {
             &state,
             &prefix,
             analog_config,
-            &mut self.axis_sequence
+            &mut self.axis_sequence,
         );
 
         for event in axis_events {

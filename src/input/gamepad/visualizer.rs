@@ -3,7 +3,7 @@
 //! Displays raw and normalized stick/trigger values, button states, and timing info
 //! for all connected XInput controllers. Useful for debugging axis boundary issues.
 
-use super::visualizer_state::{VisualizerState, ControllerState, StickState, TriggerState};
+use super::visualizer_state::{ControllerState, StickState, TriggerState, VisualizerState};
 use rusty_xinput::XInputHandle;
 
 /// Main visualizer application
@@ -52,10 +52,10 @@ impl GamepadVisualizerApp {
                         controller.left_trigger.normalized = lt;
                         controller.right_trigger.normalized = rt;
                     }
-                }
+                },
                 Err(_) => {
                     self.state.mark_disconnected(user_index);
-                }
+                },
             }
         }
     }
@@ -65,10 +65,8 @@ impl GamepadVisualizerApp {
         ui.label(egui::RichText::new(label).strong().size(14.0));
 
         // Visual 2D representation
-        let (response, painter) = ui.allocate_painter(
-            egui::Vec2::new(200.0, 200.0),
-            egui::Sense::hover(),
-        );
+        let (response, painter) =
+            ui.allocate_painter(egui::Vec2::new(200.0, 200.0), egui::Sense::hover());
 
         let rect = response.rect;
         let center = rect.center();
@@ -157,7 +155,9 @@ impl GamepadVisualizerApp {
         });
 
         // Display magnitude to verify radial normalization
-        let magnitude = (stick.normalized_x * stick.normalized_x + stick.normalized_y * stick.normalized_y).sqrt();
+        let magnitude = (stick.normalized_x * stick.normalized_x
+            + stick.normalized_y * stick.normalized_y)
+            .sqrt();
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Mag: ").color(egui::Color32::from_gray(180)));
 

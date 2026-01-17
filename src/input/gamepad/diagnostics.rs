@@ -1,10 +1,10 @@
 //! Gamepad diagnostics tool for troubleshooting detection issues
 
-use gilrs::{Gilrs, Button, Axis, Event, EventType};
+use gilrs::{Axis, Button, Event, EventType, Gilrs};
 use rusty_xinput::XInputHandle;
-use tracing::info;
 use std::thread;
 use std::time::Duration;
+use tracing::info;
 
 /// Print detailed information about all detected gamepads
 ///
@@ -31,20 +31,30 @@ pub fn print_gamepad_diagnostics() {
                         info!("   Product name: \"XInput Controller {}\"", user_index + 1);
                         info!("   Packet number: {}", state.raw.dwPacketNumber);
                         info!("   Buttons: 0x{:04X}", state.raw.Gamepad.wButtons);
-                        info!("   Left stick: ({}, {})", state.raw.Gamepad.sThumbLX, state.raw.Gamepad.sThumbLY);
-                        info!("   Right stick: ({}, {})", state.raw.Gamepad.sThumbRX, state.raw.Gamepad.sThumbRY);
-                        info!("   Triggers: (L={}, R={})", state.left_trigger(), state.right_trigger());
+                        info!(
+                            "   Left stick: ({}, {})",
+                            state.raw.Gamepad.sThumbLX, state.raw.Gamepad.sThumbLY
+                        );
+                        info!(
+                            "   Right stick: ({}, {})",
+                            state.raw.Gamepad.sThumbRX, state.raw.Gamepad.sThumbRY
+                        );
+                        info!(
+                            "   Triggers: (L={}, R={})",
+                            state.left_trigger(),
+                            state.right_trigger()
+                        );
                         info!("");
                         info!("   📌 Config pattern suggestion:");
                         info!("      product_match: \"XInput\"  # Matches all XInput controllers");
                         info!("");
-                    }
+                    },
                     Err(rusty_xinput::XInputUsageError::DeviceNotConnected) => {
                         // Not an error, just not connected
-                    }
+                    },
                     Err(e) => {
                         info!("   XInput slot {}: Error - {:?}", user_index, e);
-                    }
+                    },
                 }
             }
 
@@ -53,12 +63,12 @@ pub fn print_gamepad_diagnostics() {
             } else {
                 info!("✅ Found {} XInput controller(s)", xinput_count);
             }
-        }
+        },
         Err(e) => {
             info!("❌ XInput library not available: {:?}", e);
             info!("   This is normal if XInput DLLs are not installed.");
             info!("   Non-XInput controllers will still work via WGI backend.");
-        }
+        },
     }
 
     info!("");
@@ -69,12 +79,12 @@ pub fn print_gamepad_diagnostics() {
         Ok(g) => {
             info!("✅ gilrs initialized successfully");
             g
-        }
+        },
         Err(e) => {
             info!("❌ Failed to initialize GilRs: {:?}", e);
             info!("This may indicate missing system libraries or permissions issues.");
             return;
-        }
+        },
     };
 
     info!("⏳ Waiting for gamepads to connect (5 seconds)...");
@@ -90,11 +100,11 @@ pub fn print_gamepad_diagnostics() {
             match event {
                 EventType::Connected => {
                     info!("   📶 Gamepad connection detected...");
-                }
+                },
                 EventType::Disconnected => {
                     info!("   📵 Gamepad disconnection detected...");
-                }
-                _ => {} // Ignore other events during scan
+                },
+                _ => {}, // Ignore other events during scan
             }
         }
         thread::sleep(Duration::from_millis(100));
