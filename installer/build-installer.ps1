@@ -118,13 +118,29 @@ if (-not $SkipStreamDeck) {
     if (Test-Path $pluginPackageJson) {
         Write-ColorOutput $Yellow "Building Stream Deck plugin..."
         Push-Location $StreamDeckPlugin
+
+        # Install all dependencies (including dev) for building
         pnpm install --frozen-lockfile 2>$null
+
+        # Build TypeScript to JavaScript
         pnpm build
         if ($LASTEXITCODE -ne 0) {
             Write-ColorOutput $Red "Stream Deck plugin build failed!"
             Pop-Location
             exit 1
         }
+
+        # Clean and reinstall production-only dependencies for packaging
+        # This ensures native modules (canvas) are included without dev bloat
+        Write-ColorOutput $Yellow "Installing production dependencies for packaging..."
+        Remove-Item -Recurse -Force "node_modules" -ErrorAction SilentlyContinue
+        pnpm install --prod
+        if ($LASTEXITCODE -ne 0) {
+            Write-ColorOutput $Red "Production dependency install failed!"
+            Pop-Location
+            exit 1
+        }
+
         Pop-Location
         Write-ColorOutput $Green "Stream Deck plugin built!"
     } else {
@@ -161,6 +177,9 @@ if (Test-Path $outputFile) {
     Write-Host ""
     Write-Host "Output: $outputFile"
     Write-Host "Size: $size MB"
+    Write-Host ""
+    Write-ColorOutput $Yellow "Note: Stream Deck plugin node_modules is now production-only."
+    Write-Host "Run 'pnpm install' in streamdeck-plugin/com.juliencr.xtouch-gw.sdPlugin to restore dev dependencies."
 } else {
     Write-ColorOutput $Yellow "Installer created (check dist/ folder)"
 }

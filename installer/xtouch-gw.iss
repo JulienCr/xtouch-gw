@@ -77,9 +77,10 @@ Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion isreadme; Compone
 ; onlyifdoesntexist prevents overwriting user customizations on upgrade
 Source: "..\config.example.yaml"; DestDir: "{userappdata}\{#MyAppName}"; DestName: "config.yaml"; Flags: ignoreversion onlyifdoesntexist; Components: main
 
-; Stream Deck plugin (copy entire plugin folder, excluding dev files and logs)
+; Stream Deck plugin (copy entire plugin folder, including production node_modules for native modules like canvas)
+; Note: build-installer.ps1 prepares node_modules with production-only dependencies before packaging
 Source: "..\streamdeck-plugin\com.juliencr.xtouch-gw.sdPlugin\*"; DestDir: "{userappdata}\Elgato\StreamDeck\Plugins\com.juliencr.xtouch-gw.sdPlugin"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: streamdeck; \
-  Excludes: "node_modules,.git,*.ts,tsconfig.json,rollup.config.js,pnpm-lock.yaml,logs,logs\*"
+  Excludes: ".git,*.ts,tsconfig.json,rollup.config.js,pnpm-lock.yaml,logs,logs\*"
 
 [Dirs]
 ; Create AppData directory for user configuration and state
