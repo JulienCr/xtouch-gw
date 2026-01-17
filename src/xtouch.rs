@@ -693,6 +693,19 @@ pub mod discovery {
         pub is_virtual: bool,
     }
 
+    impl PortInfo {
+        /// Create a new PortInfo, automatically detecting virtual port status
+        fn new(index: usize, name: String) -> Self {
+            let is_virtual =
+                name.contains("Virtual") || name.contains("loopMIDI") || name.contains("IAC");
+            Self {
+                index,
+                name,
+                is_virtual,
+            }
+        }
+    }
+
     /// Discover all available MIDI ports
     pub fn discover_all_ports() -> Result<(Vec<PortInfo>, Vec<PortInfo>)> {
         let input_ports = discover_input_ports()?;
@@ -703,42 +716,34 @@ pub mod discovery {
     /// Discover input ports
     pub fn discover_input_ports() -> Result<Vec<PortInfo>> {
         let midi_in = MidiInput::new("XTouch-GW-Discovery")?;
-
-        let mut port_infos = Vec::new();
-        for (index, port) in midi_in.ports().iter().enumerate() {
-            if let Ok(name) = midi_in.port_name(port) {
-                let is_virtual =
-                    name.contains("Virtual") || name.contains("loopMIDI") || name.contains("IAC");
-
-                port_infos.push(PortInfo {
-                    index,
-                    name,
-                    is_virtual,
-                });
-            }
-        }
-
+        let port_infos = midi_in
+            .ports()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, port)| {
+                midi_in
+                    .port_name(port)
+                    .ok()
+                    .map(|name| PortInfo::new(index, name))
+            })
+            .collect();
         Ok(port_infos)
     }
 
     /// Discover output ports
     pub fn discover_output_ports() -> Result<Vec<PortInfo>> {
         let midi_out = MidiOutput::new("XTouch-GW-Discovery")?;
-
-        let mut port_infos = Vec::new();
-        for (index, port) in midi_out.ports().iter().enumerate() {
-            if let Ok(name) = midi_out.port_name(port) {
-                let is_virtual =
-                    name.contains("Virtual") || name.contains("loopMIDI") || name.contains("IAC");
-
-                port_infos.push(PortInfo {
-                    index,
-                    name,
-                    is_virtual,
-                });
-            }
-        }
-
+        let port_infos = midi_out
+            .ports()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, port)| {
+                midi_out
+                    .port_name(port)
+                    .ok()
+                    .map(|name| PortInfo::new(index, name))
+            })
+            .collect();
         Ok(port_infos)
     }
 

@@ -23,19 +23,10 @@ impl super::Router {
             None => return Some(raw_data.to_vec()), // Pass through invalid/sys messages
         };
 
-        // Get normalized value from input
-        let normalized_value = match input_msg {
-            crate::midi::MidiMessage::PitchBend { value, .. } => {
-                crate::midi::convert::to_percent_14bit(value) / 100.0
-            },
-            crate::midi::MidiMessage::ControlChange { value, .. } => {
-                crate::midi::convert::to_percent_7bit(value) / 100.0
-            },
-            crate::midi::MidiMessage::NoteOn { velocity, .. } => {
-                crate::midi::convert::to_percent_7bit(velocity) / 100.0
-            },
-            crate::midi::MidiMessage::NoteOff { .. } => 0.0,
-            _ => return Some(raw_data.to_vec()), // Pass through other messages
+        // Get normalized value from input (0.0-1.0)
+        let normalized_value = match input_msg.normalized_value() {
+            Some(v) => v,
+            None => return Some(raw_data.to_vec()), // Pass through messages without values
         };
 
         // PAGE-AWARE FILTERING: Check if app is mapped on active page BEFORE scheduling setpoints
@@ -162,44 +153,36 @@ impl super::Router {
             if let Ok(db) = load_default_mappings() {
                 if let Some(native_spec) = db.get_midi_spec(&control_id, is_mcu_mode) {
                     // Construct native message with scaled value
+                    use crate::midi::convert::{
+                        denormalize_to_7bit, denormalize_to_14bit, midi_channel_to_config,
+                    };
+
                     let native_msg = match native_spec {
                         MidiSpec::ControlChange { cc } => {
                             // For X-Touch, CCs are usually on channel 1 (0)
-                            // But we should probably check the group or assume standard MCU
                             Some(crate::midi::MidiMessage::ControlChange {
-                                channel: 0, // Default to Ch 1 for buttons
+                                channel: 0,
                                 cc,
-                                value: crate::midi::convert::from_percent_7bit(
-                                    normalized_value * 100.0,
-                                ),
+                                value: denormalize_to_7bit(normalized_value),
                             })
                         },
                         MidiSpec::Note { note } => {
-                            let velocity =
-                                crate::midi::convert::from_percent_7bit(normalized_value * 100.0);
-                            if velocity == 0 {
-                                Some(crate::midi::MidiMessage::NoteOff {
-                                    channel: 0, // Default to Ch 1 for buttons
-                                    note,
-                                    velocity: 0,
-                                })
-                            } else {
-                                Some(crate::midi::MidiMessage::NoteOn {
-                                    channel: 0, // Default to Ch 1 for buttons
-                                    note,
-                                    velocity,
-                                })
-                            }
+                            // X-Touch LEDs need NoteOn with velocity 0 to turn off
+                            // (NoteOff 0x80 is not recognized by the hardware)
+                            Some(crate::midi::MidiMessage::NoteOn {
+                                channel: 0,
+                                note,
+                                velocity: denormalize_to_7bit(normalized_value),
+                            })
                         },
                         MidiSpec::PitchBend { channel } => {
-                            let value14 =
-                                crate::midi::convert::from_percent_14bit(normalized_value * 100.0);
+                            let value14 = denormalize_to_14bit(normalized_value);
 
-                            // CRITICAL: Schedule motor setpoint for CC→PB transformations
+                            // CRITICAL: Schedule motor setpoint for CC->PB transformations
                             // This handles the case where QLC+ sends CC but the fader needs PB
-                            let channel1 = channel + 1; // Convert 0-based to 1-based
+                            let channel1 = midi_channel_to_config(channel);
                             debug!(
-                                "← Scheduling fader setpoint (CC→PB): {} -> ch={} value14={}",
+                                "← Scheduling fader setpoint (CC->PB): {} -> ch={} value14={}",
                                 app_name, channel1, value14
                             );
                             self.fader_setpoint.schedule(channel1, value14, None);

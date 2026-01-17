@@ -351,26 +351,14 @@ impl Driver for ObsDriver {
                     .and_then(|v| v.as_str())
                     .context("Scene name required")?;
 
-                let guard = self.client.read().await;
-                let client = guard.as_ref().context("OBS not connected")?;
-
-                // Check studio mode to determine which scene to change
-                let studio_mode = *self.studio_mode.read();
-
-                if studio_mode {
-                    info!("🎬 OBS Preview scene change → '{}'", scene_name);
-                    client
-                        .scenes()
-                        .set_current_preview_scene(scene_name)
-                        .await?;
+                let target = if *self.studio_mode.read() {
+                    "Preview"
                 } else {
-                    info!("🎬 OBS Program scene change → '{}'", scene_name);
-                    client
-                        .scenes()
-                        .set_current_program_scene(scene_name)
-                        .await?;
-                }
+                    "Program"
+                };
+                info!("🎬 OBS {} scene change -> '{}'", target, scene_name);
 
+                self.set_scene_for_mode(scene_name).await?;
                 Ok(())
             },
 
@@ -705,25 +693,10 @@ impl Driver for ObsDriver {
                     (split_scene, new_mode, last_camera)
                 };
 
-                info!("🎬 OBS: Enter split '{}' → scene '{}'", side, split_scene);
+                info!("🎬 OBS: Enter split '{}' -> scene '{}'", side, split_scene);
 
                 // Switch to split scene
-                let guard = self.client.read().await;
-                let client = guard.as_ref().context("OBS not connected")?;
-
-                let studio_mode = *self.studio_mode.read();
-
-                if studio_mode {
-                    client
-                        .scenes()
-                        .set_current_preview_scene(&split_scene)
-                        .await?;
-                } else {
-                    client
-                        .scenes()
-                        .set_current_program_scene(&split_scene)
-                        .await?;
-                }
+                self.set_scene_for_mode(&split_scene).await?;
 
                 // Update state BEFORE setting camera (so state is updated even if camera fails)
                 {
@@ -758,27 +731,12 @@ impl Driver for ObsDriver {
                 };
 
                 info!(
-                    "🎬 OBS: Exit split → camera '{}' scene '{}'",
+                    "🎬 OBS: Exit split -> camera '{}' scene '{}'",
                     last_camera, camera_scene
                 );
 
                 // Switch to full scene
-                let guard = self.client.read().await;
-                let client = guard.as_ref().context("OBS not connected")?;
-
-                let studio_mode = *self.studio_mode.read();
-
-                if studio_mode {
-                    client
-                        .scenes()
-                        .set_current_preview_scene(&camera_scene)
-                        .await?;
-                } else {
-                    client
-                        .scenes()
-                        .set_current_program_scene(&camera_scene)
-                        .await?;
-                }
+                self.set_scene_for_mode(&camera_scene).await?;
 
                 // Update state
                 self.camera_control_state.write().current_view_mode = ViewMode::Full;

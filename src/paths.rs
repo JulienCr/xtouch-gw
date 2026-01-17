@@ -97,17 +97,10 @@ impl AppPaths {
 
     /// Get the base directory (for displaying in logs)
     pub fn base_dir(&self) -> PathBuf {
-        if self.is_portable {
-            self.config
-                .parent()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| PathBuf::from("."))
-        } else {
-            self.config
-                .parent()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| PathBuf::from("."))
-        }
+        self.config
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."))
     }
 
     /// Ensure all required directories exist.
