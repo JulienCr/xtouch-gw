@@ -3,7 +3,7 @@
 //! Handles scene item transformations including position, scale, and bounds.
 //! Provides caching for performance and handles center-based zoom operations.
 
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 use tracing::{debug, info, trace, warn};
 
 use super::driver::ObsDriver;
@@ -19,7 +19,7 @@ pub(super) struct ObsItemState {
     pub(super) height: Option<f64>,
     pub(super) bounds_width: Option<f64>,
     pub(super) bounds_height: Option<f64>,
-    pub(super) alignment: u32,  // OBS alignment flags (LEFT=1, RIGHT=2, TOP=4, BOTTOM=8, CENTER=0)
+    pub(super) alignment: u32, // OBS alignment flags (LEFT=1, RIGHT=2, TOP=4, BOTTOM=8, CENTER=0)
 }
 
 /// Compute anchor point from OBS alignment flags
@@ -75,10 +75,12 @@ impl ObsDriver {
 
         // Cache miss, resolve from OBS
         let guard = self.client.read().await;
-        let client = guard.as_ref()
-            .context("OBS client not connected")?;
+        let client = guard.as_ref().context("OBS client not connected")?;
 
-        debug!("Resolving OBS item ID: scene='{}' source='{}'", scene_name, source_name);
+        debug!(
+            "Resolving OBS item ID: scene='{}' source='{}'",
+            scene_name, source_name
+        );
 
         let item_id = client.scene_items()
             .id(obws::requests::scene_items::Id {
@@ -90,19 +92,28 @@ impl ObsDriver {
             .with_context(|| format!("Failed to get scene item ID for '{}/{}' - verify scene and source names in OBS", scene_name, source_name))?;
 
         // Cache for future use
-        self.item_id_cache.write().insert(cache_key.clone(), item_id);
-        debug!("OBS item ID resolved and cached: {} -> {}", cache_key, item_id);
+        self.item_id_cache
+            .write()
+            .insert(cache_key.clone(), item_id);
+        debug!(
+            "OBS item ID resolved and cached: {} -> {}",
+            cache_key, item_id
+        );
 
         Ok(item_id)
     }
 
     /// Read current transform from OBS
-    pub(super) async fn read_transform(&self, scene_name: &str, item_id: i64) -> Result<ObsItemState> {
+    pub(super) async fn read_transform(
+        &self,
+        scene_name: &str,
+        item_id: i64,
+    ) -> Result<ObsItemState> {
         let guard = self.client.read().await;
-        let client = guard.as_ref()
-            .context("OBS client not connected")?;
+        let client = guard.as_ref().context("OBS client not connected")?;
 
-        let transform = client.scene_items()
+        let transform = client
+            .scene_items()
             .transform(scene_name, item_id)
             .await
             .context("Failed to get scene item transform")?;
@@ -135,10 +146,12 @@ impl ObsDriver {
     /// Get OBS canvas (base) dimensions
     pub(super) async fn get_canvas_dimensions(&self) -> Result<(f64, f64)> {
         let guard = self.client.read().await;
-        let client = guard.as_ref()
-            .context("OBS client not connected")?;
+        let client = guard.as_ref().context("OBS client not connected")?;
 
-        let video_settings = client.config().video_settings().await
+        let video_settings = client
+            .config()
+            .video_settings()
+            .await
             .context("Failed to get OBS video settings")?;
 
         let width = video_settings.base_width as f64;
@@ -157,8 +170,14 @@ impl ObsDriver {
         dy: Option<f64>,
         ds: Option<f64>,
     ) -> Result<()> {
-        trace!("OBS transform delta: scene='{}' source='{}' dx={:?} dy={:?} ds={:?}",
-            scene_name, source_name, dx, dy, ds);
+        trace!(
+            "OBS transform delta: scene='{}' source='{}' dx={:?} dy={:?} ds={:?}",
+            scene_name,
+            source_name,
+            dx,
+            dy,
+            ds
+        );
 
         // Resolve item ID
         let item_id = self.resolve_item_id(scene_name, source_name).await?;
@@ -181,17 +200,29 @@ impl ObsDriver {
                 // Invalidate cache and re-read
                 self.transform_cache.write().remove(&cache_key);
                 let state = self.read_transform(scene_name, item_id).await?;
-                self.transform_cache.write().insert(cache_key.clone(), state.clone());
+                self.transform_cache
+                    .write()
+                    .insert(cache_key.clone(), state.clone());
                 state
             } else {
-                trace!("OBS transform cache HIT: '{}' scale=({:.3},{:.3})", cache_key, cached.scale_x, cached.scale_y);
+                trace!(
+                    "OBS transform cache HIT: '{}' scale=({:.3},{:.3})",
+                    cache_key,
+                    cached.scale_x,
+                    cached.scale_y
+                );
                 cached
             }
         } else {
             // Not in cache, read from OBS
-            debug!("OBS transform cache MISS: '{}' - reading from OBS", cache_key);
+            debug!(
+                "OBS transform cache MISS: '{}' - reading from OBS",
+                cache_key
+            );
             let state = self.read_transform(scene_name, item_id).await?;
-            self.transform_cache.write().insert(cache_key.clone(), state.clone());
+            self.transform_cache
+                .write()
+                .insert(cache_key.clone(), state.clone());
             state
         };
 
@@ -214,11 +245,12 @@ impl ObsDriver {
             let canvas_center_y = canvas_height / 2.0;
 
             // Determine if we should use bounds-based or scale-based transform
-            let use_bounds = if let (Some(bw), Some(bh)) = (current.bounds_width, current.bounds_height) {
-                bw > 0.0 && bh > 0.0
-            } else {
-                false
-            };
+            let use_bounds =
+                if let (Some(bw), Some(bh)) = (current.bounds_width, current.bounds_height) {
+                    bw > 0.0 && bh > 0.0
+                } else {
+                    false
+                };
 
             // Compute anchor point from alignment (needed for position calculations)
             let (anchor_x, anchor_y) = compute_anchor_from_alignment(current.alignment);
@@ -245,8 +277,10 @@ impl ObsDriver {
 
                 // Step 2: Zoom the object's center toward/from canvas center
                 // IMPORTANT: Use effective_factor, not factor, to avoid decentering when bounds are capped
-                let new_object_center_x = canvas_center_x + (object_center_x - canvas_center_x) * effective_factor;
-                let new_object_center_y = canvas_center_y + (object_center_y - canvas_center_y) * effective_factor;
+                let new_object_center_x =
+                    canvas_center_x + (object_center_x - canvas_center_x) * effective_factor;
+                let new_object_center_y =
+                    canvas_center_y + (object_center_y - canvas_center_y) * effective_factor;
 
                 // Step 3: Calculate new anchor position (convert from center back to anchor)
                 new_state.x = new_object_center_x - (0.5 - anchor_x) * new_w;
@@ -282,8 +316,10 @@ impl ObsDriver {
 
                         // Step 2: Zoom the object's center toward/from canvas center
                         // IMPORTANT: Use effective_factor, not factor, to avoid decentering when scale is capped
-                        let new_object_center_x = canvas_center_x + (object_center_x - canvas_center_x) * effective_factor;
-                        let new_object_center_y = canvas_center_y + (object_center_y - canvas_center_y) * effective_factor;
+                        let new_object_center_x = canvas_center_x
+                            + (object_center_x - canvas_center_x) * effective_factor;
+                        let new_object_center_y = canvas_center_y
+                            + (object_center_y - canvas_center_y) * effective_factor;
 
                         // Step 3: Calculate new anchor position
                         let new_object_width = w_base * new_state.scale_x;
@@ -300,8 +336,10 @@ impl ObsDriver {
                     } else {
                         // Fallback: if we don't have dimensions, just scale position directly
                         // Use effective_factor to avoid decentering when scale is capped
-                        new_state.x = canvas_center_x + (current.x - canvas_center_x) * effective_factor;
-                        new_state.y = canvas_center_y + (current.y - canvas_center_y) * effective_factor;
+                        new_state.x =
+                            canvas_center_x + (current.x - canvas_center_x) * effective_factor;
+                        new_state.y =
+                            canvas_center_y + (current.y - canvas_center_y) * effective_factor;
 
                         debug!("OBS scale zoom (fallback): {:.3} * {:.3} (eff={:.3}) = {:.3} pos {:.1},{:.1} → {:.1},{:.1}",
                             current.scale_x, factor, effective_factor, new_state.scale_x,
@@ -314,8 +352,10 @@ impl ObsDriver {
                     let effective_factor_y = new_state.scale_y / current.scale_y;
                     let effective_factor = effective_factor_x.min(effective_factor_y);
 
-                    new_state.x = canvas_center_x + (current.x - canvas_center_x) * effective_factor;
-                    new_state.y = canvas_center_y + (current.y - canvas_center_y) * effective_factor;
+                    new_state.x =
+                        canvas_center_x + (current.x - canvas_center_x) * effective_factor;
+                    new_state.y =
+                        canvas_center_y + (current.y - canvas_center_y) * effective_factor;
 
                     debug!("OBS scale zoom (no dims): {:.3} * {:.3} (eff={:.3}) = {:.3} pos {:.1},{:.1} → {:.1},{:.1}",
                         current.scale_x, factor, effective_factor, new_state.scale_x,
@@ -326,8 +366,7 @@ impl ObsDriver {
 
         // Send update to OBS
         let guard = self.client.read().await;
-        let client = guard.as_ref()
-            .context("OBS client not connected")?;
+        let client = guard.as_ref().context("OBS client not connected")?;
 
         // Build transform conditionally based on what changed
         let mut transform = obws::requests::scene_items::SceneItemTransform::default();
@@ -367,11 +406,15 @@ impl ObsDriver {
                     y: Some(new_state.scale_y as f32),
                     ..Default::default()
                 });
-                debug!("OBS sending SCALE transform: {:.3}×{:.3}", new_state.scale_x, new_state.scale_y);
+                debug!(
+                    "OBS sending SCALE transform: {:.3}×{:.3}",
+                    new_state.scale_x, new_state.scale_y
+                );
             }
         }
 
-        let result = client.scene_items()
+        let result = client
+            .scene_items()
             .set_transform(obws::requests::scene_items::SetTransform {
                 scene: scene_name,
                 item_id,
@@ -386,12 +429,20 @@ impl ObsDriver {
                         debug!("OBS set_transform SUCCESS: '{}' pos=({:.1},{:.1}) bounds=({:.0}×{:.0})",
                             cache_key, new_state.x, new_state.y, bw, bh);
                     } else {
-                        debug!("OBS set_transform SUCCESS: '{}' pos=({:.1},{:.1}) scale=({:.3},{:.3})",
-                            cache_key, new_state.x, new_state.y, new_state.scale_x, new_state.scale_y);
+                        debug!(
+                            "OBS set_transform SUCCESS: '{}' pos=({:.1},{:.1}) scale=({:.3},{:.3})",
+                            cache_key,
+                            new_state.x,
+                            new_state.y,
+                            new_state.scale_x,
+                            new_state.scale_y
+                        );
                     }
                 } else {
-                    debug!("OBS set_transform SUCCESS: '{}' pos=({:.1},{:.1}) scale=({:.3},{:.3})",
-                        cache_key, new_state.x, new_state.y, new_state.scale_x, new_state.scale_y);
+                    debug!(
+                        "OBS set_transform SUCCESS: '{}' pos=({:.1},{:.1}) scale=({:.3},{:.3})",
+                        cache_key, new_state.x, new_state.y, new_state.scale_x, new_state.scale_y
+                    );
                 }
                 // Update cache
                 self.transform_cache.write().insert(cache_key, new_state);
@@ -400,7 +451,7 @@ impl ObsDriver {
             Err(e) => {
                 warn!("OBS set_transform FAILED: '{}' error: {}", cache_key, e);
                 Err(e).context("Failed to set scene item transform")
-            }
+            },
         }?;
 
         Ok(())
@@ -435,14 +486,16 @@ impl ObsDriver {
         let reset_zoom = mode == "zoom" || mode == "both";
 
         // Get source base dimensions for centering calculations
-        let (source_width, source_height) = if let (Some(w), Some(h)) = (current.width, current.height) {
-            (w, h)
-        } else {
-            (canvas_width, canvas_height) // Fallback to canvas size
-        };
+        let (source_width, source_height) =
+            if let (Some(w), Some(h)) = (current.width, current.height) {
+                (w, h)
+            } else {
+                (canvas_width, canvas_height) // Fallback to canvas size
+            };
 
         // Determine if using bounds-based or scale-based transform
-        let use_bounds = if let (Some(bw), Some(bh)) = (current.bounds_width, current.bounds_height) {
+        let use_bounds = if let (Some(bw), Some(bh)) = (current.bounds_width, current.bounds_height)
+        {
             bw > 0.0 && bh > 0.0
         } else {
             false
@@ -463,11 +516,15 @@ impl ObsDriver {
         if reset_position {
             // Calculate the object dimensions after zoom reset
             let (obj_width, obj_height) = if use_bounds {
-                (new_state.bounds_width.unwrap_or(canvas_width),
-                 new_state.bounds_height.unwrap_or(canvas_height))
+                (
+                    new_state.bounds_width.unwrap_or(canvas_width),
+                    new_state.bounds_height.unwrap_or(canvas_height),
+                )
             } else {
-                (source_width * new_state.scale_x,
-                 source_height * new_state.scale_y)
+                (
+                    source_width * new_state.scale_x,
+                    source_height * new_state.scale_y,
+                )
             };
 
             // Compute anchor from alignment
@@ -510,7 +567,8 @@ impl ObsDriver {
             }
         }
 
-        client.scene_items()
+        client
+            .scene_items()
             .set_transform(obws::requests::scene_items::SetTransform {
                 scene: scene_name,
                 item_id,
@@ -520,12 +578,15 @@ impl ObsDriver {
             .context("Failed to reset scene item transform")?;
 
         // Update cache
-        self.transform_cache.write().insert(cache_key.clone(), new_state);
+        self.transform_cache
+            .write()
+            .insert(cache_key.clone(), new_state);
 
-        info!("OBS reset_transform: scene='{}' source='{}' mode='{}' -> centered at ({:.1},{:.1})",
-            scene_name, source_name, mode, center_x, center_y);
+        info!(
+            "OBS reset_transform: scene='{}' source='{}' mode='{}' -> centered at ({:.1},{:.1})",
+            scene_name, source_name, mode, center_x, center_y
+        );
 
         Ok(())
     }
 }
-

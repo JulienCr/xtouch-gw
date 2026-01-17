@@ -148,7 +148,10 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
         )
         .route("/api/gamepads", get(list_gamepads))
         .route("/api/cameras", get(list_cameras))
-        .route("/api/cameras/:camera_id/reset", post(reset_camera_transform))
+        .route(
+            "/api/cameras/:camera_id/reset",
+            post(reset_camera_transform),
+        )
         .route("/api/ws/camera-updates", get(camera_updates_ws))
         .route("/api/health", get(health_check))
         .with_state(state)
@@ -227,8 +230,15 @@ async fn set_camera_target(
     // Best-effort broadcast (ignore if no subscribers)
     let _ = state.update_tx.send(message);
 
-    info!("Camera target set: {} -> {}{}", slot, req.camera_id,
-        req.target.as_ref().map(|t| format!(" ({})", t)).unwrap_or_default());
+    info!(
+        "Camera target set: {} -> {}{}",
+        slot,
+        req.camera_id,
+        req.target
+            .as_ref()
+            .map(|t| format!(" ({})", t))
+            .unwrap_or_default()
+    );
 
     Ok(Json(serde_json::json!({
         "ok": true,
@@ -272,32 +282,42 @@ async fn reset_camera_transform(
 
     let camera = match camera {
         Some(c) => c,
-        None => return Err(ApiError {
-            error: format!(
-                "Invalid camera_id: '{}'. Use GET /api/cameras to see available cameras.",
-                camera_id
-            ),
-        }),
+        None => {
+            return Err(ApiError {
+                error: format!(
+                    "Invalid camera_id: '{}'. Use GET /api/cameras to see available cameras.",
+                    camera_id
+                ),
+            })
+        },
     };
 
     // Get OBS driver
     let obs_driver = match &state.obs_driver {
         Some(driver) => driver.clone(),
-        None => return Err(ApiError {
-            error: "OBS driver not available".to_string(),
-        }),
+        None => {
+            return Err(ApiError {
+                error: "OBS driver not available".to_string(),
+            })
+        },
     };
 
     // Reset transform (mode is already validated by serde deserialization)
     let mode_str = req.mode.as_str();
-    if let Err(e) = obs_driver.reset_transform(&camera.scene, &camera.source, mode_str).await {
+    if let Err(e) = obs_driver
+        .reset_transform(&camera.scene, &camera.source, mode_str)
+        .await
+    {
         error!("Failed to reset camera transform: {}", e);
         return Err(ApiError {
             error: format!("Failed to reset camera: {}", e),
         });
     }
 
-    info!("Camera reset successful: camera={}, mode={}", camera_id, mode_str);
+    info!(
+        "Camera reset successful: camera={}, mode={}",
+        camera_id, mode_str
+    );
 
     Ok(Json(serde_json::json!({
         "ok": true,
@@ -325,10 +345,10 @@ async fn handle_websocket(mut socket: WebSocket, state: Arc<ApiState>) {
         Err(e) => {
             error!("Failed to serialize snapshot: {}", e);
             return;
-        }
+        },
     };
 
-    if socket.send(Message::Text(snapshot_json.into())).await.is_err() {
+    if socket.send(Message::Text(snapshot_json)).await.is_err() {
         debug!("WebSocket client disconnected before receiving snapshot");
         return;
     }
@@ -344,7 +364,7 @@ async fn handle_websocket(mut socket: WebSocket, state: Arc<ApiState>) {
                 match result {
                     Ok(message) => {
                         let msg = serde_json::to_string(&message).unwrap();
-                        if socket.send(Message::Text(msg.into())).await.is_err() {
+                        if socket.send(Message::Text(msg)).await.is_err() {
                             debug!("WebSocket client disconnected");
                             break;
                         }
@@ -420,8 +440,24 @@ pub fn broadcast_on_air_change(state: &ApiState, camera_id: &str, scene_name: &s
     info!("ON AIR changed: {} (scene: {})", camera_id, scene_name);
 }
 
+/// Broadcast camera target change to all connected Stream Deck clients
+///
+/// Call this when the gamepad camera target changes (e.g., from OBS preview scene change).
+pub fn broadcast_target_change(state: &ApiState, gamepad_slot: &str, camera_id: &str) {
+    let message = CameraStateMessage::TargetChanged {
+        gamepad_slot: gamepad_slot.to_string(),
+        camera_id: camera_id.to_string(),
+        timestamp: current_timestamp_millis(),
+    };
+
+    // Best-effort broadcast (ignore if no subscribers)
+    let _ = state.update_tx.send(message);
+
+    info!("Target changed: {} -> {}", gamepad_slot, camera_id);
+}
+
 /// Get current timestamp in milliseconds since UNIX epoch
-fn current_timestamp_millis() -> u64 {
+pub fn current_timestamp_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()

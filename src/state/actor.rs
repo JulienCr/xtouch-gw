@@ -173,13 +173,13 @@ impl StateActor {
                 // Hot path commands (no response)
                 StateCommand::UpdateState { app, entry } => {
                     self.handle_update_state(app, entry);
-                }
+                },
                 StateCommand::UpdateShadow { app, entry } => {
                     self.handle_update_shadow(&app, &entry);
-                }
+                },
                 StateCommand::MarkUserAction { key, ts } => {
                     self.handle_mark_user_action(key, ts);
-                }
+                },
 
                 // Request-response commands
                 StateCommand::GetState {
@@ -189,7 +189,7 @@ impl StateActor {
                 } => {
                     let result = self.handle_get_state(app, &addr);
                     let _ = response.send(result);
-                }
+                },
                 StateCommand::GetKnownLatest {
                     app,
                     status,
@@ -199,18 +199,18 @@ impl StateActor {
                 } => {
                     let result = self.handle_get_known_latest(app, status, channel, data1);
                     let _ = response.send(result);
-                }
+                },
                 StateCommand::ListStates { app, response } => {
                     let result = self.handle_list_states(app);
                     let _ = response.send(result);
-                }
+                },
                 StateCommand::ListStatesForApps { apps, response } => {
                     let mut result = HashMap::new();
                     for app in apps {
                         result.insert(app, self.handle_list_states(app));
                     }
                     let _ = response.send(result);
-                }
+                },
                 StateCommand::CheckSuppressAntiEcho {
                     app,
                     entry,
@@ -218,46 +218,50 @@ impl StateActor {
                 } => {
                     let suppress = self.handle_check_suppress_anti_echo(&app, &entry);
                     let _ = response.send(suppress);
-                }
+                },
                 StateCommand::CheckSuppressLWW { entry, response } => {
                     let suppress = self.handle_check_suppress_lww(&entry);
                     let _ = response.send(suppress);
-                }
+                },
 
                 // Lifecycle commands
-                StateCommand::HydrateFromSnapshot { app, entries, response } => {
+                StateCommand::HydrateFromSnapshot {
+                    app,
+                    entries,
+                    response,
+                } => {
                     self.handle_hydrate(app, entries);
                     // Send response if caller is waiting
                     if let Some(tx) = response {
                         let _ = tx.send(());
                     }
-                }
+                },
                 StateCommand::ClearStatesForApp { app } => {
                     if let Some(app_state) = self.app_states.get_mut(&app) {
                         app_state.clear();
                     }
                     debug!(?app, "Cleared states for app");
-                }
+                },
                 StateCommand::ClearAllStates => {
                     for app_state in self.app_states.values_mut() {
                         app_state.clear();
                     }
                     debug!("Cleared all states");
-                }
+                },
                 StateCommand::ClearShadows => {
                     self.app_shadows.clear();
                     debug!("Cleared all shadow states");
-                }
+                },
                 StateCommand::Subscribe { listener, response } => {
                     self.subscribers.push(listener);
                     let id = self.subscribers.len() - 1;
                     let _ = response.send(id);
                     debug!(subscriber_id = id, "Added subscriber");
-                }
+                },
                 StateCommand::Shutdown => {
                     info!("StateActor received shutdown command");
                     break;
-                }
+                },
             }
         }
 
@@ -394,7 +398,7 @@ impl StateActor {
                         // Same stale status: prefer more recent timestamp
                         entry.ts <= current.ts
                     }
-                }
+                },
             };
 
             if !dominated {
@@ -515,10 +519,7 @@ impl StateActor {
         let value = entry.value.as_number().unwrap_or(0);
         let shadow_entry = ShadowEntry::new(value);
 
-        let app_shadow = self
-            .app_shadows
-            .entry(app.to_string())
-            .or_insert_with(HashMap::new);
+        let app_shadow = self.app_shadows.entry(app.to_string()).or_default();
         app_shadow.insert(key, shadow_entry);
 
         trace!(

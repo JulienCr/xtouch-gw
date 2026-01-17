@@ -2,9 +2,7 @@
 //!
 //! Converts raw MIDI bytes into structured MidiStateEntry objects.
 
-use super::types::{
-    compute_hash, MidiAddr, MidiStateEntry, MidiStatus, MidiValue, Origin,
-};
+use super::types::{compute_hash, MidiAddr, MidiStateEntry, MidiStatus, MidiValue, Origin};
 use crate::midi::{get_type_nibble, pb14_from_raw};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -201,4 +199,3 @@ mod tests {
         assert!(entry.is_none());
     }
 }
-

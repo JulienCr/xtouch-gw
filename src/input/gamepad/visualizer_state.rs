@@ -14,7 +14,7 @@ impl VisualizerState {
     /// Create new state with 4 controller slots (XInput user indices 0-3)
     pub fn new() -> Self {
         Self {
-            controllers: (0..4).map(|user_index| ControllerState::new(user_index)).collect(),
+            controllers: (0..4).map(ControllerState::new).collect(),
         }
     }
 
@@ -36,7 +36,9 @@ impl VisualizerState {
             controller.right_trigger.raw = state.right_trigger();
 
             // Update buttons (pass button bitfield)
-            controller.buttons.update_from_xinput(state.raw.Gamepad.wButtons);
+            controller
+                .buttons
+                .update_from_xinput(state.raw.Gamepad.wButtons);
         }
     }
 

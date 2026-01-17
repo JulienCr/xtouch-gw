@@ -136,7 +136,10 @@ impl PersistenceActor {
     ///
     /// Processes commands from the channel and handles debounce timing.
     async fn run(mut self) {
-        info!("Persistence actor started (debounce: {}ms)", self.debounce_ms);
+        info!(
+            "Persistence actor started (debounce: {}ms)",
+            self.debounce_ms
+        );
 
         // Create interval ticker for debounce checking
         let tick_interval = if self.debounce_ms > 0 {
@@ -219,7 +222,7 @@ impl PersistenceActor {
                 // Put the snapshot back so we can retry later
                 self.pending_snapshot = Some(snapshot);
                 return;
-            }
+            },
         };
 
         // Clone db handle for spawn_blocking
@@ -237,19 +240,16 @@ impl PersistenceActor {
             Ok(Ok(())) => {
                 self.write_count += 1;
                 self.last_write_ts = Instant::now();
-                trace!(
-                    "Snapshot flushed to sled (write #{})",
-                    self.write_count
-                );
-            }
+                trace!("Snapshot flushed to sled (write #{})", self.write_count);
+            },
             Ok(Err(e)) => {
                 error!("Failed to write snapshot to sled: {}", e);
                 // Note: snapshot was already taken, so it's lost on write failure
                 // This is acceptable as the next save will provide fresh data
-            }
+            },
             Err(e) => {
                 error!("Spawn blocking task panicked: {}", e);
-            }
+            },
         }
     }
 
@@ -258,29 +258,27 @@ impl PersistenceActor {
     /// Returns `None` if no snapshot exists or deserialization fails.
     fn load_snapshot(&self) -> Option<StateSnapshot> {
         match self.db.get(SNAPSHOT_KEY) {
-            Ok(Some(data)) => {
-                match serde_json::from_slice::<StateSnapshot>(&data) {
-                    Ok(snapshot) => {
-                        debug!(
-                            "Loaded snapshot (version: {}, timestamp: {})",
-                            snapshot.version, snapshot.timestamp
-                        );
-                        Some(snapshot)
-                    }
-                    Err(e) => {
-                        warn!("Failed to deserialize snapshot: {}", e);
-                        None
-                    }
-                }
-            }
+            Ok(Some(data)) => match serde_json::from_slice::<StateSnapshot>(&data) {
+                Ok(snapshot) => {
+                    debug!(
+                        "Loaded snapshot (version: {}, timestamp: {})",
+                        snapshot.version, snapshot.timestamp
+                    );
+                    Some(snapshot)
+                },
+                Err(e) => {
+                    warn!("Failed to deserialize snapshot: {}", e);
+                    None
+                },
+            },
             Ok(None) => {
                 debug!("No snapshot found in database");
                 None
-            }
+            },
             Err(e) => {
                 error!("Failed to read snapshot from sled: {}", e);
                 None
-            }
+            },
         }
     }
 

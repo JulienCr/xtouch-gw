@@ -19,7 +19,11 @@ impl super::Router {
     }
 
     /// Create an execution context with control information
-    pub(crate) async fn create_execution_context_with_control(&self, control_id: String, value: Option<Value>) -> ExecutionContext {
+    pub(crate) async fn create_execution_context_with_control(
+        &self,
+        control_id: String,
+        value: Option<Value>,
+    ) -> ExecutionContext {
         ExecutionContext {
             config: self.config.clone(),
             active_page: Some(self.get_active_page_name().await),
@@ -168,7 +172,9 @@ impl super::Router {
         );
 
         // Create execution context with control information
-        let ctx = self.create_execution_context_with_control(control_id.to_string(), value).await;
+        let ctx = self
+            .create_execution_context_with_control(control_id.to_string(), value)
+            .await;
 
         // Execute the driver action
         driver.execute(&action, params, ctx).await?;
@@ -205,16 +211,18 @@ impl super::Router {
         let config = self.config.read().await;
 
         // Find the gamepad slot config
-        let slot_config = config.gamepad.as_ref().and_then(|g| g.gamepads.as_ref()).and_then(
-            |slots| {
+        let slot_config = config
+            .gamepad
+            .as_ref()
+            .and_then(|g| g.gamepads.as_ref())
+            .and_then(|slots| {
                 // Determine slot index from gamepad_slot (gamepad1 -> index 0, gamepad2 -> index 1)
                 let slot_num: usize = gamepad_slot
                     .strip_prefix("gamepad")
                     .and_then(|n| n.parse().ok())
                     .unwrap_or(1);
                 slots.get(slot_num.saturating_sub(1))
-            },
-        );
+            });
 
         // Get camera target mode
         let camera_target_mode = slot_config
@@ -227,29 +235,31 @@ impl super::Router {
             "static" => {
                 // Static mode: no substitution
                 return Ok(raw_params);
-            }
+            },
             "dynamic" => {
                 // Dynamic mode: get from runtime state, fallback to first camera
-                self.camera_targets.get_target(gamepad_slot).or_else(|| {
-                    // Fallback: use first camera from config
-                    config
-                        .obs
-                        .as_ref()
-                        .and_then(|o| o.camera_control.as_ref())
-                        .and_then(|cc| cc.cameras.first())
-                        .map(|c| c.id.clone())
-                })
-                .ok_or_else(|| {
-                    anyhow!(
-                        "No camera target for {} and no cameras configured",
-                        gamepad_slot
-                    )
-                })?
-            }
+                self.camera_targets
+                    .get_target(gamepad_slot)
+                    .or_else(|| {
+                        // Fallback: use first camera from config
+                        config
+                            .obs
+                            .as_ref()
+                            .and_then(|o| o.camera_control.as_ref())
+                            .and_then(|cc| cc.cameras.first())
+                            .map(|c| c.id.clone())
+                    })
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "No camera target for {} and no cameras configured",
+                            gamepad_slot
+                        )
+                    })?
+            },
             fixed_camera_id => {
                 // Fixed to specific camera
                 fixed_camera_id.to_string()
-            }
+            },
         };
 
         // Find camera config
@@ -303,4 +313,3 @@ impl super::Router {
         Ok(resolved)
     }
 }
-

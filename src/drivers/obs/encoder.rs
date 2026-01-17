@@ -66,11 +66,14 @@ impl EncoderSpeedTracker {
         let now = Instant::now();
 
         // Get or create state
-        let state = self.states.entry(encoder_id.to_string()).or_insert(EncoderState {
-            last_ts: None,
-            velocity_ema: 0.0,
-            last_direction: 0,
-        });
+        let state = self
+            .states
+            .entry(encoder_id.to_string())
+            .or_insert(EncoderState {
+                last_ts: None,
+                velocity_ema: 0.0,
+                last_direction: 0,
+            });
 
         // Calculate instantaneous velocity (ticks per second)
         if let Some(last_ts) = state.last_ts {
@@ -81,14 +84,13 @@ impl EncoderSpeedTracker {
                     let inst_velocity = 1000.0 / interval_ms.max(1) as f64;
 
                     // Update EMA (Exponential Moving Average)
-                    let is_bootstrap = state.velocity_ema == 0.0
-                        || interval_ms > self.idle_reset_ms;
+                    let is_bootstrap =
+                        state.velocity_ema == 0.0 || interval_ms > self.idle_reset_ms;
 
                     state.velocity_ema = if is_bootstrap {
                         inst_velocity
                     } else {
-                        self.ema_alpha * inst_velocity
-                            + (1.0 - self.ema_alpha) * state.velocity_ema
+                        self.ema_alpha * inst_velocity + (1.0 - self.ema_alpha) * state.velocity_ema
                     };
                 }
             }
@@ -121,4 +123,3 @@ impl EncoderSpeedTracker {
         accel
     }
 }
-

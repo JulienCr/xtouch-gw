@@ -198,8 +198,7 @@ async fn test_driver_shutdown_all() {
 
 #[tokio::test]
 async fn test_driver_hot_reload_config() {
-    let initial_config =
-        make_test_config(vec![make_test_page("Page 1"), make_test_page("Page 2")]);
+    let initial_config = make_test_config(vec![make_test_page("Page 1"), make_test_page("Page 2")]);
 
     let router = Router::new(initial_config);
 
@@ -263,7 +262,9 @@ async fn test_driver_execution_with_context() {
         .unwrap();
 
     // Execute control action
-    let result = router.handle_control("fader1", Some(json!(127)), None).await;
+    let result = router
+        .handle_control("fader1", Some(json!(127)), None)
+        .await;
     assert!(result.is_ok());
 }
 
@@ -289,7 +290,9 @@ async fn test_driver_execution_missing_driver() {
     let router = make_test_router(config);
 
     // Attempt to execute control action (should fail)
-    let result = router.handle_control("fader1", Some(json!(127)), None).await;
+    let result = router
+        .handle_control("fader1", Some(json!(127)), None)
+        .await;
     assert!(result.is_err());
     assert!(result
         .unwrap_err()
@@ -378,7 +381,9 @@ async fn test_multiple_drivers_execution() {
     let result1 = router.handle_control("obs_control", None, None).await;
     assert!(result1.is_ok());
 
-    let result2 = router.handle_control("vm_control", Some(json!(64)), None).await;
+    let result2 = router
+        .handle_control("vm_control", Some(json!(64)), None)
+        .await;
     assert!(result2.is_ok());
 
     // Verify both drivers are still registered
@@ -417,10 +422,7 @@ async fn test_page_epoch_increments_on_page_change() {
 
 #[tokio::test]
 async fn test_page_epoch_is_epoch_current() {
-    let config = make_test_config(vec![
-        make_test_page("Page 1"),
-        make_test_page("Page 2"),
-    ]);
+    let config = make_test_config(vec![make_test_page("Page 1"), make_test_page("Page 2")]);
 
     let router = make_test_router(config);
 
@@ -459,4 +461,3 @@ async fn test_page_epoch_survives_set_page() {
     router.set_active_page("QLC").await.unwrap();
     assert_eq!(router.get_page_epoch(), initial + 3);
 }
-

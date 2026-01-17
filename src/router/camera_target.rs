@@ -64,10 +64,10 @@ impl CameraTargetState {
                             targets.insert(gamepad_slot.to_string(), entry.camera_id);
                         }
                     }
-                }
+                },
                 Err(e) => {
                     tracing::warn!("Failed to read camera target from sled: {}", e);
-                }
+                },
             }
         }
 
@@ -95,8 +95,7 @@ impl CameraTargetState {
         };
 
         let key = format!("{}{}", CAMERA_TARGET_PREFIX, gamepad_slot);
-        let value = serde_json::to_vec(&entry)
-            .context("Failed to serialize camera target")?;
+        let value = serde_json::to_vec(&entry).context("Failed to serialize camera target")?;
 
         self.db
             .insert(key.as_bytes(), value)

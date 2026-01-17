@@ -64,7 +64,11 @@ pub fn to_midi_pb(value: f32) -> u16 {
 
 /// Convert button state to MIDI value
 pub fn button_to_midi(pressed: bool) -> u8 {
-    if pressed { 127 } else { 0 }
+    if pressed {
+        127
+    } else {
+        0
+    }
 }
 
 #[cfg(test)]
@@ -105,7 +109,7 @@ mod tests {
 
         // At center (after deadzone), should be less than linear
         let result = process_axis(0.5, &config).unwrap();
-        assert!(result < 0.5);  // gamma > 1 reduces mid values
+        assert!(result < 0.5); // gamma > 1 reduces mid values
     }
 
     #[test]
@@ -113,22 +117,22 @@ mod tests {
         let mut config = test_config();
         config.invert.insert("ly".to_string(), true);
 
-        assert_eq!(apply_inversion(0.5, "lx", &config), 0.5);   // Not inverted
-        assert_eq!(apply_inversion(0.5, "ly", &config), -0.5);  // Inverted
-        assert_eq!(apply_inversion(-0.5, "ly", &config), 0.5);  // Inverted
+        assert_eq!(apply_inversion(0.5, "lx", &config), 0.5); // Not inverted
+        assert_eq!(apply_inversion(0.5, "ly", &config), -0.5); // Inverted
+        assert_eq!(apply_inversion(-0.5, "ly", &config), 0.5); // Inverted
     }
 
     #[test]
     fn test_midi_cc_scaling() {
         assert_eq!(to_midi_cc(-1.0), 0);
-        assert_eq!(to_midi_cc(0.0), 64);  // Middle (rounding)
+        assert_eq!(to_midi_cc(0.0), 64); // Middle (rounding)
         assert_eq!(to_midi_cc(1.0), 127);
     }
 
     #[test]
     fn test_midi_pb_scaling() {
         assert_eq!(to_midi_pb(-1.0), 0);
-        assert_eq!(to_midi_pb(0.0), 8192);  // Middle (rounding)
+        assert_eq!(to_midi_pb(0.0), 8192); // Middle (rounding)
         assert_eq!(to_midi_pb(1.0), 16383);
     }
 

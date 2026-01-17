@@ -97,6 +97,132 @@ flowchart LR
     ANTIECHO --> XT_OUT
 ```
 
+## Code Quality Rules
+
+### Anti-Monolith Principles
+
+**No monolithic files or modules.** Break down code into focused, composable units.
+
+- **Never allow a file to exceed 500 lines** (strict limit)
+- If a file approaches 400 lines, break it up immediately
+- Treat 1000+ lines as completely unacceptable
+- Use folders and naming conventions to keep small files logically grouped
+
+### Single Responsibility Principle (SRP)
+
+**Every file, struct, function, and module should do ONE thing only.**
+
+- If a component has multiple responsibilities, split it immediately
+- Each module should be laser-focused on one concern
+- Ask: "What is the single reason this would change?"
+
+### Composition Over Inheritance
+
+**Favor composition and trait-based design over complex type hierarchies.**
+
+- Use traits to define behavior contracts
+- Compose structs from smaller, focused components
+- Utilize the newtype pattern to add semantic meaning
+- Prefer dependency injection over tight coupling
+
+### DRY (Don't Repeat Yourself)
+
+**Eliminate duplication ruthlessly.**
+
+- Extract common patterns into utility functions or traits
+- Use generics and macros for repetitive boilerplate
+- Share configuration types across modules
+- Centralize constant definitions
+
+### Design for Reusability
+
+**Always code as if someone will reuse this logic for a future feature.**
+
+- Ask: "Can I reuse this struct/function in a different project or module?"
+- Keep components decoupled and self-contained
+- Avoid hard-coding application-specific assumptions
+- Include extension points (traits, generics) from day one
+- Write code that connects like Lego blocks: interchangeable, testable, isolated
+
+### Function and Method Size
+
+**Keep functions small and focused.**
+
+- **Target**: 20-30 lines per function
+- **Maximum**: 40 lines (refactor if exceeded)
+- Each function should have a single, clear purpose
+- If a function does multiple things, split it
+
+### Naming Conventions
+
+**All names must be descriptive and intention-revealing.**
+
+- **Avoid vague names**: `data`, `info`, `helper`, `temp`, `handle_thing`
+- **Use domain language**: `PitchBendMessage`, `FaderPosition`, `StateSnapshot`
+- **Be specific**: `parse_midi_from_xtouch()` not `parse()`
+- **Rust conventions**:
+  - `snake_case` for functions, modules, variables
+  - `PascalCase` for types, traits, enums
+  - `SCREAMING_SNAKE_CASE` for constants
+
+### Module Organization Patterns
+
+**Use clear separation of concerns with dedicated modules.**
+
+- **State management**: Actor, Handle, Commands, Types (separate files)
+- **Drivers**: One file per driver (avoid `drivers/mod.rs` god-module)
+- **Business logic**: Manager/Service pattern for domain operations
+- **Utilities**: Pure functions in focused utility modules
+
+### Avoid God Structs/Modules
+
+**Never let one file or struct hold everything.**
+
+- Split large structs into:
+  - Core state struct
+  - Builder pattern for construction
+  - Extension traits for optional functionality
+  - Separate modules for related types
+- Maximum ~200 lines per struct implementation (including `impl` blocks)
+- Use composition: embed smaller structs rather than adding more fields
+
+### Testability and Mockability
+
+**Design for easy testing from the start.**
+
+- Use trait objects for external dependencies (MIDI ports, network, file I/O)
+- Inject dependencies via constructor parameters
+- Keep pure logic separate from I/O effects
+- Provide builder patterns for complex test setup
+
+### Documentation Standards
+
+**Code should be self-documenting, but add docs where complexity exists.**
+
+- **Module-level doc comments**: Explain purpose and architecture
+- **Public API docs**: Use `///` rustdoc comments with examples
+- **Tricky logic**: Inline `//` comments explaining "why", not "what"
+- **Performance notes**: Document hot paths and optimization rationale
+
+### Error Handling
+
+**Errors should be explicit, typed, and actionable.**
+
+- Use `anyhow::Result` for application-level code
+- Use `thiserror` for library-level custom errors
+- Never use `.unwrap()` or `.expect()` on external input
+- Provide context with `.context()` for error chains
+- Handle errors at appropriate boundaries (don't propagate infinitely)
+
+### Scalability Mindset
+
+**Always code as if this will need to scale.**
+
+- Avoid premature optimization, but design for extensibility
+- Use bounded channels to prevent unbounded memory growth
+- Consider what happens with 100x the data/events
+- Include performance budgets in hot paths (e.g., \<10µs for MIDI parsing)
+
 ## Working with This Codebase
 
 ### When Making Changes

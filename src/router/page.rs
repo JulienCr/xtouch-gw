@@ -123,12 +123,16 @@ impl super::Router {
     /// 3. Passthrough configurations (TODO)
     ///
     /// Used for page-aware feedback filtering (matches TypeScript getAppsForPage)
-    pub(crate) fn get_apps_for_page(&self, page: &crate::config::PageConfig, config: &crate::config::AppConfig) -> HashSet<String> {
+    pub(crate) fn get_apps_for_page(
+        &self,
+        page: &crate::config::PageConfig,
+        config: &crate::config::AppConfig,
+    ) -> HashSet<String> {
         let mut apps = HashSet::new();
 
         // 1. Extract apps from page-specific controls
         if let Some(controls) = &page.controls {
-            for (_, mapping) in controls {
+            for mapping in controls.values() {
                 apps.insert(mapping.app.clone());
             }
         }
@@ -136,7 +140,7 @@ impl super::Router {
         // 2. Extract apps from global controls (always available on all pages)
         if let Some(global) = &config.pages_global {
             if let Some(controls) = &global.controls {
-                for (_, mapping) in controls {
+                for mapping in controls.values() {
                     apps.insert(mapping.app.clone());
                 }
             }
@@ -152,4 +156,3 @@ impl super::Router {
         apps
     }
 }
-

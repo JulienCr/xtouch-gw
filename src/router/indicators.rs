@@ -31,7 +31,10 @@ impl super::Router {
         };
 
         // Also check global controls
-        let global_controls = config.pages_global.as_ref().and_then(|g| g.controls.as_ref());
+        let global_controls = config
+            .pages_global
+            .as_ref()
+            .and_then(|g| g.controls.as_ref());
 
         // Iterate through all controls (page + global)
         // First check page controls
@@ -74,7 +77,11 @@ impl super::Router {
     }
 
     /// Helper to evaluate a single indicator condition
-    fn evaluate_indicator_condition(&self, indicator: &crate::config::IndicatorConfig, value: &Value) -> bool {
+    fn evaluate_indicator_condition(
+        &self,
+        indicator: &crate::config::IndicatorConfig,
+        value: &Value,
+    ) -> bool {
         if let Some(truthy) = indicator.truthy {
             // Truthy check: LED on if value is truthy
             if truthy {
@@ -92,13 +99,13 @@ impl super::Router {
         } else if let Some(in_array) = &indicator.in_array {
             // "in" check: LED on if value matches any in array
             in_array.iter().any(|v| {
-                    // String comparison: trim and compare
-                    if let (Value::String(a), Value::String(b)) = (v, value) {
-                        a.trim() == b.trim()
-                    } else {
-                        // Use serde_json equality (similar to Object.is)
-                        *v == *value
-                    }
+                // String comparison: trim and compare
+                if let (Value::String(a), Value::String(b)) = (v, value) {
+                    a.trim() == b.trim()
+                } else {
+                    // Use serde_json equality (similar to Object.is)
+                    *v == *value
+                }
             })
         } else if let Some(equals_value) = &indicator.equals {
             // Equals check: LED on if value matches exactly
@@ -180,4 +187,3 @@ impl super::Router {
         }
     }
 }
-

@@ -5,15 +5,15 @@
 //! controllers (FaceOff, etc.) simultaneously.
 
 pub mod analog;
+pub mod diagnostics;
 pub mod hybrid_id;
 pub mod hybrid_provider;
 pub mod mapper;
-pub mod diagnostics;
-pub mod provider;  // Legacy provider (for reference)
+pub mod provider; // Legacy provider (for reference)
 pub mod slot;
-pub mod xinput_convert;
 pub mod visualizer;
 pub mod visualizer_state;
+pub mod xinput_convert;
 
 // use anyhow::{Result, Context};
 use std::sync::Arc;
@@ -51,7 +51,8 @@ pub async fn init(
     // Build slot configurations
     let slot_configs = if let Some(gamepads) = &config.gamepads {
         // Multi-gamepad mode
-        gamepads.iter()
+        gamepads
+            .iter()
             .map(|g| (g.product_match.clone(), g.analog.clone()))
             .collect()
     } else if let Some(hid) = &config.hid {
@@ -72,18 +73,24 @@ pub async fn init(
     let provider = match HybridGamepadProvider::start(slot_configs).await {
         Ok(p) => Arc::new(p),
         Err(e) => {
-            warn!("Failed to initialize hybrid gamepad provider: {}. Continuing without gamepad.", e);
+            warn!(
+                "Failed to initialize hybrid gamepad provider: {}. Continuing without gamepad.",
+                e
+            );
             return None;
-        }
+        },
     };
 
     // Attach mapper
     let mapper = match GamepadMapper::attach(provider, router, config, update_tx).await {
         Ok(m) => m,
         Err(e) => {
-            warn!("Failed to attach gamepad mapper: {}. Continuing without gamepad.", e);
+            warn!(
+                "Failed to attach gamepad mapper: {}. Continuing without gamepad.",
+                e
+            );
             return None;
-        }
+        },
     };
 
     debug!("Gamepad input initialized");

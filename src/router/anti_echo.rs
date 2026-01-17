@@ -28,16 +28,16 @@ impl super::Router {
                 // Note On/Off
                 let note = raw.get(1).copied().unwrap_or(0);
                 make_shadow_key(MidiStatus::Note, channel, note)
-            }
+            },
             0xB => {
                 // Control Change
                 let cc = raw.get(1).copied().unwrap_or(0);
                 make_shadow_key(MidiStatus::CC, channel, cc)
-            }
+            },
             0xE => {
                 // Pitch Bend
                 make_shadow_key(MidiStatus::PB, channel, 0)
-            }
+            },
             _ => return,
         };
 

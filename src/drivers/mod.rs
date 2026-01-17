@@ -3,8 +3,8 @@
 //! Note: QLC+ is controlled via `MidiBridgeDriver` configured in `config.midi.apps`.
 //! There is no separate QLC driver - the MIDI bridge handles all MIDI passthrough.
 
-use async_trait::async_trait;
 use anyhow::Result;
+use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::RwLock;

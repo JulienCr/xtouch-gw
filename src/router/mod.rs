@@ -50,7 +50,8 @@ pub struct Router {
     /// Fader setpoint scheduler (motor position tracking)
     pub(crate) fader_setpoint: Arc<FaderSetpoint>,
     /// Receiver for setpoint apply commands (stored for retrieval)
-    pub(crate) setpoint_rx: Arc<tokio::sync::Mutex<Option<mpsc::UnboundedReceiver<ApplySetpointCmd>>>>,
+    pub(crate) setpoint_rx:
+        Arc<tokio::sync::Mutex<Option<mpsc::UnboundedReceiver<ApplySetpointCmd>>>>,
     /// Pending MIDI messages to send to X-Touch (e.g., from page refresh)
     pub(crate) pending_midi_messages: Arc<tokio::sync::Mutex<Vec<Vec<u8>>>>,
     /// Activity tracker for tray UI LED visualization
@@ -83,8 +84,8 @@ impl Router {
 
         // Open sled database for camera target state (separate db to avoid lock conflicts)
         let camera_db_path = format!("{}_camera", db_path);
-        let camera_db = sled::open(&camera_db_path)
-            .expect("Failed to open sled database for camera targets");
+        let camera_db =
+            sled::open(&camera_db_path).expect("Failed to open sled database for camera targets");
         let camera_targets = Arc::new(CameraTargetState::new(camera_db));
 
         Self {
@@ -160,7 +161,9 @@ impl Router {
     }
 
     /// Take the setpoint apply receiver (should only be called once by main loop)
-    pub async fn take_setpoint_receiver(&self) -> Option<mpsc::UnboundedReceiver<ApplySetpointCmd>> {
+    pub async fn take_setpoint_receiver(
+        &self,
+    ) -> Option<mpsc::UnboundedReceiver<ApplySetpointCmd>> {
         let mut rx_guard = self.setpoint_rx.lock().await;
         rx_guard.take()
     }
@@ -188,7 +191,7 @@ impl Router {
         use crate::state::{AppKey, StateSnapshot};
 
         // Collect states from all apps
-        let all_apps: Vec<AppKey> = AppKey::all().iter().copied().collect();
+        let all_apps: Vec<AppKey> = AppKey::all().to_vec();
         let states = self.state_actor.list_states_for_apps(all_apps).await;
 
         // Build snapshot
@@ -266,4 +269,3 @@ impl Router {
         Ok(())
     }
 }
-

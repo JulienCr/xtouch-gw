@@ -1,14 +1,13 @@
 //! Configuration management for XTouch GW
-//! 
+//!
 //! Handles loading, parsing, and hot-reloading of YAML configuration files.
 
 pub mod watcher;
 
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::fs;
-
 
 /// Root configuration structure
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -358,7 +357,7 @@ impl LcdColor {
                 _ => {
                     tracing::warn!("Unknown LCD color '{}', defaulting to black", name);
                     0
-                }
+                },
             },
         }
     }
@@ -424,25 +423,24 @@ impl AppConfig {
         let contents = fs::read_to_string(path)
             .await
             .with_context(|| format!("Failed to read config file: {}", path))?;
-        
+
         let config: AppConfig = serde_yaml::from_str(&contents)
             .with_context(|| format!("Failed to parse YAML config: {}", path))?;
-        
+
         // Validate the loaded configuration
         config.validate()?;
-        
+
         Ok(config)
     }
 
     /// Save configuration to file
     pub async fn save(&self, path: &str) -> Result<()> {
-        let yaml = serde_yaml::to_string(self)
-            .context("Failed to serialize config to YAML")?;
-        
+        let yaml = serde_yaml::to_string(self).context("Failed to serialize config to YAML")?;
+
         fs::write(path, yaml)
             .await
             .with_context(|| format!("Failed to write config file: {}", path))?;
-        
+
         Ok(())
     }
 
@@ -502,7 +500,9 @@ impl AppConfig {
             if let Some(controls) = &page.controls {
                 for (control_id, mapping) in controls {
                     self.validate_control_mapping(control_id, mapping, &midi_app_names)
-                        .with_context(|| format!("Invalid control '{}' in page '{}'", control_id, page.name))?;
+                        .with_context(|| {
+                            format!("Invalid control '{}' in page '{}'", control_id, page.name)
+                        })?;
                 }
             }
 
@@ -514,7 +514,9 @@ impl AppConfig {
                             if *num > 7 {
                                 anyhow::bail!(
                                     "LCD color {} in page '{}' strip {} is invalid (must be 0-7)",
-                                    num, page.name, idx
+                                    num,
+                                    page.name,
+                                    idx
                                 );
                             }
                         }
@@ -551,7 +553,9 @@ impl AppConfig {
         if mapping.app != "obs" && !midi_app_names.contains(&mapping.app) {
             anyhow::bail!(
                 "Control '{}' references unknown app '{}'. Available apps: {:?}",
-                control_id, mapping.app, midi_app_names
+                control_id,
+                mapping.app,
+                midi_app_names
             );
         }
 
@@ -563,25 +567,37 @@ impl AppConfig {
                         anyhow::bail!("CC type requires 'cc' field in control '{}'", control_id);
                     }
                     if midi_spec.channel.is_none() {
-                        anyhow::bail!("CC type requires 'channel' field in control '{}'", control_id);
+                        anyhow::bail!(
+                            "CC type requires 'channel' field in control '{}'",
+                            control_id
+                        );
                     }
-                }
+                },
                 MidiType::Note => {
                     if midi_spec.note.is_none() {
-                        anyhow::bail!("Note type requires 'note' field in control '{}'", control_id);
+                        anyhow::bail!(
+                            "Note type requires 'note' field in control '{}'",
+                            control_id
+                        );
                     }
                     if midi_spec.channel.is_none() {
-                        anyhow::bail!("Note type requires 'channel' field in control '{}'", control_id);
+                        anyhow::bail!(
+                            "Note type requires 'channel' field in control '{}'",
+                            control_id
+                        );
                     }
-                }
+                },
                 MidiType::Pb => {
                     if midi_spec.channel.is_none() {
-                        anyhow::bail!("PitchBend type requires 'channel' field in control '{}'", control_id);
+                        anyhow::bail!(
+                            "PitchBend type requires 'channel' field in control '{}'",
+                            control_id
+                        );
                     }
-                }
+                },
                 MidiType::Passthrough => {
                     // Passthrough doesn't require specific fields
-                }
+                },
             }
 
             // Validate channel range (1-16 for MIDI, but 0-15 internally)
@@ -589,7 +605,8 @@ impl AppConfig {
                 if channel == 0 || channel > 16 {
                     anyhow::bail!(
                         "Control '{}' has invalid MIDI channel {} (must be 1-16)",
-                        control_id, channel
+                        control_id,
+                        channel
                     );
                 }
             }
@@ -597,19 +614,30 @@ impl AppConfig {
             // Validate CC/Note range (0-127)
             if let Some(cc) = midi_spec.cc {
                 if cc > 127 {
-                    anyhow::bail!("Control '{}' has invalid CC number {} (must be 0-127)", control_id, cc);
+                    anyhow::bail!(
+                        "Control '{}' has invalid CC number {} (must be 0-127)",
+                        control_id,
+                        cc
+                    );
                 }
             }
             if let Some(note) = midi_spec.note {
                 if note > 127 {
-                    anyhow::bail!("Control '{}' has invalid note number {} (must be 0-127)", control_id, note);
+                    anyhow::bail!(
+                        "Control '{}' has invalid note number {} (must be 0-127)",
+                        control_id,
+                        note
+                    );
                 }
             }
         }
 
         // Validate that action OR midi is specified (not both empty, unless passthrough)
         if mapping.action.is_none() && mapping.midi.is_none() {
-            anyhow::bail!("Control '{}' must specify either 'action' or 'midi'", control_id);
+            anyhow::bail!(
+                "Control '{}' must specify either 'action' or 'midi'",
+                control_id
+            );
         }
 
         Ok(())
@@ -617,18 +645,48 @@ impl AppConfig {
 }
 
 // Default value functions
-fn default_obs_host() -> String { "localhost".to_string() }
-fn default_obs_port() -> u16 { 4455 }
-fn default_xtouch_mode() -> XTouchMode { XTouchMode::Mcu }
-fn default_startup_refresh_delay() -> u64 { 500 } // 500ms default delay for BUG-008 fix
-fn default_true() -> bool { true }
-fn default_paging_channel() -> u8 { 1 }
-fn default_prev_note() -> u8 { 46 }
-fn default_next_note() -> u8 { 47 }
-fn default_gamepad_provider() -> String { "hid".to_string() }
-fn default_pan_gain() -> f32 { 15.0 }
-fn default_zoom_gain() -> f32 { 3.0 }
-fn default_deadzone() -> f32 { 0.02 }
-fn default_gamma() -> f32 { 1.5 }
-fn default_activity_duration() -> u64 { 200 }
-fn default_poll_interval() -> u64 { 100 }
+fn default_obs_host() -> String {
+    "localhost".to_string()
+}
+fn default_obs_port() -> u16 {
+    4455
+}
+fn default_xtouch_mode() -> XTouchMode {
+    XTouchMode::Mcu
+}
+fn default_startup_refresh_delay() -> u64 {
+    500
+} // 500ms default delay for BUG-008 fix
+fn default_true() -> bool {
+    true
+}
+fn default_paging_channel() -> u8 {
+    1
+}
+fn default_prev_note() -> u8 {
+    46
+}
+fn default_next_note() -> u8 {
+    47
+}
+fn default_gamepad_provider() -> String {
+    "hid".to_string()
+}
+fn default_pan_gain() -> f32 {
+    15.0
+}
+fn default_zoom_gain() -> f32 {
+    3.0
+}
+fn default_deadzone() -> f32 {
+    0.02
+}
+fn default_gamma() -> f32 {
+    1.5
+}
+fn default_activity_duration() -> u64 {
+    200
+}
+fn default_poll_interval() -> u64 {
+    100
+}

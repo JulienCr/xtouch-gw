@@ -2,22 +2,23 @@
 //!
 //! Handles all action execution, initialization, and lifecycle management.
 
+use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
-use anyhow::{Result, Context, anyhow};
 use serde_json::Value;
-use tracing::{info, debug, warn};
+use tracing::{debug, info, warn};
 
-use super::{Driver, ExecutionContext, IndicatorCallback};
 use super::analog::shape_analog;
 use super::camera::ViewMode;
 use super::driver::ObsDriver;
+use super::{Driver, ExecutionContext, IndicatorCallback};
 
 impl ObsDriver {
     /// Resolve camera_id to (scene, source) from camera_control config.
     /// Returns None if camera_id is not found (assumes it's already scene/source format).
     fn resolve_camera_id(&self, camera_id: &str) -> Option<(String, String)> {
         let config_guard = self.camera_control_config.read();
-        config_guard.as_ref()
+        config_guard
+            .as_ref()
             .and_then(|cc| cc.cameras.iter().find(|c| c.id == camera_id))
             .map(|c| (c.scene.clone(), c.source.clone()))
     }
@@ -29,7 +30,8 @@ impl ObsDriver {
         F: Fn(&crate::config::CameraConfig) -> bool,
     {
         let config_guard = self.camera_control_config.read();
-        config_guard.as_ref()
+        config_guard
+            .as_ref()
             .and_then(|cc| cc.cameras.iter().find(|c| predicate(c)))
             .map(|c| c.enable_ptz)
             .unwrap_or(true)
@@ -51,27 +53,37 @@ impl ObsDriver {
         match params.len() {
             2 => {
                 // New format: [camera_id, step]
-                let camera_id = params[0].as_str()
+                let camera_id = params[0]
+                    .as_str()
                     .ok_or_else(|| anyhow!("camera_id must be a string"))?;
-                let step = params[1].as_f64()
+                let step = params[1]
+                    .as_f64()
                     .ok_or_else(|| anyhow!("step must be a number"))?;
 
-                let (scene, source) = self.resolve_camera_id(camera_id)
-                    .ok_or_else(|| anyhow!("Camera '{}' not found in camera_control config", camera_id))?;
+                let (scene, source) = self.resolve_camera_id(camera_id).ok_or_else(|| {
+                    anyhow!("Camera '{}' not found in camera_control config", camera_id)
+                })?;
 
                 Ok((scene, source, step))
-            }
+            },
             3 => {
                 // Legacy format: [scene, source, step]
-                let scene = params[0].as_str()
-                    .ok_or_else(|| anyhow!("scene must be a string"))?.to_string();
-                let source = params[1].as_str()
-                    .ok_or_else(|| anyhow!("source must be a string"))?.to_string();
-                let step = params[2].as_f64()
+                let scene = params[0]
+                    .as_str()
+                    .ok_or_else(|| anyhow!("scene must be a string"))?
+                    .to_string();
+                let source = params[1]
+                    .as_str()
+                    .ok_or_else(|| anyhow!("source must be a string"))?
+                    .to_string();
+                let step = params[2]
+                    .as_f64()
                     .ok_or_else(|| anyhow!("step must be a number"))?;
                 Ok((scene, source, step))
-            }
-            _ => Err(anyhow!("Expected [camera_id, step] or [scene, source, step]"))
+            },
+            _ => Err(anyhow!(
+                "Expected [camera_id, step] or [scene, source, step]"
+            )),
         }
     }
 
@@ -81,21 +93,27 @@ impl ObsDriver {
         match params.len() {
             1 => {
                 // New format: [camera_id]
-                let camera_id = params[0].as_str()
+                let camera_id = params[0]
+                    .as_str()
                     .ok_or_else(|| anyhow!("camera_id must be a string"))?;
 
-                self.resolve_camera_id(camera_id)
-                    .ok_or_else(|| anyhow!("Camera '{}' not found in camera_control config", camera_id))
-            }
+                self.resolve_camera_id(camera_id).ok_or_else(|| {
+                    anyhow!("Camera '{}' not found in camera_control config", camera_id)
+                })
+            },
             2 => {
                 // Legacy format: [scene, source]
-                let scene = params[0].as_str()
-                    .ok_or_else(|| anyhow!("scene must be a string"))?.to_string();
-                let source = params[1].as_str()
-                    .ok_or_else(|| anyhow!("source must be a string"))?.to_string();
+                let scene = params[0]
+                    .as_str()
+                    .ok_or_else(|| anyhow!("scene must be a string"))?
+                    .to_string();
+                let source = params[1]
+                    .as_str()
+                    .ok_or_else(|| anyhow!("source must be a string"))?
+                    .to_string();
                 Ok((scene, source))
-            }
-            _ => Err(anyhow!("Expected [camera_id] or [scene, source]"))
+            },
+            _ => Err(anyhow!("Expected [camera_id] or [scene, source]")),
         }
     }
 
@@ -182,13 +200,24 @@ impl ObsDriver {
         let accel = self.encoder_tracker.lock().track_event(control_id, delta);
         let final_delta = delta * accel;
 
-        debug!("OBS {:?} encoder: id='{}' delta={} accel={:.2}x final={:.2}",
-            axis, control_id, delta, accel, final_delta);
+        debug!(
+            "OBS {:?} encoder: id='{}' delta={} accel={:.2}x final={:.2}",
+            axis, control_id, delta, accel, final_delta
+        );
 
         match axis {
-            PtzAxis::X => self.apply_delta(scene, source, Some(final_delta), None, None).await,
-            PtzAxis::Y => self.apply_delta(scene, source, None, Some(final_delta), None).await,
-            PtzAxis::Scale => self.apply_delta(scene, source, None, None, Some(final_delta)).await,
+            PtzAxis::X => {
+                self.apply_delta(scene, source, Some(final_delta), None, None)
+                    .await
+            },
+            PtzAxis::Y => {
+                self.apply_delta(scene, source, None, Some(final_delta), None)
+                    .await
+            },
+            PtzAxis::Scale => {
+                self.apply_delta(scene, source, None, None, Some(final_delta))
+                    .await
+            },
         }
     }
 
@@ -200,10 +229,19 @@ impl ObsDriver {
         axis: PtzAxis,
         default_step: f64,
     ) -> Result<()> {
-        let (scene_name, source_name, step) = self.parse_camera_params_with_step(params)
+        let (scene_name, source_name, step) = self
+            .parse_camera_params_with_step(params)
             .unwrap_or_else(|_| {
-                let scene = params.get(0).and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let source = params.get(1).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let scene = params
+                    .first()
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let source = params
+                    .get(1)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 (scene, source, default_step)
             });
 
@@ -211,7 +249,9 @@ impl ObsDriver {
             return Ok(());
         }
 
-        let is_gamepad = ctx.control_id.as_ref()
+        let is_gamepad = ctx
+            .control_id
+            .as_ref()
             .map(|id| id.starts_with("gamepad"))
             .unwrap_or(false);
 
@@ -220,9 +260,17 @@ impl ObsDriver {
                 PtzAxis::X | PtzAxis::Y => *self.analog_pan_gain.read(),
                 PtzAxis::Scale => *self.analog_zoom_gain.read(),
             };
-            self.handle_gamepad_analog(ctx.value.as_ref(), &scene_name, &source_name, step, gain, axis);
+            self.handle_gamepad_analog(
+                ctx.value.as_ref(),
+                &scene_name,
+                &source_name,
+                step,
+                gain,
+                axis,
+            );
         } else {
-            self.handle_encoder_ptz(ctx, &scene_name, &source_name, step, axis).await?;
+            self.handle_encoder_ptz(ctx, &scene_name, &source_name, step, axis)
+                .await?;
         }
 
         Ok(())
@@ -267,7 +315,7 @@ impl Driver for ObsDriver {
                 tokio::spawn(async move {
                     driver_clone.schedule_reconnect().await;
                 });
-            }
+            },
         }
 
         // Always succeed - driver is registered even if disconnected
@@ -298,23 +346,29 @@ impl Driver for ObsDriver {
 
         match action {
             "changeScene" | "setScene" => {
-                let scene_name = params.get(0)
+                let scene_name = params
+                    .first()
                     .and_then(|v| v.as_str())
                     .context("Scene name required")?;
 
                 let guard = self.client.read().await;
-                let client = guard.as_ref()
-                    .context("OBS not connected")?;
+                let client = guard.as_ref().context("OBS not connected")?;
 
                 // Check studio mode to determine which scene to change
                 let studio_mode = *self.studio_mode.read();
 
                 if studio_mode {
                     info!("🎬 OBS Preview scene change → '{}'", scene_name);
-                    client.scenes().set_current_preview_scene(scene_name).await?;
+                    client
+                        .scenes()
+                        .set_current_preview_scene(scene_name)
+                        .await?;
                 } else {
                     info!("🎬 OBS Program scene change → '{}'", scene_name);
-                    client.scenes().set_current_program_scene(scene_name).await?;
+                    client
+                        .scenes()
+                        .set_current_program_scene(scene_name)
+                        .await?;
                 }
 
                 Ok(())
@@ -322,8 +376,7 @@ impl Driver for ObsDriver {
 
             "toggleStudioMode" => {
                 let guard = self.client.read().await;
-                let client = guard.as_ref()
-                    .context("OBS not connected")?;
+                let client = guard.as_ref().context("OBS not connected")?;
 
                 // Get current state and toggle
                 let current = *self.studio_mode.read();
@@ -346,22 +399,31 @@ impl Driver for ObsDriver {
             "TriggerStudioModeTransition" => {
                 info!("🎬 OBS Studio Transition requested");
                 let guard = self.client.read().await;
-                let client = guard.as_ref()
-                    .context("OBS not connected")?;
+                let client = guard.as_ref().context("OBS not connected")?;
 
                 client.transitions().trigger().await?;
                 Ok(())
             },
 
-            "nudgeX" => self.execute_ptz_action(&params, &ctx, PtzAxis::X, 2.0).await,
+            "nudgeX" => {
+                self.execute_ptz_action(&params, &ctx, PtzAxis::X, 2.0)
+                    .await
+            },
 
-            "nudgeY" => self.execute_ptz_action(&params, &ctx, PtzAxis::Y, 2.0).await,
+            "nudgeY" => {
+                self.execute_ptz_action(&params, &ctx, PtzAxis::Y, 2.0)
+                    .await
+            },
 
-            "scaleUniform" => self.execute_ptz_action(&params, &ctx, PtzAxis::Scale, 0.02).await,
+            "scaleUniform" => {
+                self.execute_ptz_action(&params, &ctx, PtzAxis::Scale, 0.02)
+                    .await
+            },
 
             "resetPosition" => {
                 // Parse params: [camera_id] or [scene, source]
-                let (scene_name, source_name) = self.parse_camera_params(&params)
+                let (scene_name, source_name) = self
+                    .parse_camera_params(&params)
                     .context("resetPosition requires [camera_id] or [scene, source]")?;
 
                 // Check if PTZ is enabled for this camera
@@ -369,7 +431,10 @@ impl Driver for ObsDriver {
                     return Ok(()); // Silently ignore PTZ commands for disabled cameras
                 }
 
-                info!("OBS Reset position: scene='{}' source='{}'", scene_name, source_name);
+                info!(
+                    "OBS Reset position: scene='{}' source='{}'",
+                    scene_name, source_name
+                );
 
                 // Stop any analog motion on position axes
                 self.set_analog_rate(&scene_name, &source_name, Some(0.0), Some(0.0), None);
@@ -395,10 +460,10 @@ impl Driver for ObsDriver {
 
                 // Send to OBS
                 let guard = self.client.read().await;
-                let client = guard.as_ref()
-                    .context("OBS client not connected")?;
+                let client = guard.as_ref().context("OBS client not connected")?;
 
-                client.scene_items()
+                client
+                    .scene_items()
                     .set_transform(obws::requests::scene_items::SetTransform {
                         scene: &scene_name,
                         item_id,
@@ -415,16 +480,20 @@ impl Driver for ObsDriver {
                     state.alignment = 0; // CENTER
                 }
 
-                debug!("OBS reset position: '{}' position=({:.1},{:.1}) alignment=CENTER",
+                debug!(
+                    "OBS reset position: '{}' position=({:.1},{:.1}) alignment=CENTER",
                     self.cache_key(&scene_name, &source_name),
-                    canvas_width / 2.0, canvas_height / 2.0);
+                    canvas_width / 2.0,
+                    canvas_height / 2.0
+                );
 
                 Ok(())
             },
 
             "resetZoom" => {
                 // Parse params: [camera_id] or [scene, source]
-                let (scene_name, source_name) = self.parse_camera_params(&params)
+                let (scene_name, source_name) = self
+                    .parse_camera_params(&params)
                     .context("resetZoom requires [camera_id] or [scene, source]")?;
 
                 // Check if PTZ is enabled for this camera
@@ -432,7 +501,10 @@ impl Driver for ObsDriver {
                     return Ok(()); // Silently ignore PTZ commands for disabled cameras
                 }
 
-                info!("OBS Reset zoom: scene='{}' source='{}'", scene_name, source_name);
+                info!(
+                    "OBS Reset zoom: scene='{}' source='{}'",
+                    scene_name, source_name
+                );
 
                 // Stop any analog motion on zoom axis
                 self.set_analog_rate(&scene_name, &source_name, None, None, Some(0.0));
@@ -463,7 +535,10 @@ impl Driver for ObsDriver {
                         ..Default::default()
                     });
 
-                    info!("OBS Reset zoom (bounds): {}x{}", canvas_width as u32, canvas_height as u32);
+                    info!(
+                        "OBS Reset zoom (bounds): {}x{}",
+                        canvas_width as u32, canvas_height as u32
+                    );
                 } else {
                     // For scale-based sources: reset scale to 1.0
                     transform.scale = Some(obws::requests::scene_items::Scale {
@@ -476,10 +551,10 @@ impl Driver for ObsDriver {
 
                 // Send to OBS
                 let guard = self.client.read().await;
-                let client = guard.as_ref()
-                    .context("OBS client not connected")?;
+                let client = guard.as_ref().context("OBS client not connected")?;
 
-                client.scene_items()
+                client
+                    .scene_items()
                     .set_transform(obws::requests::scene_items::SetTransform {
                         scene: &scene_name,
                         item_id,
@@ -498,7 +573,8 @@ impl Driver for ObsDriver {
             },
 
             "selectCamera" => {
-                let camera_id = params.get(0)
+                let camera_id = params
+                    .first()
                     .and_then(|v| v.as_str())
                     .context("Camera ID required")?;
 
@@ -509,10 +585,13 @@ impl Driver for ObsDriver {
                 let view_mode = self.camera_control_state.read().current_view_mode;
                 let (camera_scene, split_scene) = {
                     let config_guard = self.camera_control_config.read();
-                    let config = config_guard.as_ref()
+                    let config = config_guard
+                        .as_ref()
                         .context("Camera control not configured")?;
 
-                    let camera = config.cameras.iter()
+                    let camera = config
+                        .cameras
+                        .iter()
                         .find(|c| c.id == camera_id)
                         .with_context(|| format!("Camera '{}' not found", camera_id))?;
 
@@ -528,8 +607,7 @@ impl Driver for ObsDriver {
                 match view_mode {
                     ViewMode::Full => {
                         let guard = self.client.read().await;
-                        let client = guard.as_ref()
-                            .context("OBS not connected")?;
+                        let client = guard.as_ref().context("OBS not connected")?;
 
                         // Determine whether to use preview or program
                         let use_preview = match explicit_target {
@@ -541,31 +619,44 @@ impl Driver for ObsDriver {
                                     *self.studio_mode.write() = true;
                                 }
                                 true
-                            }
+                            },
                             Some("program") => false,
                             _ => *self.studio_mode.read(), // Legacy behavior
                         };
 
                         let target_name = if use_preview { "preview" } else { "program" };
-                        info!("🎬 OBS: Select camera '{}' (FULL mode) → {} '{}'", camera_id, target_name, camera_scene);
+                        info!(
+                            "🎬 OBS: Select camera '{}' (FULL mode) → {} '{}'",
+                            camera_id, target_name, camera_scene
+                        );
 
                         if use_preview {
-                            client.scenes().set_current_preview_scene(&camera_scene).await?;
+                            client
+                                .scenes()
+                                .set_current_preview_scene(&camera_scene)
+                                .await?;
                         } else {
-                            client.scenes().set_current_program_scene(&camera_scene).await?;
+                            client
+                                .scenes()
+                                .set_current_program_scene(&camera_scene)
+                                .await?;
                         }
-                    }
+                    },
                     ViewMode::SplitLeft | ViewMode::SplitRight => {
-                        let split_scene = split_scene.expect("split_scene must be Some for split modes");
+                        let split_scene =
+                            split_scene.expect("split_scene must be Some for split modes");
 
                         // Note: explicit_target is ignored in split mode (modifies sources, not scenes)
                         if let Some(target) = explicit_target {
                             debug!("🎬 OBS: Ignoring target '{}' in SPLIT mode (split modifies sources, not scenes)", target);
                         }
 
-                        info!("🎬 OBS: Select camera '{}' (SPLIT mode) in '{}'", camera_id, split_scene);
+                        info!(
+                            "🎬 OBS: Select camera '{}' (SPLIT mode) in '{}'",
+                            camera_id, split_scene
+                        );
                         self.set_split_camera(&split_scene, camera_id).await?;
-                    }
+                    },
                 }
 
                 // Update last_camera for all modes
@@ -575,49 +666,63 @@ impl Driver for ObsDriver {
             },
 
             "enterSplit" => {
-                let side = params.get(0)
+                let side = params
+                    .first()
                     .and_then(|v| v.as_str())
                     .context("Side required ('left' or 'right')")?;
-                
+
                 let (split_scene, new_mode, last_camera) = {
                     let config_guard = self.camera_control_config.read();
-                    let config = config_guard.as_ref()
+                    let config = config_guard
+                        .as_ref()
                         .context("Camera control not configured")?;
-                    
+
                     // Determine split scene
                     let (split_scene, new_mode) = match side {
                         "left" => (config.splits.left.clone(), ViewMode::SplitLeft),
                         "right" => (config.splits.right.clone(), ViewMode::SplitRight),
-                        _ => return Err(anyhow!("Invalid side '{}', must be 'left' or 'right'", side)),
+                        _ => {
+                            return Err(anyhow!(
+                                "Invalid side '{}', must be 'left' or 'right'",
+                                side
+                            ))
+                        },
                     };
-                    
+
                     let last_camera = self.camera_control_state.read().last_camera.clone();
-                    
+
                     // If last_camera is empty, use first camera
                     let last_camera = if last_camera.is_empty() {
-                        config.cameras.first()
+                        config
+                            .cameras
+                            .first()
                             .map(|c| c.id.clone())
                             .unwrap_or_else(|| "Main".to_string())
                     } else {
                         last_camera
                     };
-                    
+
                     (split_scene, new_mode, last_camera)
                 };
-                
+
                 info!("🎬 OBS: Enter split '{}' → scene '{}'", side, split_scene);
-                
+
                 // Switch to split scene
                 let guard = self.client.read().await;
-                let client = guard.as_ref()
-                    .context("OBS not connected")?;
-                
+                let client = guard.as_ref().context("OBS not connected")?;
+
                 let studio_mode = *self.studio_mode.read();
-                
+
                 if studio_mode {
-                    client.scenes().set_current_preview_scene(&split_scene).await?;
+                    client
+                        .scenes()
+                        .set_current_preview_scene(&split_scene)
+                        .await?;
                 } else {
-                    client.scenes().set_current_program_scene(&split_scene).await?;
+                    client
+                        .scenes()
+                        .set_current_program_scene(&split_scene)
+                        .await?;
                 }
 
                 // Update state BEFORE setting camera (so state is updated even if camera fails)
@@ -629,51 +734,62 @@ impl Driver for ObsDriver {
 
                 // Set the camera in the split
                 self.set_split_camera(&split_scene, &last_camera).await?;
-                
+
                 Ok(())
             },
 
             "exitSplit" => {
                 let (last_camera, camera_scene) = {
                     let config_guard = self.camera_control_config.read();
-                    let config = config_guard.as_ref()
+                    let config = config_guard
+                        .as_ref()
                         .context("Camera control not configured")?;
-                    
+
                     // Find last camera scene
                     let last_camera = self.camera_control_state.read().last_camera.clone();
-                    let camera = config.cameras.iter()
+                    let camera = config
+                        .cameras
+                        .iter()
                         .find(|c| c.id == last_camera)
                         .or_else(|| config.cameras.first())
                         .context("No cameras configured")?;
-                    
+
                     (last_camera, camera.scene.clone())
                 };
-                
-                info!("🎬 OBS: Exit split → camera '{}' scene '{}'", last_camera, camera_scene);
-                
+
+                info!(
+                    "🎬 OBS: Exit split → camera '{}' scene '{}'",
+                    last_camera, camera_scene
+                );
+
                 // Switch to full scene
                 let guard = self.client.read().await;
-                let client = guard.as_ref()
-                    .context("OBS not connected")?;
-                
+                let client = guard.as_ref().context("OBS not connected")?;
+
                 let studio_mode = *self.studio_mode.read();
-                
+
                 if studio_mode {
-                    client.scenes().set_current_preview_scene(&camera_scene).await?;
+                    client
+                        .scenes()
+                        .set_current_preview_scene(&camera_scene)
+                        .await?;
                 } else {
-                    client.scenes().set_current_program_scene(&camera_scene).await?;
+                    client
+                        .scenes()
+                        .set_current_program_scene(&camera_scene)
+                        .await?;
                 }
-                
+
                 // Update state
                 self.camera_control_state.write().current_view_mode = ViewMode::Full;
-                
+
                 Ok(())
             },
 
             _ => {
                 warn!("Unknown OBS action: {}", action);
                 Ok(())
-            }
+            },
         }
     }
 
@@ -707,11 +823,21 @@ impl Driver for ObsDriver {
         let emitters = self.indicator_emitters.read();
         if let Some(emit) = emitters.last() {
             emit("obs.studioMode".to_string(), Value::Bool(studio_mode));
-            emit("obs.currentProgramScene".to_string(), Value::String(program_scene.clone()));
-            emit("obs.currentPreviewScene".to_string(), Value::String(preview_scene.clone()));
+            emit(
+                "obs.currentProgramScene".to_string(),
+                Value::String(program_scene.clone()),
+            );
+            emit(
+                "obs.currentPreviewScene".to_string(),
+                Value::String(preview_scene.clone()),
+            );
 
             // Emit composite selectedScene
-            let selected = if studio_mode { preview_scene } else { program_scene };
+            let selected = if studio_mode {
+                preview_scene
+            } else {
+                program_scene
+            };
             emit("obs.selectedScene".to_string(), Value::String(selected));
         }
     }
@@ -794,7 +920,10 @@ mod tests {
 
         #[test]
         fn string_value_returns_zero() {
-            assert_eq!(ObsDriver::encoder_value_to_delta(&json!("invalid"), 2.0), 0.0);
+            assert_eq!(
+                ObsDriver::encoder_value_to_delta(&json!("invalid"), 2.0),
+                0.0
+            );
         }
 
         #[test]
@@ -809,12 +938,18 @@ mod tests {
 
         #[test]
         fn array_value_returns_zero() {
-            assert_eq!(ObsDriver::encoder_value_to_delta(&json!([1, 2, 3]), 2.0), 0.0);
+            assert_eq!(
+                ObsDriver::encoder_value_to_delta(&json!([1, 2, 3]), 2.0),
+                0.0
+            );
         }
 
         #[test]
         fn object_value_returns_zero() {
-            assert_eq!(ObsDriver::encoder_value_to_delta(&json!({"key": "value"}), 2.0), 0.0);
+            assert_eq!(
+                ObsDriver::encoder_value_to_delta(&json!({"key": "value"}), 2.0),
+                0.0
+            );
         }
 
         #[test]
@@ -874,7 +1009,7 @@ mod tests {
             assert_eq!(target, None);
             // Should follow studio_mode
             assert!(!determine_use_preview(target, false)); // studio_mode=false → program
-            assert!(determine_use_preview(target, true));   // studio_mode=true → preview
+            assert!(determine_use_preview(target, true)); // studio_mode=true → preview
         }
 
         #[test]
@@ -899,4 +1034,3 @@ mod tests {
         }
     }
 }
-

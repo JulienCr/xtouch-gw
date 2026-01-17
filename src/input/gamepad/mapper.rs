@@ -1,19 +1,19 @@
 //! Gamepad event mapper - transforms gamepad events to router commands
 
-use anyhow::{Result, anyhow};
-use std::sync::Arc;
+use anyhow::{anyhow, Result};
+use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, error, info, warn};
-use serde_json::Value;
 
 use crate::api::CameraStateMessage;
-use crate::config::{GamepadConfig, AnalogConfig};
+use crate::config::{AnalogConfig, GamepadConfig};
 use crate::router::Router;
 
+use super::analog::{apply_inversion, process_axis};
+use super::hybrid_provider::{EventCallback, HybridGamepadProvider};
 use super::provider::GamepadEvent;
-use super::hybrid_provider::{HybridGamepadProvider, EventCallback};
-use super::analog::{process_axis, apply_inversion};
 
 /// LT threshold for "pressed" detection (normalized value -1.0 to 1.0)
 /// LT is normalized from 0-255 to -1.0..1.0, so 0.3 means ~65% pressed
@@ -85,7 +85,10 @@ impl GamepadMapper {
 
             while let Some(event) = event_rx.recv().await {
                 match event {
-                    GamepadEvent::Button { control_id, pressed } => {
+                    GamepadEvent::Button {
+                        control_id,
+                        pressed,
+                    } => {
                         // Track LT (left trigger) button state for PTZ modifier
                         if control_id.ends_with(".btn.lt") {
                             let prefix = control_id.split('.').next().unwrap_or("");
@@ -95,11 +98,19 @@ impl GamepadMapper {
                             continue;
                         }
 
-                        if let Err(e) = Self::handle_button(&control_id, pressed, &router, &lt_held, &update_tx).await {
+                        if let Err(e) =
+                            Self::handle_button(&control_id, pressed, &router, &lt_held, &update_tx)
+                                .await
+                        {
                             error!("Error handling button event: {}", e);
                         }
-                    }
-                    GamepadEvent::Axis { control_id, value, analog_config, sequence: _ } => {
+                    },
+                    GamepadEvent::Axis {
+                        control_id,
+                        value,
+                        analog_config,
+                        sequence: _,
+                    } => {
                         // Also track LT from axis events (some controllers send axis instead of button)
                         if control_id.ends_with(".axis.zl") {
                             let prefix = control_id.split('.').next().unwrap_or("");
@@ -114,10 +125,12 @@ impl GamepadMapper {
                             &router,
                             &analog_config,
                             &mut last_axis_values,
-                        ).await {
+                        )
+                        .await
+                        {
                             error!("Error handling axis event: {}", e);
                         }
-                    }
+                    },
                 }
             }
 
@@ -184,7 +197,8 @@ impl GamepadMapper {
             let config = router.config.read().await;
 
             // Look up in pages_global.controls
-            config.pages_global
+            config
+                .pages_global
                 .as_ref()
                 .and_then(|pg| pg.controls.as_ref())
                 .and_then(|controls| controls.get(control_id))
@@ -198,15 +212,19 @@ impl GamepadMapper {
         let camera_id = match camera_id {
             Some(id) => id,
             None => {
-                debug!("No selectCamera mapping for {}, ignoring LT+button", control_id);
+                debug!(
+                    "No selectCamera mapping for {}, ignoring LT+button",
+                    control_id
+                );
                 return Ok(());
-            }
+            },
         };
 
         // 2. Check if PTZ is enabled for this camera
         let ptz_enabled = {
             let config = router.config.read().await;
-            config.obs
+            config
+                .obs
                 .as_ref()
                 .and_then(|o| o.camera_control.as_ref())
                 .and_then(|cc| cc.cameras.iter().find(|c| c.id == camera_id))
@@ -290,30 +308,42 @@ impl GamepadMapper {
                 } else {
                     v
                 }
-            }
+            },
             None => {
                 // Within deadzone (gilrs only) - send 0.0 if last value was non-zero
                 let last = cache.get(control_id).copied();
-                if last.map_or(true, |v| v != 0.0) {
+                if last != Some(0.0) {
                     debug!("Axis event: {} = 0.0 (deadzone)", control_id);
-                    match router.handle_control(control_id, Some(Value::from(0.0)), None).await {
+                    match router
+                        .handle_control(control_id, Some(Value::from(0.0)), None)
+                        .await
+                    {
                         Ok(_) => debug!("✅ Router handled axis (deadzone): {} = 0.0", control_id),
                         Err(e) => debug!("⚠️  Router error for {}: {}", control_id, e),
                     }
                     cache.insert(control_id.to_string(), 0.0);
                 }
                 return Ok(());
-            }
+            },
         };
 
         // Check cache to avoid sending redundant values
         let last = cache.get(control_id).copied();
-        if last.map_or(true, |v| v != final_value) {
-            debug!("Axis event: {} = {:.3} (raw: {:.3})", control_id, final_value, raw_value);
+        if last != Some(final_value) {
+            debug!(
+                "Axis event: {} = {:.3} (raw: {:.3})",
+                control_id, final_value, raw_value
+            );
 
             // Send to router (pass normalized value, driver will handle scaling)
-            match router.handle_control(control_id, Some(Value::from(final_value)), None).await {
-                Ok(_) => debug!("✅ Router handled axis: {} = {:.3}", control_id, final_value),
+            match router
+                .handle_control(control_id, Some(Value::from(final_value)), None)
+                .await
+            {
+                Ok(_) => debug!(
+                    "✅ Router handled axis: {} = {:.3}",
+                    control_id, final_value
+                ),
                 Err(e) => debug!("⚠️  Router error for {}: {}", control_id, e),
             }
 

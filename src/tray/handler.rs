@@ -3,10 +3,10 @@
 //! Bridges the async Tokio runtime with the blocking Windows tray UI thread.
 //! Subscribes to driver status callbacks and forwards updates via crossbeam channels.
 
+use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
-use parking_lot::RwLock;
 use tracing::{debug, trace, warn};
 
 use super::{ActivityDirection, ActivityTracker, ConnectionStatus, TrayUpdate};
@@ -62,7 +62,10 @@ impl TrayMessageHandler {
     /// Returns a callback that should be registered with the driver.
     /// When the driver's status changes, it will call this callback,
     /// which forwards the update to the tray UI with rate limiting.
-    pub fn subscribe_driver(&self, driver_name: String) -> Arc<dyn Fn(ConnectionStatus) + Send + Sync> {
+    pub fn subscribe_driver(
+        &self,
+        driver_name: String,
+    ) -> Arc<dyn Fn(ConnectionStatus) + Send + Sync> {
         let tray_tx = self.tray_tx.clone();
         let driver_statuses = Arc::clone(&self.driver_statuses);
         let last_update_times = Arc::clone(&self.last_update_times);
@@ -92,7 +95,10 @@ impl TrayMessageHandler {
                 if let Some(last_time) = times.get(&name) {
                     let elapsed = now.duration_since(*last_time).as_millis() as u64;
                     if elapsed < rate_limit_ms {
-                        debug!("Rate limiting duplicate status update for {} ({}ms elapsed)", name, elapsed);
+                        debug!(
+                            "Rate limiting duplicate status update for {} ({}ms elapsed)",
+                            name, elapsed
+                        );
                         false
                     } else {
                         times.insert(name.clone(), now);
@@ -119,7 +125,10 @@ impl TrayMessageHandler {
 
                 if let Err(e) = tray_tx.try_send(update) {
                     if matches!(e, crossbeam::channel::TrySendError::Disconnected(_)) {
-                        warn!("Tray channel disconnected, cannot send status update for {}", name);
+                        warn!(
+                            "Tray channel disconnected, cannot send status update for {}",
+                            name
+                        );
                     } else {
                         warn!("Failed to send status update to tray: {}", e);
                     }
@@ -135,7 +144,11 @@ impl TrayMessageHandler {
 
     /// Send initial status for a driver (used when driver is first initialized)
     pub fn send_initial_status(&self, driver_name: String, status: ConnectionStatus) {
-        trace!("TrayHandler: sending initial status for {}: {:?}", driver_name, status);
+        trace!(
+            "TrayHandler: sending initial status for {}: {:?}",
+            driver_name,
+            status
+        );
 
         // Update internal tracking
         {
@@ -160,8 +173,10 @@ impl TrayMessageHandler {
     /// and sends activity snapshots to the tray UI for LED visualization.
     /// Handles channel disconnection gracefully.
     pub async fn run(self: Arc<Self>) {
-        debug!("TrayMessageHandler started (poll interval: {}ms, rate limit: {}ms)",
-              self.activity_poll_interval_ms, self.rate_limit_ms);
+        debug!(
+            "TrayMessageHandler started (poll interval: {}ms, rate limit: {}ms)",
+            self.activity_poll_interval_ms, self.rate_limit_ms
+        );
 
         if self.activity_tracker.is_none() {
             debug!("Activity tracking disabled, handler running in minimal mode");
@@ -174,7 +189,10 @@ impl TrayMessageHandler {
         let activity_tracker = self.activity_tracker.as_ref().unwrap();
         let poll_interval = tokio::time::Duration::from_millis(self.activity_poll_interval_ms);
 
-        debug!("Activity polling enabled ({}ms interval)", self.activity_poll_interval_ms);
+        debug!(
+            "Activity polling enabled ({}ms interval)",
+            self.activity_poll_interval_ms
+        );
 
         let mut iteration_count = 0u64;
 
@@ -189,7 +207,7 @@ impl TrayMessageHandler {
             };
 
             if driver_names.is_empty() {
-                if iteration_count % 100 == 0 {
+                if iteration_count.is_multiple_of(100) {
                     debug!("No drivers registered yet (iteration {})", iteration_count);
                 }
                 continue;
@@ -200,18 +218,26 @@ impl TrayMessageHandler {
 
             for driver_name in &driver_names {
                 // Check inbound activity
-                let inbound_active = activity_tracker.is_active(driver_name, ActivityDirection::Inbound);
+                let inbound_active =
+                    activity_tracker.is_active(driver_name, ActivityDirection::Inbound);
                 if inbound_active {
                     active_count += 1;
                 }
-                activities.insert((driver_name.clone(), ActivityDirection::Inbound), inbound_active);
+                activities.insert(
+                    (driver_name.clone(), ActivityDirection::Inbound),
+                    inbound_active,
+                );
 
                 // Check outbound activity
-                let outbound_active = activity_tracker.is_active(driver_name, ActivityDirection::Outbound);
+                let outbound_active =
+                    activity_tracker.is_active(driver_name, ActivityDirection::Outbound);
                 if outbound_active {
                     active_count += 1;
                 }
-                activities.insert((driver_name.clone(), ActivityDirection::Outbound), outbound_active);
+                activities.insert(
+                    (driver_name.clone(), ActivityDirection::Outbound),
+                    outbound_active,
+                );
             }
 
             // Send snapshot to tray UI
@@ -257,12 +283,14 @@ mod tests {
         callback(ConnectionStatus::Connected);
 
         // Should receive update
-        let update = rx.recv_timeout(std::time::Duration::from_millis(100)).unwrap();
+        let update = rx
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .unwrap();
         match update {
             TrayUpdate::DriverStatus { name, status } => {
                 assert_eq!(name, "TestDriver");
                 assert_eq!(status, ConnectionStatus::Connected);
-            }
+            },
             _ => panic!("Expected DriverStatus update"),
         }
     }
@@ -282,11 +310,18 @@ mod tests {
         let statuses = handler.get_all_statuses();
         assert_eq!(statuses.len(), 2);
         assert_eq!(statuses.get("Driver1"), Some(&ConnectionStatus::Connected));
-        assert_eq!(statuses.get("Driver2"), Some(&ConnectionStatus::Disconnected));
+        assert_eq!(
+            statuses.get("Driver2"),
+            Some(&ConnectionStatus::Disconnected)
+        );
 
         // Should receive both updates
-        let u1 = rx.recv_timeout(std::time::Duration::from_millis(100)).unwrap();
-        let u2 = rx.recv_timeout(std::time::Duration::from_millis(100)).unwrap();
+        let u1 = rx
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .unwrap();
+        let u2 = rx
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .unwrap();
 
         assert!(matches!(u1, TrayUpdate::DriverStatus { .. }));
         assert!(matches!(u2, TrayUpdate::DriverStatus { .. }));
@@ -300,12 +335,14 @@ mod tests {
         handler.send_initial_status("OBS".to_string(), ConnectionStatus::Connected);
 
         // Should receive update
-        let update = rx.recv_timeout(std::time::Duration::from_millis(100)).unwrap();
+        let update = rx
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .unwrap();
         match update {
             TrayUpdate::DriverStatus { name, status } => {
                 assert_eq!(name, "OBS");
                 assert_eq!(status, ConnectionStatus::Connected);
-            }
+            },
             _ => panic!("Expected DriverStatus update"),
         }
 

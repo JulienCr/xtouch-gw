@@ -231,11 +231,7 @@ impl StateActorHandle {
     /// This is the synchronous version that waits for the actor to process
     /// the hydration before returning. Use this at startup to ensure state
     /// is fully loaded before the first page refresh.
-    pub async fn hydrate_from_snapshot_and_wait(
-        &self,
-        app: AppKey,
-        entries: Vec<MidiStateEntry>,
-    ) {
+    pub async fn hydrate_from_snapshot_and_wait(&self, app: AppKey, entries: Vec<MidiStateEntry>) {
         let (tx, rx) = oneshot::channel();
         let _ = self.cmd_tx.send(StateCommand::HydrateFromSnapshot {
             app,

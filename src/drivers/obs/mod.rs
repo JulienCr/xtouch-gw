@@ -7,17 +7,16 @@
 //! - Automatic reconnection
 
 // Module declarations
+mod actions;
 mod analog;
 mod camera;
 mod connection;
 mod driver;
 mod encoder;
 mod transform;
-mod actions;
 
 // Re-export main types
 pub use driver::ObsDriver;
 
 // Re-export Driver trait and types from parent
 use super::{Driver, ExecutionContext, IndicatorCallback};
-

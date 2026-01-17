@@ -3,18 +3,18 @@
 //! Handles bidirectional MIDI communication with filtering and transformations.
 //! Supports automatic reconnection with exponential backoff.
 
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use anyhow::{Result, anyhow};
-use serde_json::Value;
 use parking_lot::Mutex;
+use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{debug, warn, trace};
+use tracing::{debug, trace, warn};
 
 use super::{Driver, ExecutionContext};
 use crate::config::{MidiFilterConfig, TransformConfig};
-use crate::midi::{MidiMessage, parse_message, find_port_by_substring};
+use crate::midi::{find_port_by_substring, parse_message, MidiMessage};
 
 /// Callback type for MIDI feedback from applications
 pub type FeedbackCallback = Arc<dyn Fn(&[u8]) + Send + Sync>;
@@ -29,7 +29,7 @@ fn parse_number_maybe_hex(value: &serde_json::Value, default: u16) -> u16 {
             } else {
                 s.parse::<u16>().unwrap_or(default)
             }
-        }
+        },
         _ => default,
     }
 }
@@ -42,12 +42,12 @@ pub struct MidiBridgeDriver {
     filter: Option<MidiFilterConfig>,
     transform: Option<TransformConfig>,
     optional: bool,
-    
+
     // MIDI ports (wrapped in Arc<Mutex<>> for interior mutability)
     // Note: Using Arc<Mutex<>> instead of Arc<tokio::sync::Mutex<>> for non-async interior mutability
     midi_out: Arc<Mutex<Option<midir::MidiOutputConnection>>>,
     midi_in: Arc<Mutex<Option<midir::MidiInputConnection<()>>>>,
-    
+
     // Feedback callback for routing MIDI from app to X-Touch
     feedback_callback: Arc<Mutex<Option<FeedbackCallback>>>,
 
@@ -96,14 +96,16 @@ impl MidiBridgeDriver {
             midi_in: Arc::new(Mutex::new(None)),
             feedback_callback: Arc::new(Mutex::new(None)),
             status_callbacks: Arc::new(parking_lot::RwLock::new(Vec::new())),
-            current_status: Arc::new(parking_lot::RwLock::new(crate::tray::ConnectionStatus::Disconnected)),
+            current_status: Arc::new(parking_lot::RwLock::new(
+                crate::tray::ConnectionStatus::Disconnected,
+            )),
             activity_tracker: Arc::new(parking_lot::RwLock::new(None)),
             reconnect_count_out: Arc::new(Mutex::new(0)),
             reconnect_count_in: Arc::new(Mutex::new(0)),
             shutdown_flag: Arc::new(Mutex::new(false)),
         }
     }
-    
+
     /// Set the feedback callback for routing MIDI from app to X-Touch
     pub fn set_feedback_callback(&self, callback: FeedbackCallback) {
         *self.feedback_callback.lock() = Some(callback);
@@ -147,12 +149,12 @@ impl MidiBridgeDriver {
     /// Try to open the output port once
     fn try_open_out(&self) -> Result<()> {
         let midi_out = midir::MidiOutput::new("XTouch-GW-Bridge-Out")?;
-        
+
         let port = find_port_by_substring(&midi_out, &self.to_port)
             .ok_or_else(|| anyhow!("Output port '{}' not found", self.to_port))?;
 
         let connection = midi_out.connect(&port, &format!("xtouch-gw-{}", self.to_port))?;
-        
+
         *self.midi_out.lock() = Some(connection);
         *self.reconnect_count_out.lock() = 0;
 
@@ -166,7 +168,7 @@ impl MidiBridgeDriver {
     /// Try to open the input port once
     fn try_open_in(&self) -> Result<()> {
         let midi_in = midir::MidiInput::new("XTouch-GW-Bridge-In")?;
-        
+
         let port = find_port_by_substring(&midi_in, &self.from_port)
             .ok_or_else(|| anyhow!("Input port '{}' not found", self.from_port))?;
 
@@ -175,20 +177,25 @@ impl MidiBridgeDriver {
         let activity_tracker = self.activity_tracker.clone();
         let driver_name = self.name.clone();
 
-        let connection = midi_in.connect(&port, &format!("xtouch-gw-{}", self.from_port), move |_timestamp, data, _| {
-            debug!("🔙 Bridge RX <- {} bytes: {:02X?}", data.len(), data);
+        let connection = midi_in.connect(
+            &port,
+            &format!("xtouch-gw-{}", self.from_port),
+            move |_timestamp, data, _| {
+                debug!("🔙 Bridge RX <- {} bytes: {:02X?}", data.len(), data);
 
-            // Record inbound activity
-            if let Some(ref tracker) = *activity_tracker.read() {
-                tracker.record(&driver_name, crate::tray::ActivityDirection::Inbound);
-            }
+                // Record inbound activity
+                if let Some(ref tracker) = *activity_tracker.read() {
+                    tracker.record(&driver_name, crate::tray::ActivityDirection::Inbound);
+                }
 
-            // Call the feedback callback if set
-            if let Some(callback) = feedback_callback.lock().as_ref() {
-                callback(data);
-            }
-        }, ())?;
-        
+                // Call the feedback callback if set
+                if let Some(callback) = feedback_callback.lock().as_ref() {
+                    callback(data);
+                }
+            },
+            (),
+        )?;
+
         *self.midi_in.lock() = Some(connection);
         *self.reconnect_count_in.lock() = 0;
 
@@ -216,13 +223,16 @@ impl MidiBridgeDriver {
         };
 
         let delay_ms = std::cmp::min(10_000, 250 * retry_count);
-        debug!("MIDI Bridge OUT reconnect #{} for '{}' in {}ms", retry_count, self.to_port, delay_ms);
+        debug!(
+            "MIDI Bridge OUT reconnect #{} for '{}' in {}ms",
+            retry_count, self.to_port, delay_ms
+        );
 
         // Update reconnecting status
         self.update_status();
 
         sleep(Duration::from_millis(delay_ms as u64)).await;
-        
+
         // Check shutdown flag again
         {
             if *self.shutdown_flag.lock() {
@@ -236,7 +246,7 @@ impl MidiBridgeDriver {
                 warn!("MIDI Bridge OUT reconnect failed: {}", e);
                 // Schedule another retry using Box::pin for recursive async
                 Box::pin(self.schedule_out_reconnect()).await;
-            }
+            },
         }
     }
 
@@ -257,13 +267,16 @@ impl MidiBridgeDriver {
         };
 
         let delay_ms = std::cmp::min(10_000, 250 * retry_count);
-        debug!("MIDI Bridge IN reconnect #{} for '{}' in {}ms", retry_count, self.from_port, delay_ms);
+        debug!(
+            "MIDI Bridge IN reconnect #{} for '{}' in {}ms",
+            retry_count, self.from_port, delay_ms
+        );
 
         // Update reconnecting status
         self.update_status();
 
         sleep(Duration::from_millis(delay_ms as u64)).await;
-        
+
         // Check shutdown flag again
         {
             if *self.shutdown_flag.lock() {
@@ -277,7 +290,7 @@ impl MidiBridgeDriver {
                 warn!("MIDI Bridge IN reconnect failed: {}", e);
                 // Schedule another retry using Box::pin for recursive async
                 Box::pin(self.schedule_in_reconnect()).await;
-            }
+            },
         }
     }
 
@@ -313,7 +326,7 @@ impl MidiBridgeDriver {
                 MidiMessage::PolyPressure { .. } => "polyAftertouch",
                 _ => return false,
             };
-            
+
             if !types.contains(&msg_type.to_string()) {
                 return false;
             }
@@ -352,36 +365,49 @@ impl MidiBridgeDriver {
                 // Convert 14-bit PB (0-16383) to 7-bit CC (0-127)
                 // Use centralized conversion function (matches TypeScript to7bitFrom14bit)
                 let value_7bit = crate::midi::convert::to_7bit_from_14bit(value);
-                
+
                 let target_channel = pb_to_cc.target_channel.unwrap_or(1);
-                
+
                 // Resolve CC number
                 let cc = if let Some(cc_map) = &pb_to_cc.cc_by_channel {
                     if let Some(cc_val) = cc_map.get(&channel) {
                         parse_number_maybe_hex(cc_val, 0)
                     } else {
-                        let base = pb_to_cc.base_cc.as_ref()
+                        let base = pb_to_cc
+                            .base_cc
+                            .as_ref()
                             .map(|v| parse_number_maybe_hex(v, 45))
                             .unwrap_or(45);
                         base + (channel as u16 - 1)
                     }
                 } else {
-                    let base = pb_to_cc.base_cc.as_ref()
+                    let base = pb_to_cc
+                        .base_cc
+                        .as_ref()
                         .map(|v| parse_number_maybe_hex(v, 45))
                         .unwrap_or(45);
                     base + (channel as u16 - 1)
                 };
 
                 let cc = std::cmp::min(127, cc) as u8;
-                
-                trace!("Transform PB→CC: ch{} value={} → ch{} CC{} value={}", 
-                    channel, value, target_channel, cc, value_7bit);
 
-                return Some(MidiMessage::ControlChange { 
-                    channel: target_channel, 
-                    cc, 
-                    value: value_7bit 
-                }.to_bytes());
+                trace!(
+                    "Transform PB→CC: ch{} value={} → ch{} CC{} value={}",
+                    channel,
+                    value,
+                    target_channel,
+                    cc,
+                    value_7bit
+                );
+
+                return Some(
+                    MidiMessage::ControlChange {
+                        channel: target_channel,
+                        cc,
+                        value: value_7bit,
+                    }
+                    .to_bytes(),
+                );
             }
         }
 
@@ -389,16 +415,24 @@ impl MidiBridgeDriver {
         if let Some(pb_to_note) = &transform.pb_to_note {
             if let MidiMessage::PitchBend { channel, value } = msg {
                 let velocity = ((value as f32 / 16383.0) * 127.0) as u8;
-                let note = pb_to_note.note.unwrap_or(60).min(127) as u8;
-                
-                trace!("Transform PB→Note: ch{} value={} → note={} vel={}", 
-                    channel, value, note, velocity);
+                let note = pb_to_note.note.unwrap_or(60).min(127);
 
-                return Some(MidiMessage::NoteOn { 
-                    channel, 
-                    note, 
-                    velocity 
-                }.to_bytes());
+                trace!(
+                    "Transform PB→Note: ch{} value={} → note={} vel={}",
+                    channel,
+                    value,
+                    note,
+                    velocity
+                );
+
+                return Some(
+                    MidiMessage::NoteOn {
+                        channel,
+                        note,
+                        velocity,
+                    }
+                    .to_bytes(),
+                );
             }
         }
 
@@ -420,7 +454,7 @@ impl MidiBridgeDriver {
                 None => {
                     trace!("Bridge DROP (transform returned null) -> {}", self.to_port);
                     return Ok(());
-                }
+                },
             };
 
             // Send message
@@ -433,15 +467,15 @@ impl MidiBridgeDriver {
                         Err(e) => {
                             warn!("MIDI Bridge send failed: {}", e);
                             *midi_out = None; // Close broken connection
-                            // TODO: Implement reconnection
+                                              // TODO: Implement reconnection
                             Err(anyhow!("MIDI send failed: {}", e))
-                        }
+                        },
                     }
                 },
                 None => {
                     trace!("Bridge TX skipped (not connected): {}", self.to_port);
                     Err(anyhow!("MIDI Bridge '{}' not connected", self.to_port))
-                }
+                },
             }
         } else {
             warn!("Failed to parse MIDI message: {:?}", data);
@@ -457,7 +491,10 @@ impl Driver for MidiBridgeDriver {
     }
 
     async fn init(&self, ctx: ExecutionContext) -> Result<()> {
-        debug!("Initializing MIDI Bridge: '{}' ⇄ '{}'", self.to_port, self.from_port);
+        debug!(
+            "Initializing MIDI Bridge: '{}' ⇄ '{}'",
+            self.to_port, self.from_port
+        );
 
         // Store activity tracker if available
         if let Some(tracker) = ctx.activity_tracker {
@@ -524,7 +561,10 @@ impl Driver for MidiBridgeDriver {
             Err(e) => return Err(e),
         }
 
-        debug!("MIDI Bridge active: '{}' ⇄ '{}'", self.to_port, self.from_port);
+        debug!(
+            "MIDI Bridge active: '{}' ⇄ '{}'",
+            self.to_port, self.from_port
+        );
         Ok(())
     }
 
@@ -544,7 +584,8 @@ impl Driver for MidiBridgeDriver {
 
                             // Record outbound activity
                             if let Some(ref tracker) = ctx.activity_tracker {
-                                tracker.record(&self.name, crate::tray::ActivityDirection::Outbound);
+                                tracker
+                                    .record(&self.name, crate::tray::ActivityDirection::Outbound);
                             }
                         }
                     }
@@ -569,7 +610,7 @@ impl Driver for MidiBridgeDriver {
             _ => {
                 warn!("Unknown MIDI bridge action: {}", action);
                 Ok(())
-            }
+            },
         }
     }
 
@@ -580,7 +621,7 @@ impl Driver for MidiBridgeDriver {
 
     async fn shutdown(&self) -> Result<()> {
         debug!("Shutting down MIDI Bridge: '{}'", self.to_port);
-        
+
         *self.shutdown_flag.lock() = true;
 
         // Close MIDI connections
@@ -609,4 +650,3 @@ impl Driver for MidiBridgeDriver {
         self.status_callbacks.write().push(callback);
     }
 }
-

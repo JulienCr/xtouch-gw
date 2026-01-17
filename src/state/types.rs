@@ -182,4 +182,3 @@ pub fn compute_hash(data: &[u8]) -> String {
     hasher.update(data);
     format!("{:x}", hasher.finalize())
 }
-

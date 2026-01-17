@@ -126,11 +126,8 @@ impl super::Router {
             let lsb = raw[1] & 0x7F;
             let msb = raw[2] & 0x7F;
             let value14 = ((msb as u16) << 7) | (lsb as u16);
-            debug!(
-                "← User moved fader: ch={} value14={}",
-                channel, value14
-            );
-            self.fader_setpoint.schedule(channel as u8, value14, None);
+            debug!("← User moved fader: ch={} value14={}", channel, value14);
+            self.fader_setpoint.schedule(channel, value14, None);
         }
 
         // Get active page and find control configuration
@@ -144,7 +141,8 @@ impl super::Router {
 
         // Check page-specific controls first, then global controls as fallback
         let config = self.config.read().await;
-        let control_config = page.controls
+        let control_config = page
+            .controls
             .as_ref()
             .and_then(|controls| controls.get(control_id))
             .or_else(|| {
@@ -170,12 +168,14 @@ impl super::Router {
 
         // Check if this is MIDI direct mode (send raw MIDI to bridge)
         if let Some(target_spec) = &control_config.midi {
-            self.handle_midi_direct_mode(raw, control_id, &control_config, target_spec).await;
+            self.handle_midi_direct_mode(raw, control_id, &control_config, target_spec)
+                .await;
             return;
         }
 
         // Driver action mode
-        self.handle_driver_action_mode(raw, control_id, &control_config).await;
+        self.handle_driver_action_mode(raw, control_id, &control_config)
+            .await;
     }
 
     /// Handle MIDI direct mode (transform and send to bridge)
@@ -208,8 +208,7 @@ impl super::Router {
         let target_msg = match target_spec.midi_type {
             crate::config::MidiType::Cc => {
                 if let (Some(ch), Some(cc)) = (target_spec.channel, target_spec.cc) {
-                    let value =
-                        crate::midi::convert::from_percent_7bit(normalized_value * 100.0);
+                    let value = crate::midi::convert::from_percent_7bit(normalized_value * 100.0);
                     Some(crate::midi::MidiMessage::ControlChange {
                         channel: ch.saturating_sub(1), // Config is 1-based, internal is 0-based
                         cc,
@@ -243,8 +242,7 @@ impl super::Router {
             },
             crate::config::MidiType::Pb => {
                 if let Some(ch) = target_spec.channel {
-                    let value =
-                        crate::midi::convert::from_percent_14bit(normalized_value * 100.0);
+                    let value = crate::midi::convert::from_percent_14bit(normalized_value * 100.0);
                     Some(crate::midi::MidiMessage::PitchBend {
                         channel: ch.saturating_sub(1),
                         value,
@@ -348,7 +346,10 @@ impl super::Router {
         if type_nibble == 0x9 && raw.len() >= 3 {
             let velocity = raw[2];
             if velocity == 0 {
-                debug!("Ignoring Note Off (velocity 0) for control '{}'", control_id);
+                debug!(
+                    "Ignoring Note Off (velocity 0) for control '{}'",
+                    control_id
+                );
                 return;
             }
         }
@@ -363,9 +364,10 @@ impl super::Router {
         // This allows drivers to receive a Number instead of raw bytes array
         if raw.len() >= 3 {
             let value = match type_nibble {
-                0x9 => raw[2] as f64,        // Note On: velocity
-                0xB => raw[2] as f64,        // Control Change: value
-                0xE => {                      // Pitch Bend: 14-bit value (0-16383)
+                0x9 => raw[2] as f64, // Note On: velocity
+                0xB => raw[2] as f64, // Control Change: value
+                0xE => {
+                    // Pitch Bend: 14-bit value (0-16383)
                     let lsb = raw[1] as u16;
                     let msb = raw[2] as u16;
                     ((msb << 7) | lsb) as f64
@@ -409,4 +411,3 @@ impl super::Router {
         }
     }
 }
-

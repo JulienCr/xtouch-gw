@@ -24,6 +24,7 @@ pub struct ApplySetpointCmd {
 }
 
 /// State for a single fader channel
+#[derive(Default)]
 struct ChannelState {
     /// Desired 14-bit position (source of truth)
     desired14: u16,
@@ -32,16 +33,6 @@ struct ChannelState {
     /// Page epoch when this setpoint was last updated
     /// Used to detect stale setpoints after page changes
     page_epoch: u64,
-}
-
-impl Default for ChannelState {
-    fn default() -> Self {
-        Self {
-            desired14: 0,
-            epoch: 0,
-            page_epoch: 0,
-        }
-    }
 }
 
 /// Fader setpoint scheduler with epoch-based anti-obsolescence
