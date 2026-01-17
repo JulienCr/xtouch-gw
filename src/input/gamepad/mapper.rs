@@ -150,45 +150,26 @@ impl GamepadMapper {
             || control_id.ends_with(".btn.x")
             || control_id.ends_with(".btn.y");
 
-        if is_camera_button {
+        // Determine extra params based on button type and LT state
+        let extra_params = if is_camera_button {
             if is_lt_held {
                 // LT+button: Preview mode + PTZ target
-                // 1. Set PTZ target (keep existing logic)
                 if let Err(e) = Self::handle_ptz_target(control_id, prefix, router, update_tx).await {
                     debug!("PTZ target error: {}", e);
                 }
-                // 2. Send to router with target="preview"
-                let extra = Some(vec![Value::String("preview".to_string())]);
-                match router.handle_control(control_id, None, extra).await {
-                    Ok(_) => {
-                        debug!("✅ Router handled control: {} (preview)", control_id);
-                    }
-                    Err(e) => {
-                        debug!("⚠️  Router error for {}: {}", control_id, e);
-                    }
-                }
+                Some(vec![Value::String("preview".to_string())])
             } else {
                 // Camera button alone: Direct to program
-                let extra = Some(vec![Value::String("program".to_string())]);
-                match router.handle_control(control_id, None, extra).await {
-                    Ok(_) => {
-                        debug!("✅ Router handled control: {} (program)", control_id);
-                    }
-                    Err(e) => {
-                        debug!("⚠️  Router error for {}: {}", control_id, e);
-                    }
-                }
+                Some(vec![Value::String("program".to_string())])
             }
         } else {
-            // Non-camera buttons: normal handling
-            match router.handle_control(control_id, None, None).await {
-                Ok(_) => {
-                    debug!("✅ Router handled control: {}", control_id);
-                }
-                Err(e) => {
-                    debug!("⚠️  Router error for {}: {}", control_id, e);
-                }
-            }
+            None
+        };
+
+        // Route the control event
+        match router.handle_control(control_id, None, extra_params).await {
+            Ok(_) => debug!("✅ Router handled control: {}", control_id),
+            Err(e) => debug!("⚠️  Router error for {}: {}", control_id, e),
         }
 
         Ok(())

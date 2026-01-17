@@ -95,6 +95,138 @@ impl ObsDriver {
             _ => Err(anyhow!("Expected [camera_id] or [scene, source]"))
         }
     }
+
+    /// Convert encoder MIDI value to direction delta.
+    ///
+    /// Standard encoder values: 0/64=no change, 1-63=clockwise, 65-127=counter-clockwise
+    fn encoder_value_to_delta(value: &Value, step: f64) -> f64 {
+        match value {
+            Value::Number(n) if n.is_f64() => {
+                let v = n.as_f64().unwrap();
+                if v == 0.0 || v == 64.0 {
+                    0.0
+                } else if v >= 1.0 && v <= 63.0 {
+                    step
+                } else if v >= 65.0 && v <= 127.0 {
+                    -step
+                } else {
+                    0.0
+                }
+            }
+            _ => 0.0,
+        }
+    }
+
+    /// Handle gamepad analog input for PTZ operations.
+    ///
+    /// Processes raw gamepad value with gamma shaping and gain scaling,
+    /// then sets the appropriate analog rate for continuous movement.
+    fn handle_gamepad_analog(
+        &self,
+        value: Option<&Value>,
+        scene: &str,
+        source: &str,
+        step: f64,
+        gain: f64,
+        axis: PtzAxis,
+    ) {
+        let raw_value = match value {
+            Some(Value::Number(n)) => n.as_f64(),
+            _ => None,
+        };
+
+        if let Some(v) = raw_value {
+            let clamped = v.clamp(-1.0, 1.0);
+            let gamma = *self.analog_gamma.read();
+            let shaped = shape_analog(clamped, gamma);
+            let velocity = shaped * step * gain;
+
+            match axis {
+                PtzAxis::X => self.set_analog_rate(scene, source, Some(velocity), None, None),
+                PtzAxis::Y => self.set_analog_rate(scene, source, None, Some(velocity), None),
+                PtzAxis::Scale => self.set_analog_rate(scene, source, None, None, Some(velocity)),
+            }
+        }
+    }
+
+    /// Handle encoder input for PTZ operations with acceleration.
+    ///
+    /// Processes encoder delta with acceleration tracking and applies
+    /// the resulting delta to the scene transform.
+    async fn handle_encoder_ptz(
+        &self,
+        ctx: &ExecutionContext,
+        scene: &str,
+        source: &str,
+        step: f64,
+        axis: PtzAxis,
+    ) -> Result<()> {
+        let delta = match &ctx.value {
+            Some(value) => Self::encoder_value_to_delta(value, step),
+            None => step,
+        };
+
+        if delta == 0.0 {
+            return Ok(());
+        }
+
+        let control_id = ctx.control_id.as_deref().unwrap_or("encoder");
+        let accel = self.encoder_tracker.lock().track_event(control_id, delta);
+        let final_delta = delta * accel;
+
+        debug!("OBS {:?} encoder: id='{}' delta={} accel={:.2}x final={:.2}",
+            axis, control_id, delta, accel, final_delta);
+
+        match axis {
+            PtzAxis::X => self.apply_delta(scene, source, Some(final_delta), None, None).await,
+            PtzAxis::Y => self.apply_delta(scene, source, None, Some(final_delta), None).await,
+            PtzAxis::Scale => self.apply_delta(scene, source, None, None, Some(final_delta)).await,
+        }
+    }
+
+    /// Execute a PTZ nudge/scale action (common logic for nudgeX, nudgeY, scaleUniform).
+    async fn execute_ptz_action(
+        &self,
+        params: &[Value],
+        ctx: &ExecutionContext,
+        axis: PtzAxis,
+        default_step: f64,
+    ) -> Result<()> {
+        let (scene_name, source_name, step) = self.parse_camera_params_with_step(params)
+            .unwrap_or_else(|_| {
+                let scene = params.get(0).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let source = params.get(1).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                (scene, source, default_step)
+            });
+
+        if !self.is_ptz_enabled_by_scene(&scene_name) {
+            return Ok(());
+        }
+
+        let is_gamepad = ctx.control_id.as_ref()
+            .map(|id| id.starts_with("gamepad"))
+            .unwrap_or(false);
+
+        if is_gamepad {
+            let gain = match axis {
+                PtzAxis::X | PtzAxis::Y => *self.analog_pan_gain.read(),
+                PtzAxis::Scale => *self.analog_zoom_gain.read(),
+            };
+            self.handle_gamepad_analog(ctx.value.as_ref(), &scene_name, &source_name, step, gain, axis);
+        } else {
+            self.handle_encoder_ptz(ctx, &scene_name, &source_name, step, axis).await?;
+        }
+
+        Ok(())
+    }
+}
+
+/// PTZ axis for nudge/scale operations
+#[derive(Debug, Clone, Copy)]
+enum PtzAxis {
+    X,
+    Y,
+    Scale,
 }
 
 #[async_trait]
@@ -213,236 +345,11 @@ impl Driver for ObsDriver {
                 Ok(())
             },
 
-            "nudgeX" => {
-                // Parse params: [camera_id, step] or [scene, source, step]
-                let (scene_name, source_name, step) = self.parse_camera_params_with_step(&params)
-                    .unwrap_or_else(|_| {
-                        // Fallback for backward compatibility with missing step
-                        let scene = params.get(0).and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let source = params.get(1).and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        (scene, source, 2.0)
-                    });
+            "nudgeX" => self.execute_ptz_action(&params, &ctx, PtzAxis::X, 2.0).await,
 
-                // Check if PTZ is enabled for this camera
-                if !self.is_ptz_enabled_by_scene(&scene_name) {
-                    return Ok(()); // Silently ignore PTZ commands for disabled cameras
-                }
+            "nudgeY" => self.execute_ptz_action(&params, &ctx, PtzAxis::Y, 2.0).await,
 
-                // Check if input is from gamepad or encoder
-                let is_gamepad = ctx.control_id.as_ref()
-                    .map(|id| id.starts_with("gamepad"))
-                    .unwrap_or(false);
-
-                if is_gamepad {
-                    // Gamepad analog input: velocity-based
-                    if let Some(Value::Number(n)) = ctx.value {
-                        if let Some(v) = n.as_f64() {
-                            // Accept values slightly outside [-1.0, 1.0] due to floating point precision
-                            // Clamp to valid range to avoid issues downstream
-                            let clamped = v.clamp(-1.0, 1.0);
-
-                            // Shape analog value (gamma curve only, deadzone already applied upstream)
-                            let gamma = *self.analog_gamma.read();
-                            let shaped = shape_analog(clamped, gamma);
-
-                            // Calculate velocity (px per 60Hz tick)
-                            let gain = *self.analog_pan_gain.read();
-                            let vx = shaped * step * gain;
-
-                            // Set analog velocity (timer will apply)
-                            self.set_analog_rate(&scene_name, &source_name, Some(vx), None, None);
-                        }
-                    }
-                } else {
-                    // Encoder input: acceleration-based
-                    let delta = if let Some(value) = ctx.value {
-                        match value {
-                            Value::Number(n) if n.is_f64() => {
-                                let v = n.as_f64().unwrap();
-                                if v == 0.0 || v == 64.0 {
-                                    0.0
-                                } else if v >= 1.0 && v <= 63.0 {
-                                    step
-                                } else if v >= 65.0 && v <= 127.0 {
-                                    -step
-                                } else {
-                                    0.0
-                                }
-                            },
-                            _ => 0.0,
-                        }
-                    } else {
-                        step
-                    };
-
-                    if delta != 0.0 {
-                        // Apply encoder acceleration
-                        let control_id = ctx.control_id.as_deref().unwrap_or("encoder");
-                        let accel = self.encoder_tracker.lock().track_event(control_id, delta);
-                        let final_delta = delta * accel;
-
-                        debug!("OBS nudgeX encoder: id='{}' delta={} accel={:.2}x final={:.2}",
-                            control_id, delta, accel, final_delta);
-
-                        self.apply_delta(&scene_name, &source_name, Some(final_delta), None, None).await?;
-                    }
-                }
-                Ok(())
-            },
-
-            "nudgeY" => {
-                // Parse params: [camera_id, step] or [scene, source, step]
-                let (scene_name, source_name, step) = self.parse_camera_params_with_step(&params)
-                    .unwrap_or_else(|_| {
-                        // Fallback for backward compatibility with missing step
-                        let scene = params.get(0).and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let source = params.get(1).and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        (scene, source, 2.0)
-                    });
-
-                // Check if PTZ is enabled for this camera
-                if !self.is_ptz_enabled_by_scene(&scene_name) {
-                    return Ok(()); // Silently ignore PTZ commands for disabled cameras
-                }
-
-                // Check if input is from gamepad or encoder
-                let is_gamepad = ctx.control_id.as_ref()
-                    .map(|id| id.starts_with("gamepad"))
-                    .unwrap_or(false);
-
-                if is_gamepad {
-                    // Gamepad analog input: velocity-based
-                    if let Some(Value::Number(n)) = ctx.value {
-                        if let Some(v) = n.as_f64() {
-                            // Accept values slightly outside [-1.0, 1.0] due to floating point precision
-                            // Clamp to valid range to avoid issues downstream
-                            let clamped = v.clamp(-1.0, 1.0);
-
-                            // Shape analog value (gamma curve only, deadzone already applied upstream)
-                            let gamma = *self.analog_gamma.read();
-                            let shaped = shape_analog(clamped, gamma);
-
-                            // Calculate velocity (px per 60Hz tick)
-                            let gain = *self.analog_pan_gain.read();
-                            let vy = shaped * step * gain;
-
-                            // Set analog velocity (timer will apply)
-                            self.set_analog_rate(&scene_name, &source_name, None, Some(vy), None);
-                        }
-                    }
-                } else {
-                    // Encoder input: acceleration-based
-                    let delta = if let Some(value) = ctx.value {
-                        match value {
-                            Value::Number(n) if n.is_f64() => {
-                                let v = n.as_f64().unwrap();
-                                if v == 0.0 || v == 64.0 {
-                                    0.0
-                                } else if v >= 1.0 && v <= 63.0 {
-                                    step
-                                } else if v >= 65.0 && v <= 127.0 {
-                                    -step
-                                } else {
-                                    0.0
-                                }
-                            },
-                            _ => 0.0,
-                        }
-                    } else {
-                        step
-                    };
-
-                    if delta != 0.0 {
-                        // Apply encoder acceleration
-                        let control_id = ctx.control_id.as_deref().unwrap_or("encoder");
-                        let accel = self.encoder_tracker.lock().track_event(control_id, delta);
-                        let final_delta = delta * accel;
-
-                        debug!("OBS nudgeY encoder: id='{}' delta={} accel={:.2}x final={:.2}",
-                            control_id, delta, accel, final_delta);
-
-                        self.apply_delta(&scene_name, &source_name, None, Some(final_delta), None).await?;
-                    }
-                }
-                Ok(())
-            },
-
-            "scaleUniform" => {
-                // Parse params: [camera_id, base] or [scene, source, base]
-                let (scene_name, source_name, base) = self.parse_camera_params_with_step(&params)
-                    .unwrap_or_else(|_| {
-                        // Fallback for backward compatibility with missing base
-                        let scene = params.get(0).and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let source = params.get(1).and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        (scene, source, 0.02)
-                    });
-
-                // Check if PTZ is enabled for this camera
-                if !self.is_ptz_enabled_by_scene(&scene_name) {
-                    return Ok(()); // Silently ignore PTZ commands for disabled cameras
-                }
-
-                // Check if input is from gamepad or encoder
-                let is_gamepad = ctx.control_id.as_ref()
-                    .map(|id| id.starts_with("gamepad"))
-                    .unwrap_or(false);
-
-                if is_gamepad {
-                    // Gamepad analog input: velocity-based
-                    if let Some(Value::Number(n)) = ctx.value {
-                        if let Some(v) = n.as_f64() {
-                            // Accept values slightly outside [-1.0, 1.0] due to floating point precision
-                            // Clamp to valid range to avoid issues downstream
-                            let clamped = v.clamp(-1.0, 1.0);
-
-                            // Shape analog value (gamma curve only, deadzone already applied upstream)
-                            let gamma = *self.analog_gamma.read();
-                            let shaped = shape_analog(clamped, gamma);
-
-                            // Calculate velocity (scale delta per 60Hz tick)
-                            let gain = *self.analog_zoom_gain.read();
-                            let vs = shaped * base * gain;
-
-                            // Set analog velocity (timer will apply)
-                            self.set_analog_rate(&scene_name, &source_name, None, None, Some(vs));
-                        }
-                    }
-                } else {
-                    // Encoder input: acceleration-based
-                    let delta = if let Some(value) = ctx.value {
-                        match value {
-                            Value::Number(n) if n.is_f64() => {
-                                let v = n.as_f64().unwrap();
-                                if v == 0.0 || v == 64.0 {
-                                    0.0
-                                } else if v >= 1.0 && v <= 63.0 {
-                                    base
-                                } else if v >= 65.0 && v <= 127.0 {
-                                    -base
-                                } else {
-                                    0.0
-                                }
-                            },
-                            _ => 0.0,
-                        }
-                    } else {
-                        base
-                    };
-
-                    if delta != 0.0 {
-                        // Apply encoder acceleration
-                        let control_id = ctx.control_id.as_deref().unwrap_or("encoder");
-                        let accel = self.encoder_tracker.lock().track_event(control_id, delta);
-                        let final_delta = delta * accel;
-
-                        debug!("OBS scaleUniform encoder: id='{}' delta={} accel={:.2}x final={:.2}",
-                            control_id, delta, accel, final_delta);
-
-                        self.apply_delta(&scene_name, &source_name, None, None, Some(final_delta)).await?;
-                    }
-                }
-                Ok(())
-            },
+            "scaleUniform" => self.execute_ptz_action(&params, &ctx, PtzAxis::Scale, 0.02).await,
 
             "resetPosition" => {
                 // Parse params: [camera_id] or [scene, source]
