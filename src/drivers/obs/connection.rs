@@ -45,7 +45,9 @@ impl ObsDriver {
     /// ```
     pub(super) async fn set_scene_for_mode(&self, scene_name: &str) -> Result<()> {
         let guard = self.get_connected_client().await?;
-        let client = guard.as_ref().unwrap(); // Safe: get_connected_client ensures Some
+        let client = guard
+            .as_ref()
+            .expect("invariant: get_connected_client ensures Some");
 
         let studio_mode = *self.studio_mode.read();
         if studio_mode {
@@ -110,7 +112,7 @@ impl ObsDriver {
         let camera_control_state = Arc::clone(&self.camera_control_state);
 
         // Clone for reconnection trigger
-        let driver_for_reconnect = self.clone_for_reconnect();
+        let driver_for_reconnect = self.clone_for_task();
         let status_callbacks = Arc::clone(&self.status_callbacks);
         let current_status = Arc::clone(&self.current_status);
 
@@ -290,7 +292,7 @@ impl ObsDriver {
                 }
 
                 // Trigger automatic reconnection
-                let driver_clone = driver_for_reconnect.clone_for_reconnect();
+                let driver_clone = driver_for_reconnect.clone_for_task();
                 tokio::spawn(async move {
                     driver_clone.schedule_reconnect().await;
                 });

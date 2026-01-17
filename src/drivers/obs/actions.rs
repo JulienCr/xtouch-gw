@@ -311,7 +311,7 @@ impl Driver for ObsDriver {
                 self.emit_status(crate::tray::ConnectionStatus::Disconnected);
 
                 // Start background reconnection
-                let driver_clone = self.clone_for_reconnect();
+                let driver_clone = self.clone_for_task();
                 tokio::spawn(async move {
                     driver_clone.schedule_reconnect().await;
                 });
@@ -330,7 +330,7 @@ impl Driver for ObsDriver {
             // Trigger reconnect if not already running
             if *self.reconnect_count.lock() == 0 {
                 debug!("Triggering background reconnection");
-                let driver_clone = self.clone_for_reconnect();
+                let driver_clone = self.clone_for_task();
                 tokio::spawn(async move {
                     driver_clone.schedule_reconnect().await;
                 });

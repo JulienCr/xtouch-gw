@@ -189,14 +189,4 @@ impl ObsDriver {
             camera_control_config: Arc::clone(&self.camera_control_config),
         }
     }
-
-    /// Alias for clone_for_task (backwards compatibility)
-    pub(super) fn clone_for_timer(&self) -> Self {
-        self.clone_for_task()
-    }
-
-    /// Alias for clone_for_task (backwards compatibility)
-    pub(super) fn clone_for_reconnect(&self) -> Self {
-        self.clone_for_task()
-    }
 }
