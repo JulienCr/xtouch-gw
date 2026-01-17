@@ -177,19 +177,13 @@ impl super::Router {
                         MidiSpec::Note { note } => {
                             let velocity =
                                 crate::midi::convert::from_percent_7bit(normalized_value * 100.0);
-                            if velocity == 0 {
-                                Some(crate::midi::MidiMessage::NoteOff {
-                                    channel: 0, // Default to Ch 1 for buttons
-                                    note,
-                                    velocity: 0,
-                                })
-                            } else {
-                                Some(crate::midi::MidiMessage::NoteOn {
-                                    channel: 0, // Default to Ch 1 for buttons
-                                    note,
-                                    velocity,
-                                })
-                            }
+                            // X-Touch LEDs need NoteOn with velocity 0 to turn off
+                            // (NoteOff 0x80 is not recognized by the hardware)
+                            Some(crate::midi::MidiMessage::NoteOn {
+                                channel: 0,
+                                note,
+                                velocity, // 0 = LED off, >0 = LED on
+                            })
                         },
                         MidiSpec::PitchBend { channel } => {
                             let value14 =
