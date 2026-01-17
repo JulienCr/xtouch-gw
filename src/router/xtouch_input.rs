@@ -192,7 +192,9 @@ impl super::Router {
             .unwrap_or(0.0);
 
         // 2. Construct target message based on config
-        use crate::midi::convert::{config_channel_to_midi, denormalize_to_7bit, denormalize_to_14bit};
+        use crate::midi::convert::{
+            config_channel_to_midi, denormalize_to_14bit, denormalize_to_7bit,
+        };
 
         let target_msg = match target_spec.midi_type {
             crate::config::MidiType::Cc => {

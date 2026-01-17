@@ -1,0 +1,16 @@
+#!/bin/sh
+# Pre-commit hook: Run cargo fmt --check
+# Fails the commit if code is not properly formatted
+
+set -e
+
+echo "Running cargo fmt --check..."
+
+if ! cargo fmt --check; then
+    echo ""
+    echo "ERROR: Code is not formatted correctly."
+    echo "Please run 'cargo fmt' before committing."
+    exit 1
+fi
+
+echo "Formatting check passed."

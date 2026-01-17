@@ -154,7 +154,7 @@ impl super::Router {
                 if let Some(native_spec) = db.get_midi_spec(&control_id, is_mcu_mode) {
                     // Construct native message with scaled value
                     use crate::midi::convert::{
-                        denormalize_to_7bit, denormalize_to_14bit, midi_channel_to_config,
+                        denormalize_to_14bit, denormalize_to_7bit, midi_channel_to_config,
                     };
 
                     let native_msg = match native_spec {

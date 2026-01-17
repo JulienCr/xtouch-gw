@@ -199,11 +199,16 @@ impl super::Router {
         let mapping_db = load_default_mappings().ok()?;
 
         // Find control ID for this PB channel (e.g., "fader1" for ch1)
-        let control_id = Self::find_control_by_midi_spec(&mapping_db, |spec| {
-            matches!(spec, MidiSpec::PitchBend { channel } if *channel == pb_channel.saturating_sub(1))
-        })?;
+        let control_id = Self::find_control_by_midi_spec(
+            &mapping_db,
+            |spec| matches!(spec, MidiSpec::PitchBend { channel } if *channel == pb_channel.saturating_sub(1)),
+        )?;
 
-        trace!("CC->PB transform: control={} pb_channel={}", control_id, pb_channel);
+        trace!(
+            "CC->PB transform: control={} pb_channel={}",
+            control_id,
+            pb_channel
+        );
 
         let control_config = self.get_control_config(page, &control_id)?;
 
@@ -215,7 +220,12 @@ impl super::Router {
         let (cc_entry, cc_value) = self.get_cc_value_for_control(app, &control_config).await?;
         let pb_value = crate::midi::convert::to_14bit(cc_value);
 
-        trace!("  Transform CC {} -> PB {} (0x{:04X})", cc_value, pb_value, pb_value);
+        trace!(
+            "  Transform CC {} -> PB {} (0x{:04X})",
+            cc_value,
+            pb_value,
+            pb_value
+        );
 
         Some(MidiStateEntry {
             addr: MidiAddr {
@@ -246,9 +256,10 @@ impl super::Router {
         let mapping_db = load_default_mappings().ok()?;
 
         // Find control ID for this Note (e.g., "mute1" for note=16)
-        let control_id = Self::find_control_by_midi_spec(&mapping_db, |spec| {
-            matches!(spec, MidiSpec::Note { note: n } if *n == note)
-        })?;
+        let control_id = Self::find_control_by_midi_spec(
+            &mapping_db,
+            |spec| matches!(spec, MidiSpec::Note { note: n } if *n == note),
+        )?;
 
         let control_config = self.get_control_config(page, &control_id)?;
 
@@ -262,7 +273,10 @@ impl super::Router {
 
         trace!(
             "CC->Note transform: {} CC {} -> Note {} velocity {}",
-            control_id, cc_value, note, velocity
+            control_id,
+            cc_value,
+            note,
+            velocity
         );
 
         Some(MidiStateEntry {
@@ -373,14 +387,20 @@ impl super::Router {
                 }
 
                 if let Some(transformed_pb) = self.try_cc_to_pb_transform(_page, app, ch).await {
-                    trace!("  Adding CC->PB to plan: ch={} value={:?}", ch, transformed_pb.value);
+                    trace!(
+                        "  Adding CC->PB to plan: ch={} value={:?}",
+                        ch,
+                        transformed_pb.value
+                    );
                     insert_prioritized(&mut pb_plan, ch, transformed_pb, 2);
                 }
             }
 
             // Notes: 0-31 - Known state from CC transform (priority 2) or Note Off (priority 1)
             for note in 0..=31 {
-                if let Some(transformed_note) = self.try_cc_to_note_transform(_page, app, note).await {
+                if let Some(transformed_note) =
+                    self.try_cc_to_note_transform(_page, app, note).await
+                {
                     let key = channel_data1_key(&transformed_note);
                     insert_prioritized(&mut note_plan, key, transformed_note, 2);
                     continue;
