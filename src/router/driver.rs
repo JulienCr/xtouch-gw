@@ -106,7 +106,17 @@ impl super::Router {
     }
 
     /// Handle a control event (resolve mapping and execute driver action)
-    pub async fn handle_control(&self, control_id: &str, value: Option<Value>) -> Result<()> {
+    ///
+    /// # Arguments
+    /// * `control_id` - The control identifier (e.g., "gamepad1.btn.a")
+    /// * `value` - Optional value for the control (e.g., axis position)
+    /// * `extra_params` - Optional extra parameters to append to the mapping params
+    pub async fn handle_control(
+        &self,
+        control_id: &str,
+        value: Option<Value>,
+        extra_params: Option<Vec<Value>>,
+    ) -> Result<()> {
         let page = self
             .get_active_page()
             .await
@@ -139,7 +149,12 @@ impl super::Router {
         drop(config);
 
         // Resolve $camera placeholders for dynamic gamepad targeting
-        let params = self.resolve_camera_params(control_id, raw_params).await?;
+        let mut params = self.resolve_camera_params(control_id, raw_params).await?;
+
+        // Append extra parameters if provided (e.g., target="preview")
+        if let Some(extra) = extra_params {
+            params.extend(extra);
+        }
 
         // Get the driver
         let driver = self

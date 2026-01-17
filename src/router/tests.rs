@@ -263,7 +263,7 @@ async fn test_driver_execution_with_context() {
         .unwrap();
 
     // Execute control action
-    let result = router.handle_control("fader1", Some(json!(127))).await;
+    let result = router.handle_control("fader1", Some(json!(127)), None).await;
     assert!(result.is_ok());
 }
 
@@ -289,7 +289,7 @@ async fn test_driver_execution_missing_driver() {
     let router = make_test_router(config);
 
     // Attempt to execute control action (should fail)
-    let result = router.handle_control("fader1", Some(json!(127))).await;
+    let result = router.handle_control("fader1", Some(json!(127)), None).await;
     assert!(result.is_err());
     assert!(result
         .unwrap_err()
@@ -313,7 +313,7 @@ async fn test_driver_execution_missing_control() {
 
     // Attempt to execute non-existent control
     let result = router
-        .handle_control("non_existent_control", Some(json!(127)))
+        .handle_control("non_existent_control", Some(json!(127)), None)
         .await;
     assert!(result.is_err());
     assert!(result
@@ -375,10 +375,10 @@ async fn test_multiple_drivers_execution() {
         .unwrap();
 
     // Execute controls for different drivers
-    let result1 = router.handle_control("obs_control", None).await;
+    let result1 = router.handle_control("obs_control", None, None).await;
     assert!(result1.is_ok());
 
-    let result2 = router.handle_control("vm_control", Some(json!(64))).await;
+    let result2 = router.handle_control("vm_control", Some(json!(64)), None).await;
     assert!(result2.is_ok());
 
     // Verify both drivers are still registered
