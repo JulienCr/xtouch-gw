@@ -214,15 +214,11 @@ impl TrayMessageHandler {
             }
 
             let mut activities = HashMap::new();
-            let mut active_count = 0;
 
             for driver_name in &driver_names {
                 // Check inbound activity
                 let inbound_active =
                     activity_tracker.is_active(driver_name, ActivityDirection::Inbound);
-                if inbound_active {
-                    active_count += 1;
-                }
                 activities.insert(
                     (driver_name.clone(), ActivityDirection::Inbound),
                     inbound_active,
@@ -231,9 +227,6 @@ impl TrayMessageHandler {
                 // Check outbound activity
                 let outbound_active =
                     activity_tracker.is_active(driver_name, ActivityDirection::Outbound);
-                if outbound_active {
-                    active_count += 1;
-                }
                 activities.insert(
                     (driver_name.clone(), ActivityDirection::Outbound),
                     outbound_active,

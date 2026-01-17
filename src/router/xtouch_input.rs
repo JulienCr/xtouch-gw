@@ -187,32 +187,20 @@ impl super::Router {
         target_spec: &crate::config::MidiSpec,
     ) {
         // 1. Parse input MIDI to get normalized value (0.0 - 1.0)
-        let input_msg = crate::midi::MidiMessage::parse(raw);
-        let normalized_value = match input_msg {
-            Some(msg) => match msg {
-                crate::midi::MidiMessage::PitchBend { value, .. } => {
-                    crate::midi::convert::to_percent_14bit(value) / 100.0
-                },
-                crate::midi::MidiMessage::ControlChange { value, .. } => {
-                    crate::midi::convert::to_percent_7bit(value) / 100.0
-                },
-                crate::midi::MidiMessage::NoteOn { velocity, .. } => {
-                    crate::midi::convert::to_percent_7bit(velocity) / 100.0
-                },
-                _ => 0.0,
-            },
-            None => 0.0,
-        };
+        let normalized_value = crate::midi::MidiMessage::parse(raw)
+            .and_then(|msg| msg.normalized_value())
+            .unwrap_or(0.0);
 
         // 2. Construct target message based on config
+        use crate::midi::convert::{config_channel_to_midi, denormalize_to_7bit, denormalize_to_14bit};
+
         let target_msg = match target_spec.midi_type {
             crate::config::MidiType::Cc => {
                 if let (Some(ch), Some(cc)) = (target_spec.channel, target_spec.cc) {
-                    let value = crate::midi::convert::from_percent_7bit(normalized_value * 100.0);
                     Some(crate::midi::MidiMessage::ControlChange {
-                        channel: ch.saturating_sub(1), // Config is 1-based, internal is 0-based
+                        channel: config_channel_to_midi(ch),
                         cc,
-                        value,
+                        value: denormalize_to_7bit(normalized_value),
                     })
                 } else {
                     None
@@ -220,18 +208,18 @@ impl super::Router {
             },
             crate::config::MidiType::Note => {
                 if let (Some(ch), Some(note)) = (target_spec.channel, target_spec.note) {
-                    let velocity =
-                        crate::midi::convert::from_percent_7bit(normalized_value * 100.0);
+                    let velocity = denormalize_to_7bit(normalized_value);
+                    let channel = config_channel_to_midi(ch);
                     // If velocity is 0, send NoteOff, otherwise NoteOn
                     if velocity == 0 {
                         Some(crate::midi::MidiMessage::NoteOff {
-                            channel: ch.saturating_sub(1),
+                            channel,
                             note,
                             velocity: 0,
                         })
                     } else {
                         Some(crate::midi::MidiMessage::NoteOn {
-                            channel: ch.saturating_sub(1),
+                            channel,
                             note,
                             velocity,
                         })
@@ -242,10 +230,9 @@ impl super::Router {
             },
             crate::config::MidiType::Pb => {
                 if let Some(ch) = target_spec.channel {
-                    let value = crate::midi::convert::from_percent_14bit(normalized_value * 100.0);
                     Some(crate::midi::MidiMessage::PitchBend {
-                        channel: ch.saturating_sub(1),
-                        value,
+                        channel: config_channel_to_midi(ch),
+                        value: denormalize_to_14bit(normalized_value),
                     })
                 } else {
                     None

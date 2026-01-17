@@ -12,6 +12,56 @@ use tracing::{debug, info, warn};
 use super::driver::ObsDriver;
 
 impl ObsDriver {
+    /// Get the connected OBS client, or an error if not connected
+    ///
+    /// This is a helper to reduce the repeated pattern of:
+    /// ```ignore
+    /// let guard = self.client.read().await;
+    /// let client = guard.as_ref().context("OBS not connected")?;
+    /// ```
+    pub(super) async fn get_connected_client(
+        &self,
+    ) -> Result<tokio::sync::RwLockReadGuard<'_, Option<obws::Client>>> {
+        let guard = self.client.read().await;
+        if guard.is_none() {
+            anyhow::bail!("OBS not connected");
+        }
+        Ok(guard)
+    }
+
+    /// Set the active scene, respecting studio mode
+    ///
+    /// In studio mode, this sets the preview scene.
+    /// In normal mode, this sets the program scene.
+    ///
+    /// This consolidates the repeated pattern:
+    /// ```ignore
+    /// let studio_mode = *self.studio_mode.read();
+    /// if studio_mode {
+    ///     client.scenes().set_current_preview_scene(scene).await?;
+    /// } else {
+    ///     client.scenes().set_current_program_scene(scene).await?;
+    /// }
+    /// ```
+    pub(super) async fn set_scene_for_mode(&self, scene_name: &str) -> Result<()> {
+        let guard = self.get_connected_client().await?;
+        let client = guard.as_ref().unwrap(); // Safe: get_connected_client ensures Some
+
+        let studio_mode = *self.studio_mode.read();
+        if studio_mode {
+            client
+                .scenes()
+                .set_current_preview_scene(scene_name)
+                .await?;
+        } else {
+            client
+                .scenes()
+                .set_current_program_scene(scene_name)
+                .await?;
+        }
+        Ok(())
+    }
+
     /// Emit connection status to all subscribers
     pub(super) fn emit_status(&self, status: crate::tray::ConnectionStatus) {
         *self.current_status.write() = status.clone();
