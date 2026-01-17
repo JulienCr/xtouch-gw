@@ -145,26 +145,28 @@ impl GamepadMapper {
         let is_lt_held = lt_held.get(prefix).copied().unwrap_or(false);
 
         // Check if this is a camera button (A/B/X/Y)
-        let is_camera_button = control_id.ends_with(".btn.a")
-            || control_id.ends_with(".btn.b")
-            || control_id.ends_with(".btn.x")
-            || control_id.ends_with(".btn.y");
+        let is_camera_button = [".btn.a", ".btn.b", ".btn.x", ".btn.y"]
+            .iter()
+            .any(|suffix| control_id.ends_with(suffix));
 
-        if is_lt_held && is_camera_button {
-            // LT+button: Set PTZ target instead of executing normal action
+        // Camera buttons get extra params: LT+button = preview, button alone = program
+        let extra_params = if !is_camera_button {
+            None
+        } else if is_lt_held {
+            // LT+button: Preview mode + set PTZ target
             if let Err(e) = Self::handle_ptz_target(control_id, prefix, router, update_tx).await {
                 debug!("PTZ target error: {}", e);
             }
+            Some(vec![Value::String("preview".to_string())])
         } else {
-            // Normal button handling: send to router
-            match router.handle_control(control_id, None).await {
-                Ok(_) => {
-                    debug!("✅ Router handled control: {}", control_id);
-                }
-                Err(e) => {
-                    debug!("⚠️  Router error for {}: {}", control_id, e);
-                }
-            }
+            // Camera button alone: Direct to program
+            Some(vec![Value::String("program".to_string())])
+        };
+
+        // Route the control event
+        match router.handle_control(control_id, None, extra_params).await {
+            Ok(_) => debug!("✅ Router handled control: {}", control_id),
+            Err(e) => debug!("⚠️  Router error for {}: {}", control_id, e),
         }
 
         Ok(())
@@ -294,7 +296,7 @@ impl GamepadMapper {
                 let last = cache.get(control_id).copied();
                 if last.map_or(true, |v| v != 0.0) {
                     debug!("Axis event: {} = 0.0 (deadzone)", control_id);
-                    match router.handle_control(control_id, Some(Value::from(0.0))).await {
+                    match router.handle_control(control_id, Some(Value::from(0.0)), None).await {
                         Ok(_) => debug!("✅ Router handled axis (deadzone): {} = 0.0", control_id),
                         Err(e) => debug!("⚠️  Router error for {}: {}", control_id, e),
                     }
@@ -310,7 +312,7 @@ impl GamepadMapper {
             debug!("Axis event: {} = {:.3} (raw: {:.3})", control_id, final_value, raw_value);
 
             // Send to router (pass normalized value, driver will handle scaling)
-            match router.handle_control(control_id, Some(Value::from(final_value))).await {
+            match router.handle_control(control_id, Some(Value::from(final_value)), None).await {
                 Ok(_) => debug!("✅ Router handled axis: {} = {:.3}", control_id, final_value),
                 Err(e) => debug!("⚠️  Router error for {}: {}", control_id, e),
             }

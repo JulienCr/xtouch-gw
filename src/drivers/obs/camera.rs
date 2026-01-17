@@ -132,5 +132,57 @@ impl ObsDriver {
         info!("🎬 OBS: Set split camera '{}' in '{}'", camera_id, split_scene);
         Ok(())
     }
+
+    /// Select a camera and switch OBS scene.
+    ///
+    /// This is a simplified API for Stream Deck integration that only handles
+    /// Full view mode. For split view modes, use the action-based API.
+    ///
+    /// # Arguments
+    /// * `camera_id` - The camera identifier (e.g., "Main", "Guest")
+    /// * `target` - Either "preview" or "program"
+    pub async fn select_camera(&self, camera_id: &str, target: &str) -> Result<()> {
+        // Get camera scene from config
+        let camera_scene = {
+            let config_guard = self.camera_control_config.read();
+            let config = config_guard.as_ref()
+                .context("Camera control not configured")?;
+
+            let camera = config.cameras.iter()
+                .find(|c| c.id == camera_id)
+                .with_context(|| format!("Camera '{}' not found", camera_id))?;
+
+            camera.scene.clone()
+        };
+
+        let guard = self.client.read().await;
+        let client = guard.as_ref()
+            .context("OBS not connected")?;
+
+        match target {
+            "preview" => {
+                // Auto-enable studio mode if needed
+                if !*self.studio_mode.read() {
+                    info!("Enabling studio mode for preview operation");
+                    client.ui().set_studio_mode_enabled(true).await?;
+                    *self.studio_mode.write() = true;
+                }
+                info!("🎬 OBS: Select camera '{}' → preview '{}'", camera_id, camera_scene);
+                client.scenes().set_current_preview_scene(&camera_scene).await?;
+            }
+            "program" => {
+                info!("🎬 OBS: Select camera '{}' → program '{}'", camera_id, camera_scene);
+                client.scenes().set_current_program_scene(&camera_scene).await?;
+            }
+            _ => {
+                return Err(anyhow::anyhow!("Invalid target '{}', expected 'preview' or 'program'", target));
+            }
+        }
+
+        // Update last_camera
+        self.camera_control_state.write().last_camera = camera_id.to_string();
+
+        Ok(())
+    }
 }
 

@@ -67,6 +67,9 @@ pub enum CameraStateMessage {
 #[derive(Debug, Deserialize)]
 pub struct SetCameraRequest {
     pub camera_id: String,
+    /// Optional target: "preview" or "program". When set, also switches OBS scene.
+    #[serde(default)]
+    pub target: Option<String>,
 }
 
 /// Reset mode for camera transform reset
@@ -171,6 +174,8 @@ async fn get_camera_target(
 }
 
 /// PUT /api/gamepad/:slot/camera - Set camera target for a gamepad
+///
+/// When `target` is provided ("preview" or "program"), also switches OBS scene.
 async fn set_camera_target(
     Path(slot): Path<String>,
     State(state): State<Arc<ApiState>>,
@@ -192,12 +197,24 @@ async fn set_camera_target(
         });
     }
 
-    // Set the target
+    // Set the PTZ target
     if let Err(e) = state.camera_targets.set_target(&slot, &req.camera_id) {
         error!("Failed to set camera target: {}", e);
         return Err(ApiError {
             error: format!("Failed to set camera target: {}", e),
         });
+    }
+
+    // If target mode is specified, also switch OBS scene
+    if let Some(ref target) = req.target {
+        if target == "preview" || target == "program" {
+            if let Some(ref obs_driver) = state.obs_driver {
+                if let Err(e) = obs_driver.select_camera(&req.camera_id, target).await {
+                    warn!("Failed to switch OBS scene: {}", e);
+                    // Don't fail the request - PTZ target was set successfully
+                }
+            }
+        }
     }
 
     // Broadcast update to WebSocket subscribers
@@ -210,11 +227,13 @@ async fn set_camera_target(
     // Best-effort broadcast (ignore if no subscribers)
     let _ = state.update_tx.send(message);
 
-    info!("Camera target set: {} -> {}", slot, req.camera_id);
+    info!("Camera target set: {} -> {}{}", slot, req.camera_id,
+        req.target.as_ref().map(|t| format!(" ({})", t)).unwrap_or_default());
 
     Ok(Json(serde_json::json!({
         "ok": true,
-        "camera_id": req.camera_id
+        "camera_id": req.camera_id,
+        "target": req.target
     })))
 }
 
