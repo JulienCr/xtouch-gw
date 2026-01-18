@@ -20,20 +20,16 @@ xtouch:
 obs:
   host: "127.0.0.1"
   port: 4455
-  password: "aaaaaa"
+  password: ""
   
   # Configuration du contrôle caméra (split views)
-  # - scene: scène OBS pour la vue plein écran
-  # - source: source OBS à transformer (pan/zoom) dans cette scène
-  # - split_source: source OBS pour les vues split
-  # - enable_ptz: activer le contrôle PTZ (pan/tilt/zoom) pour cette caméra (default: true)
   camera_control:
     cameras:
       - id: "Main"
         scene: "--- CAM Main"
-        source: "--- CAM Main"
+        source: "NDI - Cam Main"
         split_source: "SPLIT CAM Main"
-        enable_ptz: false  # Désactiver le contrôle PTZ pour cette caméra
+        enable_ptz: false
       - id: "Main2"
         scene: "--- CAM Main 2"
         source: "--- CAM Main"
@@ -60,11 +56,9 @@ gamepad:
   enabled: true
   provider: hid
   gamepads:
-    # Slot 0 → gamepad1.* (Faceoff Pro)
-    # camera_target: "dynamic" permet au Stream Deck de choisir quelle caméra contrôler
-    # Utilisez l'API: PUT http://localhost:8125/api/gamepad/gamepad1/camera {"camera_id": "Main"}
+    # Slot 0 → gamepad1.* (Faceoff Pro) - Mode dynamique via API Stream Deck
     - product_match: "Faceoff"
-      camera_target: dynamic   # "dynamic" | "camera_id" | omis pour statique
+      camera_target: dynamic
       analog:
         # Vitesse de pan (pixels par tick à v=1, step=1) — à 60Hz → 15*60 = 900 px/sec
         pan_gain: 15
@@ -87,9 +81,9 @@ gamepad:
           zl: false   # Gâchette gauche
           zr: false   # Gâchette droite
 
-    # Slot 1 → gamepad2.* (Xbox via XInput) - Fixé sur Jardin
+    # Slot 1 → gamepad2.* (Xbox via XInput) - Fixé sur caméra Jardin
     - product_match: "XInput"
-      camera_target: "Jardin"  # Toujours contrôle la caméra Jardin
+      camera_target: "Jardin"
       analog:
         pan_gain: 15
         zoom_gain: 3
@@ -112,51 +106,50 @@ pages_global:
     vpot7_rotate: { app: "obs", action: "nudgeY", params: ["--- CAM Main 2", "--- CAM Main", 1] }
     vpot8_rotate: { app: "obs", action: "scaleUniform", params: ["--- CAM Main 2", "--- CAM Main", 0.005] }
 
-    # Gamepad 1 (Faceoff): contrôle caméra dynamique via Stream Deck API
-    # Les placeholders $camera.* sont résolus au runtime selon la cible sélectionnée
-    gamepad1.axis.lx: { app: "obs", action: "nudgeX", params: ["$camera.scene", "$camera.source", 1] }
-    gamepad1.axis.ly: { app: "obs", action: "nudgeY", params: ["$camera.scene", "$camera.source", 1] }
+    # Gamepad 1 (Faceoff): contrôle caméra dynamique via $camera (sélection Stream Deck)
+    gamepad1.axis.lx: { app: "obs", action: "nudgeX", params: ["$camera", 1] }
+    gamepad1.axis.ly: { app: "obs", action: "nudgeY", params: ["$camera", 1] }
     gamepad1.axis.ry:
       app: "obs"
       action: "scaleUniform"
-      params: ["$camera.scene", "$camera.source", 0.015]
+      params: ["$camera", 0.015]
       # Vitesse effective = 0.015 * zoom_gain(1.5) * analog_value
-      # À stick à fond : 0.015 * 1.5 * 1.0 = 0.0225 par tick = 1.35 scale/sec
+      # $camera est résolu au runtime via l'API Stream Deck
 
     # Boutons caméra (nouveau système split)
     gamepad1.btn.a:
       app: "obs"
       action: "selectCamera"
-      params: ["Main"]
+      params: ["Cour"]
 
     gamepad1.btn.b:
       app: "obs"
       action: "selectCamera"
-      params: ["Main2"]
+      params: ["Main"]
 
     gamepad1.btn.x:
       app: "obs"
       action: "selectCamera"
-      params: ["Jardin"]
+      params: ["Main2"]
 
     gamepad1.btn.y:
       app: "obs"
       action: "selectCamera"
-      params: ["Cour"]
+      params: ["Jardin"]
 
     # D-Pad : Contrôle des vues split
-    gamepad1.btn.dpad_left:
+    gamepad1.dpad.left:
       app: "obs"
       action: "enterSplit"
       params: ["left"]
 
-    gamepad1.btn.dpad_right:
+    gamepad1.dpad.right:
       app: "obs"
       action: "enterSplit"
       params: ["right"]
 
     # START : Retour vue pleine
-    gamepad1.btn.start:
+    gamepad1.btn.plus:
       app: "obs"
       action: "exitSplit"
       params: []
@@ -171,36 +164,33 @@ pages_global:
       action: "toggleStudioMode"
       params: []
 
-    gamepad1.btn.rb:
+    gamepad1.btn.rt:
       app: "obs"
       action: "TriggerStudioModeTransition"
+      params: []
+
+    gamepad1.btn.lb:
+      app: "obs"
+      action: "setPtzModifier"
       params: []
 
     gamepad1.btn.l3:
       app: "obs"
       action: "resetPosition"
-      params: ["$camera.scene", "$camera.source"]
+      params: ["$camera"]
 
     gamepad1.btn.r3:
       app: "obs"
       action: "resetZoom"
-      params: ["$camera.scene", "$camera.source"]
+      params: ["$camera"]
 
-    # Gamepad 2 (Xbox Bluetooth): contrôle caméra CAM Jardin + mêmes actions split
-    gamepad2.axis.lx:
-      app: "obs"
-      action: "nudgeX"
-      params: ["--- CAM Jardin", "NDI - Cam Jardin", 1]
-
-    gamepad2.axis.ly:
-      app: "obs"
-      action: "nudgeY"
-      params: ["--- CAM Jardin", "NDI - Cam Jardin", 1]
-
+    # Gamepad 2 (Xbox Bluetooth): fixé sur caméra Jardin (via camera_target)
+    gamepad2.axis.lx: { app: "obs", action: "nudgeX", params: ["Jardin", 1] }
+    gamepad2.axis.ly: { app: "obs", action: "nudgeY", params: ["Jardin", 1] }
     gamepad2.axis.ry:
       app: "obs"
       action: "scaleUniform"
-      params: ["--- CAM Jardin", "NDI - Cam Jardin", 0.015]
+      params: ["Jardin", 0.015]
 
     # Boutons caméra (état partagé avec gamepad1)
     gamepad2.btn.a:
@@ -208,7 +198,7 @@ pages_global:
       action: "selectCamera"
       params: ["Main"]
 
-    gamepad2.btn.b:
+    gamepad2.btn.y:
       app: "obs"
       action: "selectCamera"
       params: ["Main2"]
@@ -218,18 +208,18 @@ pages_global:
       action: "selectCamera"
       params: ["Jardin"]
 
-    gamepad2.btn.y:
+    gamepad2.btn.b:
       app: "obs"
       action: "selectCamera"
       params: ["Cour"]
 
     # D-Pad : Contrôle des vues split (état partagé)
-    gamepad2.btn.dpad_left:
+    gamepad2.dpad.left:
       app: "obs"
       action: "enterSplit"
       params: ["left"]
 
-    gamepad2.btn.dpad_right:
+    gamepad2.dpad.right:
       app: "obs"
       action: "enterSplit"
       params: ["right"]
@@ -240,20 +230,25 @@ pages_global:
       action: "exitSplit"
       params: []
 
-    gamepad2.btn.rb:
+    gamepad2.btn.rt:
       app: "obs"
       action: "TriggerStudioModeTransition"
+      params: []
+
+    gamepad2.btn.lb:
+      app: "obs"
+      action: "setPtzModifier"
       params: []
 
     gamepad2.btn.l3:
       app: "obs"
       action: "resetPosition"
-      params: ["--- CAM Jardin", "NDI - Cam Jardin"]
+      params: ["Jardin"]
 
     gamepad2.btn.r3:
       app: "obs"
       action: "resetZoom"
-      params: ["--- CAM Jardin", "NDI - Cam Jardin"]
+      params: ["Jardin"]
 
     fader_master:
       app: "qlc"

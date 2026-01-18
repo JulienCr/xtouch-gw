@@ -5,6 +5,7 @@
 //! controllers (FaceOff, etc.) simultaneously.
 
 pub mod analog;
+pub mod axis;
 pub mod buttons;
 pub mod diagnostics;
 pub mod hybrid_id;
@@ -13,11 +14,11 @@ pub mod mapper;
 pub mod normalize;
 pub mod provider; // Legacy provider (for reference)
 pub mod slot;
+pub mod stick_buffer;
 pub mod visualizer;
 pub mod visualizer_state;
 pub mod xinput_convert;
 
-// use anyhow::{Result, Context};
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tracing::{debug, warn};

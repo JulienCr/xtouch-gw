@@ -1,7 +1,9 @@
 //! GilRs gamepad provider with hot-plug support
 
+use super::axis::gilrs_axis_to_control_id;
 use super::normalize::normalize_gilrs_stick;
 use super::slot::SlotManager;
+use super::stick_buffer::{StickBuffer, StickId};
 use crate::config::AnalogConfig;
 use anyhow::Result;
 use gilrs::{Axis, Button, Event, EventType, Gilrs};
@@ -32,20 +34,6 @@ pub enum GamepadEvent {
 
 /// Callback type for gamepad events
 pub type EventCallback = Arc<dyn Fn(GamepadEvent) + Send + Sync>;
-
-/// Stick identifier for buffering X/Y pairs
-#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
-enum StickId {
-    Left,
-    Right,
-}
-
-/// Buffered stick state for radial normalization
-#[derive(Debug, Clone, Default)]
-struct StickBuffer {
-    x: f32,
-    y: f32,
-}
 
 /// GilRs-based gamepad provider with hot-plug support
 pub struct GilrsProvider {
@@ -295,7 +283,7 @@ impl GilrsProvider {
                 } else {
                     // Non-stick axis (triggers, etc.): pass through directly
                     vec![GamepadEvent::Axis {
-                        control_id: Self::axis_to_id(axis, prefix),
+                        control_id: gilrs_axis_to_control_id(axis, prefix),
                         value,
                         analog_config,
                         sequence: 0, // Legacy provider - sequence not used
@@ -353,13 +341,13 @@ impl GilrsProvider {
         // Emit both normalized axes (radial normalization couples them)
         vec![
             GamepadEvent::Axis {
-                control_id: Self::axis_to_id(x_axis, prefix),
+                control_id: gilrs_axis_to_control_id(x_axis, prefix),
                 value: norm_x,
                 analog_config: analog_config.clone(),
                 sequence: 0, // Legacy provider - sequence not used
             },
             GamepadEvent::Axis {
-                control_id: Self::axis_to_id(y_axis, prefix),
+                control_id: gilrs_axis_to_control_id(y_axis, prefix),
                 value: final_y,
                 analog_config,
                 sequence: 0, // Legacy provider - sequence not used
@@ -373,24 +361,6 @@ impl GilrsProvider {
     /// across all gilrs-based code paths.
     fn button_to_id(button: Button, prefix: &str) -> Option<String> {
         super::buttons::gilrs_button_to_control_id(button, prefix)
-    }
-
-    /// Map GilRs axis to standardized control ID
-    fn axis_to_id(axis: Axis, prefix: &str) -> String {
-        let name = match axis {
-            Axis::LeftStickX => "lx",
-            Axis::LeftStickY => "ly",
-            Axis::RightStickX => "rx",
-            Axis::RightStickY => "ry",
-            Axis::LeftZ => "zl",
-            Axis::RightZ => "zr",
-            _ => {
-                warn!("Unknown axis: {:?}", axis);
-                "unknown"
-            },
-        };
-
-        format!("{}.axis.{}", prefix, name)
     }
 
     /// Shutdown the provider

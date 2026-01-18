@@ -14,10 +14,12 @@ use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 use tracing::{debug, trace, warn};
 
+use super::axis::gilrs_axis_to_control_id;
 use super::hybrid_id::HybridControllerId;
 use super::normalize::normalize_gilrs_stick;
 use super::provider::GamepadEvent;
 use super::slot::SlotManager;
+use super::stick_buffer::{StickBuffer, StickId};
 use super::xinput_convert::{
     convert_xinput_axes, convert_xinput_buttons, poll_xinput_controller, CachedXInputState,
 };
@@ -146,20 +148,6 @@ impl Drop for HybridGamepadProvider {
             let _ = tx.try_send(());
         }
     }
-}
-
-/// Stick identifier for buffering X/Y pairs
-#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
-enum StickId {
-    Left,
-    Right,
-}
-
-/// Buffered stick state for radial normalization
-#[derive(Debug, Clone, Default)]
-struct StickBuffer {
-    x: f32,
-    y: f32,
 }
 
 /// Internal state for the blocking event loop
@@ -577,73 +565,77 @@ impl HybridProviderState {
             StickId::Right => (Axis::RightStickX, Axis::RightStickY),
         };
 
-        // Check for zero-crossing and emit events
+        // Check for zero-crossing and emit events for both axes
         let mut events = Vec::new();
-        const ZERO_THRESHOLD: f32 = 0.05;
 
-        // Process X axis
-        let x_key = (id, x_axis);
-        let last_x = self.last_gilrs_axis_values.get(&x_key).copied();
-        let x_near_zero = norm_x.abs() < ZERO_THRESHOLD;
-        let x_was_nonzero = last_x.is_some_and(|v| v.abs() >= ZERO_THRESHOLD);
-
-        if x_near_zero {
-            if x_was_nonzero {
-                self.last_gilrs_axis_values.remove(&x_key);
-                self.axis_sequence += 1;
-                events.push(GamepadEvent::Axis {
-                    control_id: Self::axis_to_id(x_axis, prefix),
-                    value: 0.0,
-                    analog_config: analog_config.clone(),
-                    sequence: self.axis_sequence,
-                });
-            }
-        } else {
-            let should_emit = last_x.is_none() || (norm_x - last_x.unwrap()).abs() > 0.001;
-            if should_emit {
-                self.last_gilrs_axis_values.insert(x_key, norm_x);
-                self.axis_sequence += 1;
-                events.push(GamepadEvent::Axis {
-                    control_id: Self::axis_to_id(x_axis, prefix),
-                    value: norm_x,
-                    analog_config: analog_config.clone(),
-                    sequence: self.axis_sequence,
-                });
-            }
+        if let Some(event) =
+            self.emit_axis_with_zero_detection(id, x_axis, norm_x, prefix, analog_config.clone())
+        {
+            events.push(event);
         }
 
-        // Process Y axis
-        let y_key = (id, y_axis);
-        let last_y = self.last_gilrs_axis_values.get(&y_key).copied();
-        let y_near_zero = final_y.abs() < ZERO_THRESHOLD;
-        let y_was_nonzero = last_y.is_some_and(|v| v.abs() >= ZERO_THRESHOLD);
+        if let Some(event) =
+            self.emit_axis_with_zero_detection(id, y_axis, final_y, prefix, analog_config)
+        {
+            events.push(event);
+        }
 
-        if y_near_zero {
-            if y_was_nonzero {
-                self.last_gilrs_axis_values.remove(&y_key);
+        events
+    }
+
+    /// Emit an axis event with zero-crossing detection
+    ///
+    /// Tracks axis values and emits events when:
+    /// - Value crosses from non-zero to near-zero (emits exact 0.0)
+    /// - Value changes significantly while non-zero
+    ///
+    /// Returns `None` if no event should be emitted (value unchanged or still near zero)
+    fn emit_axis_with_zero_detection(
+        &mut self,
+        id: gilrs::GamepadId,
+        axis: gilrs::Axis,
+        value: f32,
+        prefix: &str,
+        analog_config: Option<AnalogConfig>,
+    ) -> Option<GamepadEvent> {
+        const ZERO_THRESHOLD: f32 = 0.05;
+        const CHANGE_THRESHOLD: f32 = 0.001;
+
+        let key = (id, axis);
+        let last_value = self.last_gilrs_axis_values.get(&key).copied();
+        let is_near_zero = value.abs() < ZERO_THRESHOLD;
+        let was_nonzero = last_value.is_some_and(|v| v.abs() >= ZERO_THRESHOLD);
+
+        if is_near_zero {
+            // Transitioning to zero: emit explicit 0.0 event
+            if was_nonzero {
+                self.last_gilrs_axis_values.remove(&key);
                 self.axis_sequence += 1;
-                events.push(GamepadEvent::Axis {
-                    control_id: Self::axis_to_id(y_axis, prefix),
+                return Some(GamepadEvent::Axis {
+                    control_id: gilrs_axis_to_control_id(axis, prefix),
                     value: 0.0,
-                    analog_config: analog_config.clone(),
-                    sequence: self.axis_sequence,
-                });
-            }
-        } else {
-            let should_emit = last_y.is_none() || (final_y - last_y.unwrap()).abs() > 0.001;
-            if should_emit {
-                self.last_gilrs_axis_values.insert(y_key, final_y);
-                self.axis_sequence += 1;
-                events.push(GamepadEvent::Axis {
-                    control_id: Self::axis_to_id(y_axis, prefix),
-                    value: final_y,
                     analog_config,
                     sequence: self.axis_sequence,
                 });
             }
+            None
+        } else {
+            // Non-zero: emit if changed significantly
+            let should_emit =
+                last_value.is_none() || (value - last_value.unwrap()).abs() > CHANGE_THRESHOLD;
+            if should_emit {
+                self.last_gilrs_axis_values.insert(key, value);
+                self.axis_sequence += 1;
+                Some(GamepadEvent::Axis {
+                    control_id: gilrs_axis_to_control_id(axis, prefix),
+                    value,
+                    analog_config,
+                    sequence: self.axis_sequence,
+                })
+            } else {
+                None
+            }
         }
-
-        events
     }
 
     /// Process non-stick axis (triggers, etc.) without radial normalization
@@ -655,35 +647,9 @@ impl HybridProviderState {
         prefix: &str,
         analog_config: Option<AnalogConfig>,
     ) -> Vec<GamepadEvent> {
-        let key = (id, axis);
-        let last_value = self.last_gilrs_axis_values.get(&key).copied();
-
-        const ZERO_THRESHOLD: f32 = 0.05;
-        let is_near_zero = value.abs() < ZERO_THRESHOLD;
-        let was_non_zero = last_value.is_some_and(|v| v.abs() >= ZERO_THRESHOLD);
-
-        if is_near_zero {
-            if was_non_zero {
-                self.last_gilrs_axis_values.remove(&key);
-                self.axis_sequence += 1;
-                return vec![GamepadEvent::Axis {
-                    control_id: Self::axis_to_id(axis, prefix),
-                    value: 0.0,
-                    analog_config,
-                    sequence: self.axis_sequence,
-                }];
-            }
-            vec![]
-        } else {
-            self.last_gilrs_axis_values.insert(key, value);
-            self.axis_sequence += 1;
-            vec![GamepadEvent::Axis {
-                control_id: Self::axis_to_id(axis, prefix),
-                value,
-                analog_config,
-                sequence: self.axis_sequence,
-            }]
-        }
+        self.emit_axis_with_zero_detection(id, axis, value, prefix, analog_config)
+            .into_iter()
+            .collect()
     }
 
     /// Map gilrs button to standardized control ID
@@ -692,26 +658,6 @@ impl HybridProviderState {
     /// across all gilrs-based code paths.
     fn button_to_id(button: gilrs::Button, prefix: &str) -> Option<String> {
         super::buttons::gilrs_button_to_control_id(button, prefix)
-    }
-
-    /// Map gilrs axis to standardized control ID (same as provider.rs)
-    fn axis_to_id(axis: gilrs::Axis, prefix: &str) -> String {
-        use gilrs::Axis;
-
-        let name = match axis {
-            Axis::LeftStickX => "lx",
-            Axis::LeftStickY => "ly",
-            Axis::RightStickX => "rx",
-            Axis::RightStickY => "ry",
-            Axis::LeftZ => "zl",
-            Axis::RightZ => "zr",
-            _ => {
-                warn!("Unknown gilrs axis: {:?}", axis);
-                "unknown"
-            },
-        };
-
-        format!("{}.axis.{}", prefix, name)
     }
 
     /// Poll XInput events

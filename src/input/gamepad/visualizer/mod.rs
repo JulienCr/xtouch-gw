@@ -4,6 +4,7 @@
 //! Displays raw and normalized stick/trigger values, button states, and timing info.
 
 mod app;
+mod drawing;
 pub mod normalize;
 mod rendering;
 
