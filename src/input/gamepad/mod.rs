@@ -5,6 +5,7 @@
 //! controllers (FaceOff, etc.) simultaneously.
 
 pub mod analog;
+pub mod buttons;
 pub mod diagnostics;
 pub mod hybrid_id;
 pub mod hybrid_provider;

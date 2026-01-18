@@ -327,7 +327,7 @@ impl ButtonStates {
 
     /// Update from gilrs gamepad state
     ///
-    /// Uses Nintendo-style button mapping:
+    /// Uses Nintendo-style button mapping (consistent with `super::buttons` module):
     /// - A = East (right), B = South (bottom), X = North (top), Y = West (left)
     ///
     /// # Arguments
@@ -335,7 +335,8 @@ impl ButtonStates {
     /// * `capture` - Capture button state (tracked from raw events, not in gilrs mapping)
     pub fn update_from_gilrs(&mut self, gamepad: &gilrs::Gamepad, capture: bool) {
         use gilrs::Button;
-        // Nintendo-style face button mapping (A=right, B=bottom, X=top, Y=left)
+        // Nintendo-style face button mapping (see buttons.rs for canonical mapping)
+        // East=A (right), South=B (bottom), North=X (top), West=Y (left)
         self.a = gamepad.is_pressed(Button::East);
         self.b = gamepad.is_pressed(Button::South);
         self.x = gamepad.is_pressed(Button::North);

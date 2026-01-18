@@ -482,14 +482,26 @@ impl HybridProviderState {
         use gilrs::Axis;
 
         match event {
-            EventType::ButtonPressed(button, _) => vec![GamepadEvent::Button {
-                control_id: Self::button_to_id(button, prefix),
-                pressed: true,
-            }],
-            EventType::ButtonReleased(button, _) => vec![GamepadEvent::Button {
-                control_id: Self::button_to_id(button, prefix),
-                pressed: false,
-            }],
+            EventType::ButtonPressed(button, _) => {
+                if let Some(control_id) = Self::button_to_id(button, prefix) {
+                    vec![GamepadEvent::Button {
+                        control_id,
+                        pressed: true,
+                    }]
+                } else {
+                    vec![]
+                }
+            },
+            EventType::ButtonReleased(button, _) => {
+                if let Some(control_id) = Self::button_to_id(button, prefix) {
+                    vec![GamepadEvent::Button {
+                        control_id,
+                        pressed: false,
+                    }]
+                } else {
+                    vec![]
+                }
+            },
             EventType::AxisChanged(axis, value, _) => {
                 // Determine if this is a stick axis that needs radial normalization
                 let stick_id = match axis {
@@ -674,37 +686,12 @@ impl HybridProviderState {
         }
     }
 
-    /// Map gilrs button to standardized control ID (same as provider.rs)
-    fn button_to_id(button: gilrs::Button, prefix: &str) -> String {
-        use gilrs::Button;
-
-        let name = match button {
-            Button::South => "a",
-            Button::East => "b",
-            Button::West => "x",
-            Button::North => "y",
-            Button::LeftTrigger => "lt",
-            Button::RightTrigger => "rt",
-            Button::LeftTrigger2 => "lb",
-            Button::RightTrigger2 => "rb",
-            Button::Select => "minus",
-            Button::Start => "plus",
-            Button::Mode => "home",
-            Button::LeftThumb => "l3",
-            Button::RightThumb => "r3",
-            Button::DPadUp => return format!("{}.dpad.up", prefix),
-            Button::DPadDown => return format!("{}.dpad.down", prefix),
-            Button::DPadLeft => return format!("{}.dpad.left", prefix),
-            Button::DPadRight => return format!("{}.dpad.right", prefix),
-            Button::C => "c",
-            Button::Z => "capture",
-            _ => {
-                warn!("Unknown gilrs button: {:?}", button);
-                "unknown"
-            },
-        };
-
-        format!("{}.btn.{}", prefix, name)
+    /// Map gilrs button to standardized control ID
+    ///
+    /// Uses the shared `buttons` module for consistent Nintendo-layout mapping
+    /// across all gilrs-based code paths.
+    fn button_to_id(button: gilrs::Button, prefix: &str) -> Option<String> {
+        super::buttons::gilrs_button_to_control_id(button, prefix)
     }
 
     /// Map gilrs axis to standardized control ID (same as provider.rs)

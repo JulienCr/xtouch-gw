@@ -35,11 +35,16 @@ pub struct AppPaths {
 impl AppPaths {
     /// Detect the appropriate paths based on environment.
     ///
-    /// **Portable mode** is enabled when a `.portable` marker file exists next
-    /// to the executable. This is explicit opt-in to avoid accidentally using
-    /// portable mode in non-writable locations like `C:\Program Files`.
+    /// **Debug mode**: If `config.yaml` exists in the current working directory
+    /// (typical when running with `cargo run`), use that directory. This makes
+    /// development easier by using the project's config.yaml directly.
     ///
-    /// **Installed mode** (default) stores data in `%APPDATA%\XTouch GW`.
+    /// **Portable mode**: If a `.portable` marker file exists next to the
+    /// executable, all data files are stored in the same directory. This is
+    /// explicit opt-in to avoid accidentally using portable mode in
+    /// non-writable locations like `C:\Program Files`.
+    ///
+    /// **Installed mode** (default): Data is stored in `%APPDATA%\XTouch GW`.
     ///
     /// Note: This is called before logging is initialized, so we use eprintln
     /// for early diagnostic output.
@@ -51,6 +56,26 @@ impl AppPaths {
 
         #[cfg(debug_assertions)]
         eprintln!("[paths] Executable directory: {}", exe_dir.display());
+
+        // In debug builds, check if config.yaml exists in current working directory
+        // This enables seamless development with `cargo run`
+        #[cfg(debug_assertions)]
+        {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let cwd_config = cwd.join("config.yaml");
+            if cwd_config.exists() {
+                eprintln!(
+                    "[paths] Running in DEV mode (config.yaml found in cwd: {})",
+                    cwd.display()
+                );
+                return Self {
+                    config: cwd_config,
+                    state_dir: cwd.join(".state"),
+                    logs_dir: cwd.join("logs"),
+                    is_portable: true, // Treat dev mode like portable
+                };
+            }
+        }
 
         // Check for explicit portable mode marker file
         // This avoids accidentally triggering portable mode in Program Files
