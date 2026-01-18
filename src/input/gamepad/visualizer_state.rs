@@ -1,51 +1,213 @@
 //! State structures for gamepad visualizer
 //!
-//! Tracks raw and normalized values for all connected XInput controllers
+//! Tracks raw and normalized values for all connected controllers (XInput and gilrs)
 
+use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
+
+use gilrs::GamepadId;
+
+/// Maximum number of points in a trail to prevent memory issues
+const MAX_TRAIL_POINTS: usize = 1000;
+
+/// Minimum distance between trail points to avoid clustering (in normalized units)
+const MIN_TRAIL_DISTANCE: f32 = 0.005;
+
+/// Trail data for a stick visualization
+///
+/// Uses `VecDeque` for O(1) removal from the front when the trail exceeds
+/// the maximum length, avoiding the O(n) cost of `Vec::remove(0)`.
+#[derive(Debug, Default, Clone)]
+pub struct StickTrail {
+    /// Trail points for raw values plot (gilrs only)
+    pub raw_points: VecDeque<egui::Pos2>,
+    /// Trail points for normalized values plot
+    pub normalized_points: VecDeque<egui::Pos2>,
+}
+
+impl StickTrail {
+    /// Add a point to the raw trail (for gilrs dual-plot mode)
+    pub fn add_raw_point(&mut self, x: f32, y: f32) {
+        let new_point = egui::pos2(x, y);
+        if self.should_add_point(&self.raw_points, new_point) {
+            self.raw_points.push_back(new_point);
+            if self.raw_points.len() > MAX_TRAIL_POINTS {
+                self.raw_points.pop_front();
+            }
+        }
+    }
+
+    /// Add a point to the normalized trail
+    pub fn add_normalized_point(&mut self, x: f32, y: f32) {
+        let new_point = egui::pos2(x, y);
+        if self.should_add_point(&self.normalized_points, new_point) {
+            self.normalized_points.push_back(new_point);
+            if self.normalized_points.len() > MAX_TRAIL_POINTS {
+                self.normalized_points.pop_front();
+            }
+        }
+    }
+
+    /// Check if a new point should be added (minimum distance check)
+    fn should_add_point(&self, points: &VecDeque<egui::Pos2>, new_point: egui::Pos2) -> bool {
+        if let Some(last) = points.back() {
+            let dx = new_point.x - last.x;
+            let dy = new_point.y - last.y;
+            let dist = (dx * dx + dy * dy).sqrt();
+            dist >= MIN_TRAIL_DISTANCE
+        } else {
+            true // Always add the first point
+        }
+    }
+
+    /// Clear all trail points
+    pub fn clear(&mut self) {
+        self.raw_points.clear();
+        self.normalized_points.clear();
+    }
+}
+
+/// Identifies the source/backend of a controller
+#[derive(Debug, Clone)]
+pub enum ControllerBackend {
+    /// XInput controller (Xbox, etc.)
+    XInput { user_index: u32, packet_number: u32 },
+    /// HID controller via gilrs
+    Gilrs { gamepad_id: GamepadId, name: String },
+}
 
 /// State for all controllers being visualized
 #[derive(Debug)]
 pub struct VisualizerState {
-    pub controllers: Vec<ControllerState>,
+    /// XInput controllers (fixed slots 0-3)
+    pub xinput_controllers: Vec<ControllerState>,
+    /// Gilrs/HID controllers (dynamic, keyed by GamepadId)
+    pub gilrs_controllers: HashMap<GamepadId, ControllerState>,
 }
 
 impl VisualizerState {
-    /// Create new state with 4 controller slots (XInput user indices 0-3)
+    /// Create new state with 4 XInput controller slots and empty gilrs map
     pub fn new() -> Self {
         Self {
-            controllers: (0..4).map(ControllerState::new).collect(),
+            xinput_controllers: (0..4)
+                .map(|i| {
+                    ControllerState::new(ControllerBackend::XInput {
+                        user_index: i,
+                        packet_number: 0,
+                    })
+                })
+                .collect(),
+            gilrs_controllers: HashMap::new(),
         }
     }
 
     /// Update state from XInput gamepad state
     pub fn update_from_xinput(&mut self, user_index: u32, state: &rusty_xinput::XInputState) {
-        if let Some(controller) = self.controllers.get_mut(user_index as usize) {
-            controller.connected = true;
-            controller.packet_number = state.raw.dwPacketNumber;
-            controller.last_update = Instant::now();
+        let Some(controller) = self.xinput_controllers.get_mut(user_index as usize) else {
+            return;
+        };
+        controller.connected = true;
+        controller.backend = ControllerBackend::XInput {
+            user_index,
+            packet_number: state.raw.dwPacketNumber,
+        };
+        controller.last_update = Instant::now();
 
-            // Update sticks (raw values - access via state.raw.Gamepad)
-            controller.left_stick.raw_x = state.raw.Gamepad.sThumbLX;
-            controller.left_stick.raw_y = state.raw.Gamepad.sThumbLY;
-            controller.right_stick.raw_x = state.raw.Gamepad.sThumbRX;
-            controller.right_stick.raw_y = state.raw.Gamepad.sThumbRY;
+        let gp = &state.raw.Gamepad;
+        controller.left_stick.raw_x = Some(gp.sThumbLX);
+        controller.left_stick.raw_y = Some(gp.sThumbLY);
+        controller.right_stick.raw_x = Some(gp.sThumbRX);
+        controller.right_stick.raw_y = Some(gp.sThumbRY);
+        controller.left_trigger.raw = Some(state.left_trigger());
+        controller.right_trigger.raw = Some(state.right_trigger());
+        controller.buttons.update_from_xinput(gp.wButtons);
+    }
 
-            // Update triggers (raw values - use methods)
-            controller.left_trigger.raw = state.left_trigger();
-            controller.right_trigger.raw = state.right_trigger();
+    /// Update state from gilrs gamepad
+    ///
+    /// # Arguments
+    /// * `gamepad` - The gilrs gamepad to read state from
+    /// * `capture` - Capture button state (tracked separately, not in gilrs standard mapping)
+    pub fn update_from_gilrs(&mut self, gamepad: &gilrs::Gamepad, capture: bool) {
+        use gilrs::Axis;
+        let id = gamepad.id();
+        let controller = self.gilrs_controllers.entry(id).or_insert_with(|| {
+            ControllerState::new(ControllerBackend::Gilrs {
+                gamepad_id: id,
+                name: gamepad.name().to_string(),
+            })
+        });
+        controller.connected = true;
+        controller.last_update = Instant::now();
 
-            // Update buttons (pass button bitfield)
-            controller
-                .buttons
-                .update_from_xinput(state.raw.Gamepad.wButtons);
+        // Gilrs provides per-axis values (-1.0 to 1.0) forming a square
+        // Map square to circle (same radial behavior as XInput)
+        use super::visualizer::normalize::normalize_gilrs_stick;
+
+        // Store raw gilrs values (before normalization)
+        let raw_lx = gamepad.value(Axis::LeftStickX);
+        let raw_ly = gamepad.value(Axis::LeftStickY);
+        controller.left_stick.raw_x = None;
+        controller.left_stick.raw_y = None;
+        controller.left_stick.gilrs_raw_x = Some(raw_lx);
+        controller.left_stick.gilrs_raw_y = Some(raw_ly);
+        let (lx, ly) = normalize_gilrs_stick(raw_lx, raw_ly);
+        controller.left_stick.normalized_x = lx;
+        controller.left_stick.normalized_y = ly;
+
+        // Store raw gilrs values (before normalization)
+        let raw_rx = gamepad.value(Axis::RightStickX);
+        let raw_ry = gamepad.value(Axis::RightStickY);
+        controller.right_stick.raw_x = None;
+        controller.right_stick.raw_y = None;
+        controller.right_stick.gilrs_raw_x = Some(raw_rx);
+        controller.right_stick.gilrs_raw_y = Some(raw_ry);
+        let (rx, ry) = normalize_gilrs_stick(raw_rx, raw_ry);
+        controller.right_stick.normalized_x = rx;
+        controller.right_stick.normalized_y = ry;
+
+        // Triggers: check both axis (analog) and button (digital)
+        // Some controllers have analog triggers (LeftZ/RightZ), others have digital (LeftTrigger2/RightTrigger2)
+        use gilrs::Button;
+        controller.left_trigger.raw = None;
+        let lt_axis = (gamepad.value(Axis::LeftZ) + 1.0) / 2.0;
+        let lt_button = if gamepad.is_pressed(Button::LeftTrigger2) {
+            1.0
+        } else {
+            0.0
+        };
+        controller.left_trigger.normalized = lt_axis.max(lt_button);
+
+        controller.right_trigger.raw = None;
+        let rt_axis = (gamepad.value(Axis::RightZ) + 1.0) / 2.0;
+        let rt_button = if gamepad.is_pressed(Button::RightTrigger2) {
+            1.0
+        } else {
+            0.0
+        };
+        controller.right_trigger.normalized = rt_axis.max(rt_button);
+        controller.buttons.update_from_gilrs(gamepad, capture);
+    }
+
+    /// Mark XInput controller as disconnected
+    pub fn mark_xinput_disconnected(&mut self, user_index: u32) {
+        if let Some(controller) = self.xinput_controllers.get_mut(user_index as usize) {
+            controller.connected = false;
         }
     }
 
-    /// Mark controller as disconnected
-    pub fn mark_disconnected(&mut self, user_index: u32) {
-        if let Some(controller) = self.controllers.get_mut(user_index as usize) {
-            controller.connected = false;
+    /// Remove a gilrs controller (on disconnect)
+    pub fn remove_gilrs_controller(&mut self, gamepad_id: GamepadId) {
+        self.gilrs_controllers.remove(&gamepad_id);
+    }
+
+    /// Clear all stick trails for all controllers
+    pub fn clear_all_trails(&mut self) {
+        for controller in &mut self.xinput_controllers {
+            controller.clear_trails();
+        }
+        for controller in self.gilrs_controllers.values_mut() {
+            controller.clear_trails();
         }
     }
 }
@@ -59,53 +221,65 @@ impl Default for VisualizerState {
 /// State for a single controller
 #[derive(Debug)]
 pub struct ControllerState {
-    pub user_index: u32,
+    /// Backend-specific identification
+    pub backend: ControllerBackend,
     pub connected: bool,
-    pub packet_number: u32,
-
-    // Sticks (raw i16 + normalized f32)
     pub left_stick: StickState,
     pub right_stick: StickState,
-
-    // Triggers (raw u8 + normalized f32)
     pub left_trigger: TriggerState,
     pub right_trigger: TriggerState,
-
-    // Buttons (bool state)
     pub buttons: ButtonStates,
-
     pub last_update: Instant,
+    /// Trail for left stick visualization
+    pub left_stick_trail: StickTrail,
+    /// Trail for right stick visualization
+    pub right_stick_trail: StickTrail,
 }
 
 impl ControllerState {
-    fn new(user_index: u32) -> Self {
+    /// Create a new controller state with the given backend
+    pub fn new(backend: ControllerBackend) -> Self {
         Self {
-            user_index,
+            backend,
             connected: false,
-            packet_number: 0,
             left_stick: StickState::default(),
             right_stick: StickState::default(),
             left_trigger: TriggerState::default(),
             right_trigger: TriggerState::default(),
             buttons: ButtonStates::default(),
             last_update: Instant::now(),
+            left_stick_trail: StickTrail::default(),
+            right_stick_trail: StickTrail::default(),
         }
+    }
+
+    /// Clear all stick trails for this controller
+    pub fn clear_trails(&mut self) {
+        self.left_stick_trail.clear();
+        self.right_stick_trail.clear();
     }
 }
 
-/// Stick state (both raw and normalized)
+/// Stick state (optional raw and normalized)
 #[derive(Debug, Default, Clone, Copy)]
 pub struct StickState {
-    pub raw_x: i16,
-    pub raw_y: i16,
+    /// Raw X-axis (XInput only, None for gilrs)
+    pub raw_x: Option<i16>,
+    /// Raw Y-axis (XInput only, None for gilrs)
+    pub raw_y: Option<i16>,
     pub normalized_x: f32,
     pub normalized_y: f32,
+    /// Raw floating-point X (gilrs only, before normalization)
+    pub gilrs_raw_x: Option<f32>,
+    /// Raw floating-point Y (gilrs only, before normalization)
+    pub gilrs_raw_y: Option<f32>,
 }
 
-/// Trigger state (both raw and normalized)
+/// Trigger state (optional raw and normalized)
 #[derive(Debug, Default, Clone, Copy)]
 pub struct TriggerState {
-    pub raw: u8,
+    /// Raw trigger value (XInput only, None for gilrs)
+    pub raw: Option<u8>,
     pub normalized: f32,
 }
 
@@ -126,41 +300,67 @@ pub struct ButtonStates {
     pub b: bool,
     pub x: bool,
     pub y: bool,
+    // Additional buttons (gilrs only)
+    pub home: bool,
+    pub capture: bool,
 }
 
 impl ButtonStates {
     /// Update from XInput raw button bitfield
-    pub fn update_from_xinput(&mut self, buttons: u16) {
+    pub fn update_from_xinput(&mut self, b: u16) {
         // XInput button bit flags (from XInput API spec)
-        const DPAD_UP: u16 = 0x0001;
-        const DPAD_DOWN: u16 = 0x0002;
-        const DPAD_LEFT: u16 = 0x0004;
-        const DPAD_RIGHT: u16 = 0x0008;
-        const START: u16 = 0x0010;
-        const BACK: u16 = 0x0020;
-        const LEFT_THUMB: u16 = 0x0040;
-        const RIGHT_THUMB: u16 = 0x0080;
-        const LEFT_SHOULDER: u16 = 0x0100;
-        const RIGHT_SHOULDER: u16 = 0x0200;
-        const A: u16 = 0x1000;
-        const B: u16 = 0x2000;
-        const X: u16 = 0x4000;
-        const Y: u16 = 0x8000;
+        self.dpad_up = b & 0x0001 != 0;
+        self.dpad_down = b & 0x0002 != 0;
+        self.dpad_left = b & 0x0004 != 0;
+        self.dpad_right = b & 0x0008 != 0;
+        self.start = b & 0x0010 != 0;
+        self.back = b & 0x0020 != 0;
+        self.left_thumb = b & 0x0040 != 0;
+        self.right_thumb = b & 0x0080 != 0;
+        self.left_shoulder = b & 0x0100 != 0;
+        self.right_shoulder = b & 0x0200 != 0;
+        self.a = b & 0x1000 != 0;
+        self.b = b & 0x2000 != 0;
+        self.x = b & 0x4000 != 0;
+        self.y = b & 0x8000 != 0;
+        // XInput doesn't have Home/Capture buttons (Guide button not exposed)
+        self.home = false;
+        self.capture = false;
+    }
 
-        self.dpad_up = (buttons & DPAD_UP) != 0;
-        self.dpad_down = (buttons & DPAD_DOWN) != 0;
-        self.dpad_left = (buttons & DPAD_LEFT) != 0;
-        self.dpad_right = (buttons & DPAD_RIGHT) != 0;
-        self.start = (buttons & START) != 0;
-        self.back = (buttons & BACK) != 0;
-        self.left_thumb = (buttons & LEFT_THUMB) != 0;
-        self.right_thumb = (buttons & RIGHT_THUMB) != 0;
-        self.left_shoulder = (buttons & LEFT_SHOULDER) != 0;
-        self.right_shoulder = (buttons & RIGHT_SHOULDER) != 0;
-        self.a = (buttons & A) != 0;
-        self.b = (buttons & B) != 0;
-        self.x = (buttons & X) != 0;
-        self.y = (buttons & Y) != 0;
+    /// Update from gilrs gamepad state
+    ///
+    /// Uses Nintendo-style button mapping (consistent with `super::buttons` module):
+    /// - A = East (right), B = South (bottom), X = North (top), Y = West (left)
+    ///
+    /// # Arguments
+    /// * `gamepad` - The gilrs gamepad
+    /// * `capture` - Capture button state (tracked from raw events, not in gilrs mapping)
+    pub fn update_from_gilrs(&mut self, gamepad: &gilrs::Gamepad, capture: bool) {
+        use gilrs::Button;
+        // Nintendo-style face button mapping (see buttons.rs for canonical mapping)
+        // East=A (right), South=B (bottom), North=X (top), West=Y (left)
+        self.a = gamepad.is_pressed(Button::East);
+        self.b = gamepad.is_pressed(Button::South);
+        self.x = gamepad.is_pressed(Button::North);
+        self.y = gamepad.is_pressed(Button::West);
+        // Shoulder buttons (LB/RB)
+        self.left_shoulder = gamepad.is_pressed(Button::LeftTrigger);
+        self.right_shoulder = gamepad.is_pressed(Button::RightTrigger);
+        // Menu buttons
+        self.back = gamepad.is_pressed(Button::Select);
+        self.start = gamepad.is_pressed(Button::Start);
+        // Stick clicks
+        self.left_thumb = gamepad.is_pressed(Button::LeftThumb);
+        self.right_thumb = gamepad.is_pressed(Button::RightThumb);
+        // D-Pad
+        self.dpad_up = gamepad.is_pressed(Button::DPadUp);
+        self.dpad_down = gamepad.is_pressed(Button::DPadDown);
+        self.dpad_left = gamepad.is_pressed(Button::DPadLeft);
+        self.dpad_right = gamepad.is_pressed(Button::DPadRight);
+        // Additional buttons
+        self.home = gamepad.is_pressed(Button::Mode);
+        self.capture = capture; // Tracked from raw button events
     }
 
     /// Get all buttons as an iterator of (name, pressed) pairs
@@ -180,6 +380,8 @@ impl ButtonStates {
             ("D-Down", self.dpad_down),
             ("D-Left", self.dpad_left),
             ("D-Right", self.dpad_right),
+            ("Home", self.home),
+            ("Capture", self.capture),
         ]
         .into_iter()
     }

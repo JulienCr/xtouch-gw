@@ -32,6 +32,8 @@ pub struct ExecutionContext {
     pub control_id: Option<String>,
     /// Activity tracker for tray UI (optional)
     pub activity_tracker: Option<Arc<crate::tray::ActivityTracker>>,
+    /// Camera target state for gamepad-to-camera mapping (optional)
+    pub camera_targets: Option<Arc<crate::router::CameraTargetState>>,
 }
 
 /// Driver trait - all application integrations implement this

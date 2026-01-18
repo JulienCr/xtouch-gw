@@ -1,9 +1,17 @@
 //! GilRs gamepad provider with hot-plug support
+//!
+//! **Legacy provider** - This module is kept for reference. The production codebase uses
+//! [`HybridGamepadProvider`](super::hybrid_provider::HybridGamepadProvider) which combines
+//! XInput and gilrs backends with improved change detection and sequence numbering.
 
+use super::axis::gilrs_axis_to_control_id;
+use super::normalize::normalize_gilrs_stick;
 use super::slot::SlotManager;
+use super::stick_buffer::{StickBuffer, StickId};
 use crate::config::AnalogConfig;
 use anyhow::Result;
 use gilrs::{Axis, Button, Event, EventType, Gilrs};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -108,6 +116,9 @@ impl GilrsProvider {
         let mut last_reconnect_check = std::time::Instant::now();
         let reconnect_interval = Duration::from_secs(2);
 
+        // Stick buffer for radial normalization (per gamepad, per stick)
+        let mut stick_buffers: HashMap<(gilrs::GamepadId, StickId), StickBuffer> = HashMap::new();
+
         // Wait for gamepads to initialize (Windows Bluetooth controllers need time)
         info!("Scanning for gamepads...");
         info!("⏳ Waiting for gamepad enumeration (3 seconds)...");
@@ -198,14 +209,21 @@ impl GilrsProvider {
                     ("gamepad".to_string(), None)
                 };
 
-                // Convert event with slot prefix
-                if let Some(gamepad_event) = Self::convert_event(event, &slot_prefix, analog_config)
-                {
+                // Handle disconnection - clean up stick buffer
+                if event == EventType::Disconnected {
+                    stick_buffers.retain(|(gp_id, _), _| *gp_id != id);
+                }
+
+                // Convert event with slot prefix and radial normalization
+                let events =
+                    Self::convert_event(id, event, &slot_prefix, analog_config, &mut stick_buffers);
+
+                for gamepad_event in events {
                     debug!("Gamepad event: {:?}", gamepad_event);
 
                     if event_tx.send(gamepad_event).is_err() {
                         warn!("Event receiver dropped, shutting down gamepad loop");
-                        break;
+                        return;
                     }
                 }
             }
@@ -215,97 +233,131 @@ impl GilrsProvider {
         }
     }
 
-    /// Convert GilRs event to standardized gamepad event
+    /// Convert GilRs event to standardized gamepad event(s) with radial normalization
+    ///
+    /// Returns Vec because radial normalization couples X/Y axes - updating one
+    /// may require emitting events for both.
     fn convert_event(
+        id: gilrs::GamepadId,
         event: EventType,
         prefix: &str,
         analog_config: Option<AnalogConfig>,
-    ) -> Option<GamepadEvent> {
+        stick_buffers: &mut HashMap<(gilrs::GamepadId, StickId), StickBuffer>,
+    ) -> Vec<GamepadEvent> {
         match event {
-            EventType::ButtonPressed(button, _) => Some(GamepadEvent::Button {
-                control_id: Self::button_to_id(button, prefix),
-                pressed: true,
-            }),
-            EventType::ButtonReleased(button, _) => Some(GamepadEvent::Button {
-                control_id: Self::button_to_id(button, prefix),
-                pressed: false,
-            }),
+            EventType::ButtonPressed(button, _) | EventType::ButtonReleased(button, _) => {
+                let pressed = matches!(event, EventType::ButtonPressed(_, _));
+                match Self::button_to_id(button, prefix) {
+                    Some(control_id) => vec![GamepadEvent::Button {
+                        control_id,
+                        pressed,
+                    }],
+                    None => vec![],
+                }
+            },
             EventType::AxisChanged(axis, value, _) => {
-                // Normalize Y-axis convention to match HID behavior:
-                // - gilrs: up=positive, down=negative
-                // - HID: up=negative, down=positive
-                // Negate Y axes to match HID convention for consistency
-                let normalized_value = match axis {
-                    Axis::LeftStickY | Axis::RightStickY => -value,
-                    _ => value,
+                // Determine if this is a stick axis that needs radial normalization
+                let stick_id = match axis {
+                    Axis::LeftStickX | Axis::LeftStickY => Some(StickId::Left),
+                    Axis::RightStickX | Axis::RightStickY => Some(StickId::Right),
+                    _ => None,
                 };
 
-                Some(GamepadEvent::Axis {
-                    control_id: Self::axis_to_id(axis, prefix),
-                    value: normalized_value,
-                    analog_config,
-                    sequence: 0, // Legacy provider - sequence not used (use HybridGamepadProvider instead)
-                })
+                if let Some(stick) = stick_id {
+                    // Stick axis: use radial normalization
+                    Self::process_stick_axis(
+                        id,
+                        axis,
+                        value,
+                        stick,
+                        prefix,
+                        analog_config,
+                        stick_buffers,
+                    )
+                } else {
+                    // Non-stick axis (triggers, etc.): pass through directly
+                    vec![GamepadEvent::Axis {
+                        control_id: gilrs_axis_to_control_id(axis, prefix),
+                        value,
+                        analog_config,
+                        sequence: 0, // Legacy provider - sequence not used
+                    }]
+                }
             },
             EventType::Connected => {
                 debug!("Gamepad connected event");
-                None
+                vec![]
             },
             EventType::Disconnected => {
                 debug!("Gamepad disconnected event");
-                None
+                vec![]
             },
-            _ => None,
+            _ => vec![],
         }
     }
 
-    /// Map GilRs button to standardized control ID
-    fn button_to_id(button: Button, prefix: &str) -> String {
-        let name = match button {
-            Button::South => "a",
-            Button::East => "b",
-            Button::West => "x",
-            Button::North => "y",
-            Button::LeftTrigger => "lt",
-            Button::RightTrigger => "rt",
-            Button::LeftTrigger2 => "lb",
-            Button::RightTrigger2 => "rb",
-            Button::Select => "minus",
-            Button::Start => "plus",
-            Button::Mode => "home",
-            Button::LeftThumb => "l3",
-            Button::RightThumb => "r3",
-            Button::DPadUp => return format!("{}.dpad.up", prefix),
-            Button::DPadDown => return format!("{}.dpad.down", prefix),
-            Button::DPadLeft => return format!("{}.dpad.left", prefix),
-            Button::DPadRight => return format!("{}.dpad.right", prefix),
-            Button::C => "c",
-            Button::Z => "capture",
-            _ => {
-                warn!("Unknown button: {:?}", button);
-                "unknown"
-            },
+    /// Process stick axis with radial normalization
+    fn process_stick_axis(
+        id: gilrs::GamepadId,
+        axis: Axis,
+        value: f32,
+        stick: StickId,
+        prefix: &str,
+        analog_config: Option<AnalogConfig>,
+        stick_buffers: &mut HashMap<(gilrs::GamepadId, StickId), StickBuffer>,
+    ) -> Vec<GamepadEvent> {
+        let buffer_key = (id, stick);
+
+        // Get or create stick buffer
+        let buffer = stick_buffers
+            .entry(buffer_key)
+            .or_insert_with(StickBuffer::default);
+
+        // Update the appropriate axis in the buffer (raw value, before Y inversion)
+        match axis {
+            Axis::LeftStickX | Axis::RightStickX => buffer.x = value,
+            Axis::LeftStickY | Axis::RightStickY => buffer.y = value,
+            _ => unreachable!(),
+        }
+
+        // Apply radial normalization (configurable via GILRS_USE_RADIAL_CLAMP_ONLY flag)
+        let (norm_x, norm_y) = normalize_gilrs_stick(buffer.x, buffer.y);
+
+        // Invert Y to match HID convention
+        let final_y = -norm_y;
+
+        // Determine axis IDs
+        let (x_axis, y_axis) = match stick {
+            StickId::Left => (Axis::LeftStickX, Axis::LeftStickY),
+            StickId::Right => (Axis::RightStickX, Axis::RightStickY),
         };
 
-        format!("{}.btn.{}", prefix, name)
+        // NOTE: This legacy provider emits both axes unconditionally, even if only
+        // one axis changed. This can cause redundant event processing. The modern
+        // HybridGamepadProvider uses `emit_axis_with_zero_detection` to filter out
+        // redundant events when an axis hasn't meaningfully changed.
+        vec![
+            GamepadEvent::Axis {
+                control_id: gilrs_axis_to_control_id(x_axis, prefix),
+                value: norm_x,
+                analog_config: analog_config.clone(),
+                sequence: 0, // Legacy provider - sequence not used
+            },
+            GamepadEvent::Axis {
+                control_id: gilrs_axis_to_control_id(y_axis, prefix),
+                value: final_y,
+                analog_config,
+                sequence: 0, // Legacy provider - sequence not used
+            },
+        ]
     }
 
-    /// Map GilRs axis to standardized control ID
-    fn axis_to_id(axis: Axis, prefix: &str) -> String {
-        let name = match axis {
-            Axis::LeftStickX => "lx",
-            Axis::LeftStickY => "ly",
-            Axis::RightStickX => "rx",
-            Axis::RightStickY => "ry",
-            Axis::LeftZ => "zl",
-            Axis::RightZ => "zr",
-            _ => {
-                warn!("Unknown axis: {:?}", axis);
-                "unknown"
-            },
-        };
-
-        format!("{}.axis.{}", prefix, name)
+    /// Map GilRs button to standardized control ID
+    ///
+    /// Uses the shared `buttons` module for consistent Nintendo-layout mapping
+    /// across all gilrs-based code paths.
+    fn button_to_id(button: Button, prefix: &str) -> Option<String> {
+        super::buttons::gilrs_button_to_control_id(button, prefix)
     }
 
     /// Shutdown the provider

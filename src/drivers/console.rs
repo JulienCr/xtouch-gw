@@ -163,6 +163,7 @@ mod tests {
             value: None,
             control_id: None,
             activity_tracker: None,
+            camera_targets: None,
         }
     }
 

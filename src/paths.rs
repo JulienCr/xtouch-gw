@@ -4,13 +4,34 @@
 //! to support both portable mode (files next to executable) and installed
 //! mode (files in %APPDATA%\XTouch GW).
 //!
-//! ## Mode Detection
+//! ## Mode Detection Priority
 //!
-//! - **Portable mode**: If a `.portable` marker file exists next to the
-//!   executable, all data files are stored in the same directory. This
-//!   requires the directory to be writable (not `C:\Program Files`).
-//! - **Installed mode** (default): Data is stored in `%APPDATA%\XTouch GW`
-//!   (or equivalent on other platforms).
+//! Modes are detected in the following order (first match wins):
+//!
+//! 1. **Dev mode** (debug builds only): If `config.yaml` exists in the current
+//!    working directory, use that directory for all paths. This enables seamless
+//!    development with `cargo run` from the project root.
+//!
+//! 2. **Portable mode**: If a `.portable` marker file exists next to the
+//!    executable, all data files are stored in the same directory. This
+//!    requires the directory to be writable (not `C:\Program Files`).
+//!
+//! 3. **Installed mode** (default): Data is stored in `%APPDATA%\XTouch GW`
+//!    (or equivalent on other platforms).
+//!
+//! ## The `is_portable` Flag
+//!
+//! The `is_portable` field indicates whether paths are relative to a local
+//! directory (dev mode or portable mode) rather than the system app data
+//! directory. Both dev mode and portable mode set `is_portable: true` because
+//! they share the same path semantics:
+//!
+//! - State and logs are stored alongside the config file
+//! - No automatic config copying from example templates
+//! - The base directory is expected to be writable
+//!
+//! Code that checks `is_portable` should be aware that it will be `true` in
+//! both explicit portable mode AND debug dev mode.
 
 use anyhow::Context;
 use std::path::PathBuf;
@@ -28,18 +49,35 @@ pub struct AppPaths {
     pub state_dir: PathBuf,
     /// Path to the logs directory
     pub logs_dir: PathBuf,
-    /// Whether running in portable mode (config next to exe)
+    /// Whether running with local path semantics (dev mode or portable mode).
+    ///
+    /// When `true`:
+    /// - Paths are relative to a local directory (CWD in dev mode, exe dir in portable)
+    /// - No automatic config copying from example templates
+    /// - The base directory is assumed to be writable
+    ///
+    /// When `false` (installed mode):
+    /// - Paths are in the system app data directory (%APPDATA%)
+    /// - Example config is copied on first run if needed
+    ///
+    /// Note: This is `true` for both dev mode (debug builds with config.yaml in CWD)
+    /// AND explicit portable mode (.portable marker). See module docs for details.
     pub is_portable: bool,
 }
 
 impl AppPaths {
     /// Detect the appropriate paths based on environment.
     ///
-    /// **Portable mode** is enabled when a `.portable` marker file exists next
-    /// to the executable. This is explicit opt-in to avoid accidentally using
-    /// portable mode in non-writable locations like `C:\Program Files`.
+    /// **Debug mode**: If `config.yaml` exists in the current working directory
+    /// (typical when running with `cargo run`), use that directory. This makes
+    /// development easier by using the project's config.yaml directly.
     ///
-    /// **Installed mode** (default) stores data in `%APPDATA%\XTouch GW`.
+    /// **Portable mode**: If a `.portable` marker file exists next to the
+    /// executable, all data files are stored in the same directory. This is
+    /// explicit opt-in to avoid accidentally using portable mode in
+    /// non-writable locations like `C:\Program Files`.
+    ///
+    /// **Installed mode** (default): Data is stored in `%APPDATA%\XTouch GW`.
     ///
     /// Note: This is called before logging is initialized, so we use eprintln
     /// for early diagnostic output.
@@ -51,6 +89,37 @@ impl AppPaths {
 
         #[cfg(debug_assertions)]
         eprintln!("[paths] Executable directory: {}", exe_dir.display());
+
+        // DEV MODE (debug builds only):
+        // Check if config.yaml exists in current working directory.
+        // This enables seamless development with `cargo run` from the project root.
+        //
+        // Priority: Dev mode takes precedence over portable mode. If a developer has
+        // both `config.yaml` in the CWD AND a `.portable` marker next to the executable,
+        // dev mode wins. This is intentional - during development, we always want to
+        // use the project's config.yaml regardless of other markers.
+        //
+        // The early return bypasses the portable marker check below.
+        #[cfg(debug_assertions)]
+        {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let cwd_config = cwd.join("config.yaml");
+            if cwd_config.exists() {
+                eprintln!(
+                    "[paths] Running in DEV mode (config.yaml found in cwd: {})",
+                    cwd.display()
+                );
+                return Self {
+                    config: cwd_config,
+                    state_dir: cwd.join(".state"),
+                    logs_dir: cwd.join("logs"),
+                    // Dev mode uses portable semantics: paths relative to CWD,
+                    // no automatic config copying, directory expected to be writable.
+                    // See module-level docs for implications of this flag.
+                    is_portable: true,
+                };
+            }
+        }
 
         // Check for explicit portable mode marker file
         // This avoids accidentally triggering portable mode in Program Files

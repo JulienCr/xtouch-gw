@@ -15,9 +15,13 @@ const CAMERA_TARGET_PREFIX: &str = "camera_target:";
 /// Camera target state for dynamic gamepad-to-camera mapping
 ///
 /// Stores which camera each gamepad controls. Persisted to sled for crash recovery.
+/// Also tracks transient PTZ modifier state (not persisted).
 pub struct CameraTargetState {
     /// Current camera target per gamepad slot (e.g., "gamepad1" -> "Main")
     targets: RwLock<HashMap<String, String>>,
+    /// PTZ modifier held state per gamepad slot (e.g., "gamepad1" -> true when LT held)
+    /// Transient state - not persisted to sled
+    ptz_modifier_held: RwLock<HashMap<String, bool>>,
     /// Sled database handle for persistence
     db: sled::Db,
 }
@@ -35,6 +39,7 @@ impl CameraTargetState {
     pub fn new(db: sled::Db) -> Self {
         let state = Self {
             targets: RwLock::new(HashMap::new()),
+            ptz_modifier_held: RwLock::new(HashMap::new()),
             db,
         };
 
@@ -131,6 +136,22 @@ impl CameraTargetState {
 
         debug!("Cleared camera target for {}", gamepad_slot);
         Ok(())
+    }
+
+    /// Set the PTZ modifier state for a gamepad slot
+    ///
+    /// This is transient state (not persisted). Used to track when the
+    /// modifier button (e.g., LT) is held to switch camera selection to preview mode.
+    pub fn set_ptz_modifier(&self, gamepad_slot: &str, held: bool) {
+        let mut modifiers = self.ptz_modifier_held.write();
+        modifiers.insert(gamepad_slot.to_string(), held);
+        debug!("PTZ modifier: {} = {}", gamepad_slot, held);
+    }
+
+    /// Check if the PTZ modifier is currently held for a gamepad slot
+    pub fn is_ptz_modifier_held(&self, gamepad_slot: &str) -> bool {
+        let modifiers = self.ptz_modifier_held.read();
+        modifiers.get(gamepad_slot).copied().unwrap_or(false)
     }
 }
 

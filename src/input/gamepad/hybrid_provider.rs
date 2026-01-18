@@ -14,9 +14,12 @@ use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 use tracing::{debug, trace, warn};
 
+use super::axis::gilrs_axis_to_control_id;
 use super::hybrid_id::HybridControllerId;
+use super::normalize::normalize_gilrs_stick;
 use super::provider::GamepadEvent;
 use super::slot::SlotManager;
+use super::stick_buffer::{StickBuffer, StickId};
 use super::xinput_convert::{
     convert_xinput_axes, convert_xinput_buttons, poll_xinput_controller, CachedXInputState,
 };
@@ -160,6 +163,9 @@ struct HybridProviderState {
     last_gilrs_axis_values: HashMap<(gilrs::GamepadId, gilrs::Axis), f32>,
     /// Monotonic sequence counter for axis events (prevents race conditions)
     axis_sequence: u64,
+    /// Buffer gilrs stick X/Y pairs for radial normalization
+    /// Key: (gamepad_id, stick_id), Value: (raw_x, raw_y) before normalization
+    gilrs_stick_buffer: HashMap<(gilrs::GamepadId, StickId), StickBuffer>,
 }
 
 impl HybridProviderState {
@@ -209,6 +215,7 @@ impl HybridProviderState {
             last_reconnect_check: Instant::now(),
             last_gilrs_axis_values: HashMap::new(),
             axis_sequence: 0,
+            gilrs_stick_buffer: HashMap::new(),
         })
     }
 
@@ -437,155 +444,211 @@ impl HybridProviderState {
             };
 
             // Convert event with slot prefix (with zero-detection and sequence)
-            if let Some(gamepad_event) = self.convert_gilrs_event(id, event, &prefix, analog_config)
-            {
+            // Note: convert_gilrs_event returns Vec because radial normalization couples X/Y
+            for gamepad_event in self.convert_gilrs_event(id, event, &prefix, analog_config) {
                 debug!("gilrs event: {:?}", gamepad_event);
 
                 if event_tx.send(gamepad_event).is_err() {
                     warn!("Event receiver dropped, shutting down gamepad loop");
-                    break;
+                    return;
                 }
             }
         }
     }
 
-    /// Convert gilrs event to GamepadEvent with axis return-to-zero detection
+    /// Convert gilrs event to GamepadEvent(s) with radial normalization for sticks
+    ///
+    /// Returns Vec because radial normalization couples X/Y axes - updating one
+    /// may require emitting events for both.
     fn convert_gilrs_event(
         &mut self,
         id: gilrs::GamepadId,
         event: EventType,
         prefix: &str,
         analog_config: Option<AnalogConfig>,
-    ) -> Option<GamepadEvent> {
+    ) -> Vec<GamepadEvent> {
         use gilrs::Axis;
 
         match event {
-            EventType::ButtonPressed(button, _) => Some(GamepadEvent::Button {
-                control_id: Self::button_to_id(button, prefix),
-                pressed: true,
-            }),
-            EventType::ButtonReleased(button, _) => Some(GamepadEvent::Button {
-                control_id: Self::button_to_id(button, prefix),
-                pressed: false,
-            }),
+            EventType::ButtonPressed(button, _) | EventType::ButtonReleased(button, _) => {
+                let pressed = matches!(event, EventType::ButtonPressed(_, _));
+                match Self::button_to_id(button, prefix) {
+                    Some(control_id) => vec![GamepadEvent::Button {
+                        control_id,
+                        pressed,
+                    }],
+                    None => vec![],
+                }
+            },
             EventType::AxisChanged(axis, value, _) => {
-                // Normalize Y-axis convention to match HID behavior
-                let normalized_value = match axis {
-                    Axis::LeftStickY | Axis::RightStickY => -value,
-                    _ => value,
+                // Determine if this is a stick axis that needs radial normalization
+                let stick_id = match axis {
+                    Axis::LeftStickX | Axis::LeftStickY => Some(StickId::Left),
+                    Axis::RightStickX | Axis::RightStickY => Some(StickId::Right),
+                    _ => None,
                 };
 
-                // Track axis value for zero-detection
-                let key = (id, axis);
-                let last_value = self.last_gilrs_axis_values.get(&key).copied();
-
-                // Check if axis is returning to zero (within threshold)
-                const ZERO_THRESHOLD: f32 = 0.05;
-                let is_near_zero = normalized_value.abs() < ZERO_THRESHOLD;
-                let was_non_zero = last_value.is_some_and(|v| v.abs() >= ZERO_THRESHOLD);
-
-                // If axis is returning to center from non-zero position, emit explicit 0.0
-                if is_near_zero {
-                    if was_non_zero {
-                        debug!(
-                            "gilrs axis {} returning to zero (was {:.3}, now {:.3})",
-                            Self::axis_to_id(axis, prefix),
-                            last_value.unwrap_or(0.0),
-                            normalized_value
-                        );
-                        // Remove from tracking (axis is now at rest)
-                        self.last_gilrs_axis_values.remove(&key);
-                        // Increment sequence for ordering
-                        self.axis_sequence += 1;
-                        // Emit explicit 0.0 event
-                        return Some(GamepadEvent::Axis {
-                            control_id: Self::axis_to_id(axis, prefix),
-                            value: 0.0,
-                            analog_config,
-                            sequence: self.axis_sequence,
-                        });
-                    }
-                    // Already at zero, no event needed
-                    None
+                if let Some(stick) = stick_id {
+                    // Stick axis: use radial normalization
+                    self.process_stick_axis(id, axis, value, stick, prefix, analog_config)
                 } else {
-                    // Non-zero value, track it
-                    self.last_gilrs_axis_values.insert(key, normalized_value);
-                    // Increment sequence for ordering
-                    self.axis_sequence += 1;
-                    Some(GamepadEvent::Axis {
-                        control_id: Self::axis_to_id(axis, prefix),
-                        value: normalized_value,
-                        analog_config,
-                        sequence: self.axis_sequence,
-                    })
+                    // Non-stick axis (triggers, etc.): pass through directly
+                    self.process_non_stick_axis(id, axis, value, prefix, analog_config)
                 }
             },
             EventType::Connected => {
                 trace!("gilrs gamepad connected event");
-                None
+                vec![]
             },
             EventType::Disconnected => {
                 debug!("gilrs gamepad disconnected event");
                 // Clean up axis tracking for disconnected gamepad
                 self.last_gilrs_axis_values
                     .retain(|(gp_id, _), _| *gp_id != id);
-                None
+                // Clean up stick buffer for disconnected gamepad
+                self.gilrs_stick_buffer.retain(|(gp_id, _), _| *gp_id != id);
+                vec![]
             },
-            _ => None,
+            _ => vec![],
         }
     }
 
-    /// Map gilrs button to standardized control ID (same as provider.rs)
-    fn button_to_id(button: gilrs::Button, prefix: &str) -> String {
-        use gilrs::Button;
-
-        let name = match button {
-            Button::South => "a",
-            Button::East => "b",
-            Button::West => "x",
-            Button::North => "y",
-            Button::LeftTrigger => "lt",
-            Button::RightTrigger => "rt",
-            Button::LeftTrigger2 => "lb",
-            Button::RightTrigger2 => "rb",
-            Button::Select => "minus",
-            Button::Start => "plus",
-            Button::Mode => "home",
-            Button::LeftThumb => "l3",
-            Button::RightThumb => "r3",
-            Button::DPadUp => return format!("{}.dpad.up", prefix),
-            Button::DPadDown => return format!("{}.dpad.down", prefix),
-            Button::DPadLeft => return format!("{}.dpad.left", prefix),
-            Button::DPadRight => return format!("{}.dpad.right", prefix),
-            Button::C => "c",
-            Button::Z => "capture",
-            _ => {
-                warn!("Unknown gilrs button: {:?}", button);
-                "unknown"
-            },
-        };
-
-        format!("{}.btn.{}", prefix, name)
-    }
-
-    /// Map gilrs axis to standardized control ID (same as provider.rs)
-    fn axis_to_id(axis: gilrs::Axis, prefix: &str) -> String {
+    /// Process stick axis with radial normalization
+    ///
+    /// Buffers X/Y values and applies square_to_circle to ensure diagonal
+    /// movements can reach magnitude 1.0 (fixes the 0.707 issue).
+    fn process_stick_axis(
+        &mut self,
+        id: gilrs::GamepadId,
+        axis: gilrs::Axis,
+        value: f32,
+        stick: StickId,
+        prefix: &str,
+        analog_config: Option<AnalogConfig>,
+    ) -> Vec<GamepadEvent> {
         use gilrs::Axis;
 
-        let name = match axis {
-            Axis::LeftStickX => "lx",
-            Axis::LeftStickY => "ly",
-            Axis::RightStickX => "rx",
-            Axis::RightStickY => "ry",
-            Axis::LeftZ => "zl",
-            Axis::RightZ => "zr",
-            _ => {
-                warn!("Unknown gilrs axis: {:?}", axis);
-                "unknown"
-            },
+        let buffer_key = (id, stick);
+
+        // Get or create stick buffer
+        let buffer = self
+            .gilrs_stick_buffer
+            .entry(buffer_key)
+            .or_insert_with(StickBuffer::default);
+
+        // Update the appropriate axis in the buffer (raw value, before Y inversion)
+        match axis {
+            Axis::LeftStickX | Axis::RightStickX => buffer.x = value,
+            Axis::LeftStickY | Axis::RightStickY => buffer.y = value,
+            _ => unreachable!(),
+        }
+
+        // Apply radial normalization (configurable via GILRS_USE_RADIAL_CLAMP_ONLY flag)
+        let (norm_x, norm_y) = normalize_gilrs_stick(buffer.x, buffer.y);
+
+        // Invert Y to match HID convention (up=negative in gilrs, we want up=negative output)
+        let final_y = -norm_y;
+
+        // Determine axis IDs
+        let (x_axis, y_axis) = match stick {
+            StickId::Left => (Axis::LeftStickX, Axis::LeftStickY),
+            StickId::Right => (Axis::RightStickX, Axis::RightStickY),
         };
 
-        format!("{}.axis.{}", prefix, name)
+        // Check for zero-crossing and emit events for both axes
+        let mut events = Vec::new();
+
+        if let Some(event) =
+            self.emit_axis_with_zero_detection(id, x_axis, norm_x, prefix, analog_config.clone())
+        {
+            events.push(event);
+        }
+
+        if let Some(event) =
+            self.emit_axis_with_zero_detection(id, y_axis, final_y, prefix, analog_config)
+        {
+            events.push(event);
+        }
+
+        events
+    }
+
+    /// Emit an axis event with zero-crossing detection
+    ///
+    /// Tracks axis values and emits events when:
+    /// - Value crosses from non-zero to near-zero (emits exact 0.0)
+    /// - Value changes significantly while non-zero
+    ///
+    /// Returns `None` if no event should be emitted (value unchanged or still near zero)
+    fn emit_axis_with_zero_detection(
+        &mut self,
+        id: gilrs::GamepadId,
+        axis: gilrs::Axis,
+        value: f32,
+        prefix: &str,
+        analog_config: Option<AnalogConfig>,
+    ) -> Option<GamepadEvent> {
+        const ZERO_THRESHOLD: f32 = 0.05;
+        const CHANGE_THRESHOLD: f32 = 0.001;
+
+        let key = (id, axis);
+        let last_value = self.last_gilrs_axis_values.get(&key).copied();
+        let is_near_zero = value.abs() < ZERO_THRESHOLD;
+        let was_nonzero = last_value.is_some_and(|v| v.abs() >= ZERO_THRESHOLD);
+
+        if is_near_zero {
+            // Transitioning to zero: emit explicit 0.0 event
+            if was_nonzero {
+                self.last_gilrs_axis_values.remove(&key);
+                self.axis_sequence += 1;
+                return Some(GamepadEvent::Axis {
+                    control_id: gilrs_axis_to_control_id(axis, prefix),
+                    value: 0.0,
+                    analog_config,
+                    sequence: self.axis_sequence,
+                });
+            }
+            None
+        } else {
+            // Non-zero: emit if changed significantly
+            let should_emit =
+                last_value.is_none() || (value - last_value.unwrap()).abs() > CHANGE_THRESHOLD;
+            if should_emit {
+                self.last_gilrs_axis_values.insert(key, value);
+                self.axis_sequence += 1;
+                Some(GamepadEvent::Axis {
+                    control_id: gilrs_axis_to_control_id(axis, prefix),
+                    value,
+                    analog_config,
+                    sequence: self.axis_sequence,
+                })
+            } else {
+                None
+            }
+        }
+    }
+
+    /// Process non-stick axis (triggers, etc.) without radial normalization
+    fn process_non_stick_axis(
+        &mut self,
+        id: gilrs::GamepadId,
+        axis: gilrs::Axis,
+        value: f32,
+        prefix: &str,
+        analog_config: Option<AnalogConfig>,
+    ) -> Vec<GamepadEvent> {
+        match self.emit_axis_with_zero_detection(id, axis, value, prefix, analog_config) {
+            Some(event) => vec![event],
+            None => vec![],
+        }
+    }
+
+    /// Map gilrs button to standardized control ID
+    ///
+    /// Uses the shared `buttons` module for consistent Nintendo-layout mapping
+    /// across all gilrs-based code paths.
+    fn button_to_id(button: gilrs::Button, prefix: &str) -> Option<String> {
+        super::buttons::gilrs_button_to_control_id(button, prefix)
     }
 
     /// Poll XInput events

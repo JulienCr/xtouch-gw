@@ -5,22 +5,23 @@
 //! controllers (FaceOff, etc.) simultaneously.
 
 pub mod analog;
+pub mod axis;
+pub mod buttons;
 pub mod diagnostics;
 pub mod hybrid_id;
 pub mod hybrid_provider;
 pub mod mapper;
+pub mod normalize;
 pub mod provider; // Legacy provider (for reference)
 pub mod slot;
+pub mod stick_buffer;
 pub mod visualizer;
 pub mod visualizer_state;
 pub mod xinput_convert;
 
-// use anyhow::{Result, Context};
 use std::sync::Arc;
-use tokio::sync::broadcast;
 use tracing::{debug, warn};
 
-use crate::api::CameraStateMessage;
 use crate::config::GamepadConfig;
 use crate::router::Router;
 
@@ -33,15 +34,10 @@ pub use visualizer::run_visualizer;
 /// # Arguments
 /// * `config` - Gamepad configuration
 /// * `router` - Router instance
-/// * `update_tx` - Broadcast sender for camera state updates (Stream Deck notifications)
 ///
 /// # Returns
 /// Configured mapper instance, or None if initialization fails
-pub async fn init(
-    config: &GamepadConfig,
-    router: Arc<Router>,
-    update_tx: broadcast::Sender<CameraStateMessage>,
-) -> Option<GamepadMapper> {
+pub async fn init(config: &GamepadConfig, router: Arc<Router>) -> Option<GamepadMapper> {
     if !config.enabled {
         return None;
     }
@@ -82,7 +78,7 @@ pub async fn init(
     };
 
     // Attach mapper
-    let mapper = match GamepadMapper::attach(provider, router, config, update_tx).await {
+    let mapper = match GamepadMapper::attach(provider, router, config).await {
         Ok(m) => m,
         Err(e) => {
             warn!(

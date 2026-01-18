@@ -15,6 +15,7 @@ impl super::Router {
             value: None,
             control_id: None,
             activity_tracker: self.activity_tracker.clone(),
+            camera_targets: Some(self.camera_targets.clone()),
         }
     }
 
@@ -30,6 +31,7 @@ impl super::Router {
             value,
             control_id: Some(control_id),
             activity_tracker: self.activity_tracker.clone(),
+            camera_targets: Some(self.camera_targets.clone()),
         }
     }
 

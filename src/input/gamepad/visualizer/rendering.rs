@@ -1,0 +1,381 @@
+//! Rendering functions for gamepad visualizer UI
+//!
+//! Contains egui rendering logic for stick visualizations, trigger bars,
+//! button grids, and controller headers for both XInput and gilrs backends.
+
+use super::super::visualizer_state::{
+    ControllerBackend, ControllerState, StickState, StickTrail, TriggerState,
+};
+use super::drawing::{
+    draw_crosshair, draw_position_marker, draw_trail, magnitude, magnitude_color,
+    render_circle_plot, render_square_plot,
+};
+
+/// Render a stick visualization with optional deadzone display
+///
+/// Displays:
+/// - Background circle with optional deadzone ring
+/// - Center crosshair reference
+/// - Trail showing stick movement history
+/// - Current position indicator (red crosshair + dot)
+/// - Raw values (if available, otherwise "N/A")
+/// - Normalized values
+/// - Magnitude calculation
+///
+/// For gilrs controllers, shows dual plots (raw vs normalized) side by side.
+pub fn render_stick(
+    ui: &mut egui::Ui,
+    label: &str,
+    stick: &StickState,
+    trail: &StickTrail,
+    deadzone: Option<i16>,
+) {
+    ui.label(egui::RichText::new(label).strong().size(14.0));
+
+    // Check if this is a gilrs controller with raw float values
+    let has_gilrs_raw = stick.gilrs_raw_x.is_some() && stick.gilrs_raw_y.is_some();
+
+    if has_gilrs_raw {
+        // Gilrs controller: show dual plots (raw vs normalized)
+        render_gilrs_dual_stick(ui, stick, trail);
+    } else {
+        // XInput controller: show single plot with deadzone
+        render_xinput_stick(ui, stick, trail, deadzone);
+    }
+}
+
+/// Render XInput stick with deadzone visualization (single plot)
+fn render_xinput_stick(
+    ui: &mut egui::Ui,
+    stick: &StickState,
+    trail: &StickTrail,
+    deadzone: Option<i16>,
+) {
+    let (response, painter) =
+        ui.allocate_painter(egui::Vec2::new(200.0, 200.0), egui::Sense::hover());
+
+    let rect = response.rect;
+    let center = rect.center();
+    let radius = 90.0;
+
+    // Background circle (darker)
+    painter.circle_filled(center, radius, egui::Color32::from_gray(30));
+
+    // Deadzone circle (only if deadzone is provided and > 0)
+    if let Some(dz) = deadzone {
+        if dz > 0 {
+            let deadzone_ratio = dz as f32 / 32768.0;
+            let deadzone_radius = radius * deadzone_ratio;
+            painter.circle_filled(center, deadzone_radius, egui::Color32::from_gray(50));
+        }
+    }
+
+    // Border for background
+    painter.circle_stroke(
+        center,
+        radius,
+        egui::Stroke::new(1.0, egui::Color32::from_gray(100)),
+    );
+
+    draw_crosshair(&painter, center, 3.0, egui::Color32::from_gray(80));
+
+    // Draw trail (before position marker so it appears behind)
+    draw_trail(
+        &painter,
+        center,
+        radius,
+        &trail.normalized_points,
+        egui::Color32::from_rgba_unmultiplied(255, 80, 80, 100), // Semi-transparent red
+    );
+
+    // Draw normalized position
+    draw_position_marker(
+        &painter,
+        center,
+        radius,
+        stick.normalized_x,
+        stick.normalized_y,
+        egui::Color32::from_rgb(255, 80, 80),
+    );
+
+    // Text values below - Raw values (XInput i16)
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Raw:").color(egui::Color32::from_gray(180)));
+        match (stick.raw_x, stick.raw_y) {
+            (Some(rx), Some(ry)) => {
+                ui.label(
+                    egui::RichText::new(format!("({:6}, {:6})", rx, ry))
+                        .color(egui::Color32::from_rgb(150, 200, 255))
+                        .family(egui::FontFamily::Monospace),
+                );
+            },
+            _ => {
+                ui.label(
+                    egui::RichText::new("N/A")
+                        .color(egui::Color32::from_gray(100))
+                        .family(egui::FontFamily::Monospace),
+                );
+            },
+        }
+    });
+
+    render_normalized_values(ui, stick);
+    render_magnitude(ui, stick.normalized_x, stick.normalized_y);
+    ui.add_space(8.0);
+}
+
+/// Render gilrs stick with dual plots: raw (square) vs normalized (circle)
+fn render_gilrs_dual_stick(ui: &mut egui::Ui, stick: &StickState, trail: &StickTrail) {
+    let raw_x = stick.gilrs_raw_x.unwrap_or(0.0);
+    let raw_y = stick.gilrs_raw_y.unwrap_or(0.0);
+    let raw_magnitude = magnitude(raw_x, raw_y);
+    let norm_magnitude = magnitude(stick.normalized_x, stick.normalized_y);
+
+    // Two plots side by side
+    ui.horizontal(|ui| {
+        // Left plot: Raw gilrs values (square boundary)
+        ui.vertical(|ui| {
+            ui.label(
+                egui::RichText::new("Raw (gilrs)")
+                    .size(11.0)
+                    .color(egui::Color32::from_rgb(150, 200, 255)),
+            );
+            render_square_plot(ui, raw_x, raw_y, &trail.raw_points);
+        });
+
+        ui.add_space(8.0);
+
+        // Right plot: Normalized values (circle boundary)
+        ui.vertical(|ui| {
+            ui.label(
+                egui::RichText::new("Normalized")
+                    .size(11.0)
+                    .color(egui::Color32::from_rgb(150, 255, 150)),
+            );
+            render_circle_plot(
+                ui,
+                stick.normalized_x,
+                stick.normalized_y,
+                &trail.normalized_points,
+            );
+        });
+    });
+
+    // Values display
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Raw:").color(egui::Color32::from_gray(180)));
+        ui.label(
+            egui::RichText::new(format!("({:6.3}, {:6.3})", raw_x, raw_y))
+                .color(egui::Color32::from_rgb(150, 200, 255))
+                .family(egui::FontFamily::Monospace),
+        );
+        ui.label(
+            egui::RichText::new(format!("mag={:.3}", raw_magnitude))
+                .color(magnitude_color(raw_magnitude))
+                .family(egui::FontFamily::Monospace),
+        );
+    });
+
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Norm:").color(egui::Color32::from_gray(180)));
+        ui.label(
+            egui::RichText::new(format!(
+                "({:6.3}, {:6.3})",
+                stick.normalized_x, stick.normalized_y
+            ))
+            .color(egui::Color32::from_rgb(150, 255, 150))
+            .family(egui::FontFamily::Monospace),
+        );
+        ui.label(
+            egui::RichText::new(format!("mag={:.3}", norm_magnitude))
+                .color(magnitude_color(norm_magnitude))
+                .family(egui::FontFamily::Monospace),
+        );
+    });
+
+    // Delta display (difference between raw and normalized)
+    let delta_x = stick.normalized_x - raw_x;
+    let delta_y = stick.normalized_y - raw_y;
+    let delta_mag = norm_magnitude - raw_magnitude;
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Delta:").color(egui::Color32::from_gray(140)));
+        ui.label(
+            egui::RichText::new(format!("({:+.3}, {:+.3})", delta_x, delta_y))
+                .color(egui::Color32::from_rgb(255, 200, 100))
+                .family(egui::FontFamily::Monospace),
+        );
+        ui.label(
+            egui::RichText::new(format!("dmag={:+.3}", delta_mag))
+                .color(egui::Color32::from_rgb(255, 200, 100))
+                .family(egui::FontFamily::Monospace),
+        );
+    });
+
+    ui.add_space(8.0);
+}
+
+/// Render normalized values text
+fn render_normalized_values(ui: &mut egui::Ui, stick: &StickState) {
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Norm:").color(egui::Color32::from_gray(180)));
+        ui.label(
+            egui::RichText::new(format!(
+                "({:6.3}, {:6.3})",
+                stick.normalized_x, stick.normalized_y
+            ))
+            .color(egui::Color32::from_rgb(150, 255, 150))
+            .family(egui::FontFamily::Monospace),
+        );
+    });
+}
+
+/// Render magnitude with color coding
+fn render_magnitude(ui: &mut egui::Ui, norm_x: f32, norm_y: f32) {
+    let mag = magnitude(norm_x, norm_y);
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Mag: ").color(egui::Color32::from_gray(180)));
+
+        ui.label(
+            egui::RichText::new(format!("{:.3}", mag))
+                .color(magnitude_color(mag))
+                .family(egui::FontFamily::Monospace),
+        );
+
+        ui.label(
+            egui::RichText::new("(should reach ~1.0 at full deflection)")
+                .color(egui::Color32::from_gray(120))
+                .size(10.0),
+        );
+    });
+}
+
+/// Render trigger visualization as a progress bar with raw/normalized values
+pub fn render_trigger(
+    ui: &mut egui::Ui,
+    label: &str,
+    trigger: &TriggerState,
+    color: egui::Color32,
+) {
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(label)
+                .strong()
+                .size(12.0)
+                .color(egui::Color32::from_gray(200)),
+        );
+
+        // Progress bar (0.0 to 1.0)
+        let progress = trigger.normalized;
+        ui.add(
+            egui::ProgressBar::new(progress)
+                .desired_width(180.0)
+                .fill(color),
+        );
+
+        // Raw value (show N/A if not available)
+        match trigger.raw {
+            Some(raw) => {
+                ui.label(
+                    egui::RichText::new(format!("{:3}", raw))
+                        .color(egui::Color32::from_rgb(150, 200, 255))
+                        .family(egui::FontFamily::Monospace),
+                );
+            },
+            None => {
+                ui.label(
+                    egui::RichText::new("N/A")
+                        .color(egui::Color32::from_gray(100))
+                        .family(egui::FontFamily::Monospace),
+                );
+            },
+        }
+
+        // Normalized value
+        ui.label(
+            egui::RichText::new(format!("{:5.3}", trigger.normalized))
+                .color(egui::Color32::from_rgb(150, 255, 150))
+                .family(egui::FontFamily::Monospace),
+        );
+    });
+}
+
+/// Render button grid showing all button states
+pub fn render_buttons(ui: &mut egui::Ui, controller: &ControllerState) {
+    ui.label(egui::RichText::new("Buttons").strong().size(14.0));
+
+    ui.horizontal_wrapped(|ui| {
+        for (name, pressed) in controller.buttons.iter() {
+            let color = if pressed {
+                egui::Color32::from_rgb(100, 255, 100)
+            } else {
+                egui::Color32::from_gray(60)
+            };
+
+            let text_color = if pressed {
+                egui::Color32::BLACK
+            } else {
+                egui::Color32::from_gray(150)
+            };
+
+            let button = egui::Button::new(
+                egui::RichText::new(name)
+                    .color(text_color)
+                    .size(11.0)
+                    .family(egui::FontFamily::Monospace),
+            )
+            .fill(color)
+            .min_size(egui::vec2(55.0, 24.0));
+
+            ui.add(button);
+        }
+    });
+
+    ui.add_space(8.0);
+}
+
+/// Render controller info header
+///
+/// For XInput: Shows "XInput User Index: N | Packet: N" in blue
+/// For Gilrs: Shows "HID: [Controller Name]" in purple
+pub fn render_controller_header(ui: &mut egui::Ui, controller: &ControllerState) {
+    ui.horizontal(|ui| {
+        match &controller.backend {
+            ControllerBackend::XInput {
+                user_index,
+                packet_number,
+            } => {
+                // Blue color for XInput
+                ui.label(
+                    egui::RichText::new(format!("XInput User Index: {}", user_index))
+                        .color(egui::Color32::from_rgb(150, 200, 255))
+                        .size(12.0),
+                );
+
+                ui.label(
+                    egui::RichText::new(format!("| Packet: {}", packet_number))
+                        .color(egui::Color32::from_gray(150))
+                        .size(11.0)
+                        .family(egui::FontFamily::Monospace),
+                );
+            },
+            ControllerBackend::Gilrs { name, .. } => {
+                // Purple color for Gilrs/HID
+                ui.label(
+                    egui::RichText::new(format!("HID: {}", name))
+                        .color(egui::Color32::from_rgb(200, 150, 255))
+                        .size(12.0),
+                );
+            },
+        }
+
+        let elapsed = controller.last_update.elapsed().as_millis();
+        ui.label(
+            egui::RichText::new(format!("| Last update: {}ms ago", elapsed))
+                .color(egui::Color32::from_gray(150))
+                .size(11.0)
+                .family(egui::FontFamily::Monospace),
+        );
+    });
+
+    ui.separator();
+}

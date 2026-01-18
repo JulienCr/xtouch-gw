@@ -3,6 +3,7 @@
 //! Converts rusty_xinput controller state to standardized GamepadEvent format,
 //! ensuring consistency with gilrs-based events.
 
+use super::normalize::normalize_stick_radial;
 use super::provider::GamepadEvent;
 use crate::config::AnalogConfig;
 use rusty_xinput::{XInputHandle, XInputState, XInputUsageError};
@@ -184,50 +185,6 @@ pub fn convert_xinput_axes(
     events
 }
 
-/// Normalize XInput stick with radial deadzone and radial scaling
-///
-/// Uses circular deadzone (not square) and ensures diagonal movements reach magnitude 1.0.
-/// This fixes the issue where per-axis normalization caused diagonals to only reach ~0.87.
-///
-/// # Arguments
-/// * `raw_x`, `raw_y` - Raw stick values from XInput (-32768 to 32767)
-/// * `deadzone` - Circular deadzone radius (typically 7849 per XInput API spec)
-///
-/// # Returns
-/// * `(norm_x, norm_y)` - Normalized values in [-1.0, 1.0] with magnitude ≤ 1.0
-fn normalize_stick_radial(raw_x: i16, raw_y: i16, deadzone: f32) -> (f32, f32) {
-    // Convert to float for all calculations
-    let x = raw_x as f32;
-    let y = raw_y as f32;
-
-    // Calculate magnitude (Euclidean distance from origin)
-    let magnitude = (x * x + y * y).sqrt();
-
-    // Circular deadzone check (use <= for stability at threshold)
-    if magnitude <= deadzone {
-        return (0.0, 0.0);
-    }
-
-    // Maximum single-axis deflection (NOT diagonal!)
-    // Use 32768.0 to handle i16::MIN (-32768) correctly
-    const MAX_MAGNITUDE: f32 = 32768.0;
-
-    // Safety check: avoid division by zero if deadzone >= max
-    if deadzone >= MAX_MAGNITUDE {
-        return (0.0, 0.0);
-    }
-
-    // Radial rescaling: map [deadzone, max_magnitude] -> [0, 1]
-    // Diagonals may exceed 1.0 before clamping (expected and correct)
-    let normalized_magnitude = ((magnitude - deadzone) / (MAX_MAGNITUDE - deadzone)).min(1.0);
-
-    // Scale the original vector by normalized magnitude
-    // This preserves direction while normalizing magnitude
-    let scale = normalized_magnitude / magnitude;
-
-    (x * scale, y * scale)
-}
-
 /// Poll XInput controller and return current state if available
 ///
 /// # Returns
@@ -249,40 +206,7 @@ pub fn poll_xinput_controller(
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_normalize_stick_radial() {
-        const DEADZONE: f32 = 7849.0;
-
-        // Inside deadzone - should return (0, 0)
-        let (x, y) = normalize_stick_radial(0, 0, DEADZONE);
-        assert_eq!(x, 0.0);
-        assert_eq!(y, 0.0);
-
-        // Inside deadzone on X axis only
-        let (x, y) = normalize_stick_radial(7000, 0, DEADZONE);
-        assert_eq!(x, 0.0);
-        assert_eq!(y, 0.0);
-
-        // Inside deadzone diagonally (7000^2 + 7000^2 = ~9899 magnitude > 7849, so NOT in deadzone)
-        let (x, y) = normalize_stick_radial(7000, 7000, DEADZONE);
-        // Magnitude ~9899 > 7849, so this should be outside deadzone
-        assert!(x > 0.0 || y > 0.0);
-
-        // Full deflection on X axis
-        let (x, y) = normalize_stick_radial(32767, 0, DEADZONE);
-        assert!((x - 1.0).abs() < 0.01);
-        assert_eq!(y, 0.0);
-
-        // Full deflection on negative X axis
-        let (x, y) = normalize_stick_radial(-32768, 0, DEADZONE);
-        assert!((x + 1.0).abs() < 0.01);
-        assert_eq!(y, 0.0);
-
-        // Partial deflection above deadzone
-        let (x, y) = normalize_stick_radial(16000, 0, DEADZONE);
-        assert!(x > 0.0 && x < 1.0);
-        assert_eq!(y, 0.0);
-    }
+    // Note: normalize_stick_radial tests are in the shared normalize module
 
     #[test]
     fn test_button_conversion() {
