@@ -30,7 +30,8 @@
       "Bash(tree:*)",
       "Bash(git push:*)",
       "Bash(gh pr create:*)",
-      "Bash(cargo clippy:*)"
+      "Bash(cargo clippy:*)",
+      "Bash(chmod:*)"
     ],
     "deny": [],
     "ask": []

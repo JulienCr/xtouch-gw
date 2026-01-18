@@ -1,6 +1,6 @@
 {
   "name": "com.juliencr.xtouch-gw",
-  "version": "3.1.0",
+  "version": "1.7.0",
   "description": "Stream Deck plugin for XTouch GW camera control",
   "main": "bin/plugin.js",
   "type": "module",
