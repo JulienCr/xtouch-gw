@@ -2,7 +2,7 @@
 //!
 //! Tracks raw and normalized values for all connected controllers (XInput and gilrs)
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
 use gilrs::GamepadId;
@@ -14,12 +14,15 @@ const MAX_TRAIL_POINTS: usize = 1000;
 const MIN_TRAIL_DISTANCE: f32 = 0.005;
 
 /// Trail data for a stick visualization
+///
+/// Uses `VecDeque` for O(1) removal from the front when the trail exceeds
+/// the maximum length, avoiding the O(n) cost of `Vec::remove(0)`.
 #[derive(Debug, Default, Clone)]
 pub struct StickTrail {
     /// Trail points for raw values plot (gilrs only)
-    pub raw_points: Vec<egui::Pos2>,
+    pub raw_points: VecDeque<egui::Pos2>,
     /// Trail points for normalized values plot
-    pub normalized_points: Vec<egui::Pos2>,
+    pub normalized_points: VecDeque<egui::Pos2>,
 }
 
 impl StickTrail {
@@ -27,9 +30,9 @@ impl StickTrail {
     pub fn add_raw_point(&mut self, x: f32, y: f32) {
         let new_point = egui::pos2(x, y);
         if self.should_add_point(&self.raw_points, new_point) {
-            self.raw_points.push(new_point);
+            self.raw_points.push_back(new_point);
             if self.raw_points.len() > MAX_TRAIL_POINTS {
-                self.raw_points.remove(0);
+                self.raw_points.pop_front();
             }
         }
     }
@@ -38,16 +41,16 @@ impl StickTrail {
     pub fn add_normalized_point(&mut self, x: f32, y: f32) {
         let new_point = egui::pos2(x, y);
         if self.should_add_point(&self.normalized_points, new_point) {
-            self.normalized_points.push(new_point);
+            self.normalized_points.push_back(new_point);
             if self.normalized_points.len() > MAX_TRAIL_POINTS {
-                self.normalized_points.remove(0);
+                self.normalized_points.pop_front();
             }
         }
     }
 
     /// Check if a new point should be added (minimum distance check)
-    fn should_add_point(&self, points: &[egui::Pos2], new_point: egui::Pos2) -> bool {
-        if let Some(last) = points.last() {
+    fn should_add_point(&self, points: &VecDeque<egui::Pos2>, new_point: egui::Pos2) -> bool {
+        if let Some(last) = points.back() {
             let dx = new_point.x - last.x;
             let dy = new_point.y - last.y;
             let dist = (dx * dx + dy * dy).sqrt();

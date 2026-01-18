@@ -669,7 +669,7 @@ async fn run_app(
 
     // Initialize gamepad if enabled
     let _gamepad_mapper = if let Some(gamepad_config) = &config.gamepad {
-        input::gamepad::init(gamepad_config, router.clone(), api_state.update_tx.clone()).await
+        input::gamepad::init(gamepad_config, router.clone()).await
     } else {
         None
     };

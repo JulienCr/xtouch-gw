@@ -4,10 +4,9 @@ use anyhow::{anyhow, Result};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::mpsc;
 use tracing::{debug, error, warn};
 
-use crate::api::CameraStateMessage;
 use crate::config::{AnalogConfig, GamepadConfig};
 use crate::router::Router;
 
@@ -31,8 +30,7 @@ impl GamepadMapper {
     /// # Arguments
     /// * `provider` - Hybrid gamepad provider instance
     /// * `router` - Router instance
-    /// * `config` - Gamepad configuration
-    /// * `update_tx` - Broadcast sender for camera state updates (Stream Deck notifications)
+    /// * `config` - Gamepad configuration (reserved for future use)
     ///
     /// # Returns
     /// Configured mapper instance
@@ -40,7 +38,6 @@ impl GamepadMapper {
         provider: Arc<HybridGamepadProvider>,
         router: Arc<Router>,
         _config: &GamepadConfig,
-        _update_tx: broadcast::Sender<CameraStateMessage>,
     ) -> Result<Self> {
         // Create channel for sequential event processing
         let (event_tx, event_rx) = mpsc::unbounded_channel::<GamepadEvent>();

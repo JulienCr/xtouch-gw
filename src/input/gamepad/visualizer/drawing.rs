@@ -4,6 +4,7 @@
 //! crosshairs, trails, position markers, and plot backgrounds.
 
 use egui::{Color32, Painter, Pos2, Stroke};
+use std::collections::VecDeque;
 
 /// Calculate the magnitude (length) of a 2D vector
 #[inline]
@@ -32,7 +33,14 @@ pub fn draw_crosshair(painter: &Painter, center: Pos2, size: f32, color: Color32
 /// Draw a trail as a polyline from stored points
 ///
 /// Points are stored in normalized coordinates (-1 to 1) and converted to screen space.
-pub fn draw_trail(painter: &Painter, center: Pos2, scale: f32, points: &[Pos2], color: Color32) {
+/// Accepts VecDeque for O(1) front removal performance.
+pub fn draw_trail(
+    painter: &Painter,
+    center: Pos2,
+    scale: f32,
+    points: &VecDeque<Pos2>,
+    color: Color32,
+) {
     if points.len() < 2 {
         return;
     }
@@ -92,7 +100,7 @@ pub fn magnitude_color(magnitude: f32) -> Color32 {
 }
 
 /// Render a small square plot (for raw gilrs values that form a square)
-pub fn render_square_plot(ui: &mut egui::Ui, x: f32, y: f32, trail_points: &[Pos2]) {
+pub fn render_square_plot(ui: &mut egui::Ui, x: f32, y: f32, trail_points: &VecDeque<Pos2>) {
     let size = 100.0;
     let (response, painter) =
         ui.allocate_painter(egui::Vec2::new(size, size), egui::Sense::hover());
@@ -136,7 +144,7 @@ pub fn render_square_plot(ui: &mut egui::Ui, x: f32, y: f32, trail_points: &[Pos
 }
 
 /// Render a small circle plot (for normalized values constrained to unit circle)
-pub fn render_circle_plot(ui: &mut egui::Ui, x: f32, y: f32, trail_points: &[Pos2]) {
+pub fn render_circle_plot(ui: &mut egui::Ui, x: f32, y: f32, trail_points: &VecDeque<Pos2>) {
     let size = 100.0;
     let (response, painter) =
         ui.allocate_painter(egui::Vec2::new(size, size), egui::Sense::hover());

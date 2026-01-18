@@ -112,7 +112,7 @@ impl GamepadVisualizerApp {
                     tracing::debug!("gilrs controller disconnected: {:?}", id);
                 },
                 EventType::ButtonPressed(button, code) => {
-                    tracing::info!("gilrs BUTTON PRESSED: {:?} (code: {:?})", button, code);
+                    tracing::debug!("gilrs button pressed: {:?} (code: {:?})", button, code);
                     // Track Capture button (Unknown, code 13)
                     if is_capture_button(&code) {
                         self.capture_state.insert(id, true);
@@ -355,13 +355,25 @@ fn render_controller_group(
     });
 }
 
-/// Button index for Capture button (not mapped by gilrs standard)
+/// Button index for Capture button (not mapped by gilrs standard).
+///
+/// The gilrs library does not include the Capture button in its standard `Button` enum.
+/// On controllers like the Nintendo Switch Pro Controller or FaceOff, this button is
+/// reported as `Button::Unknown` with a raw code containing "index: 13".
 const CAPTURE_BUTTON_INDEX: &str = "index: 13";
 
-/// Check if a button code is the Capture button (button index 13)
+/// Check if a button code is the Capture button (button index 13).
 ///
-/// Gilrs Code internals are not publicly accessible, so we parse the Debug output.
-/// The Capture button is reported as Unknown with index 13.
+/// # Implementation Note
+///
+/// This is a **fragile workaround** because gilrs's `Code` type does not expose its
+/// internal button index publicly. We resort to parsing the `Debug` output string,
+/// which may break if gilrs changes its Debug formatting in future versions.
+///
+/// **Recommendation**: Pin the gilrs version in Cargo.toml and test after upgrades.
+/// If this breaks, check the new Debug format and update `CAPTURE_BUTTON_INDEX`.
+///
+/// The Capture button is reported as `Button::Unknown` with code containing "index: 13".
 fn is_capture_button(code: &Code) -> bool {
     let code_str = format!("{:?}", code);
     code_str.contains("Button") && code_str.contains(CAPTURE_BUTTON_INDEX)
