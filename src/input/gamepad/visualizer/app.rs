@@ -24,9 +24,6 @@ use std::collections::HashMap;
 /// Maintains state for all connected controllers and renders their input
 /// in real-time using egui. XInput controllers occupy fixed slots 0-3,
 /// while gilrs controllers are tracked dynamically by their GamepadId.
-/// Button code for Capture button (not mapped by gilrs standard)
-const CAPTURE_BUTTON_CODE: u16 = 13;
-
 pub struct GamepadVisualizerApp {
     state: VisualizerState,
     xinput: XInputHandle,
@@ -358,9 +355,14 @@ fn render_controller_group(
     });
 }
 
+/// Button index for Capture button (not mapped by gilrs standard)
+const CAPTURE_BUTTON_INDEX: &str = "index: 13";
+
 /// Check if a button code is the Capture button (button index 13)
+///
+/// Gilrs Code internals are not publicly accessible, so we parse the Debug output.
+/// The Capture button is reported as Unknown with index 13.
 fn is_capture_button(code: &Code) -> bool {
-    // Format: Code(EvCode(EvCode { kind: Button, index: 13 }))
     let code_str = format!("{:?}", code);
-    code_str.contains("Button") && code_str.contains("index: 13")
+    code_str.contains("Button") && code_str.contains(CAPTURE_BUTTON_INDEX)
 }

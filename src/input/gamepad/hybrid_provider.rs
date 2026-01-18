@@ -470,24 +470,14 @@ impl HybridProviderState {
         use gilrs::Axis;
 
         match event {
-            EventType::ButtonPressed(button, _) => {
-                if let Some(control_id) = Self::button_to_id(button, prefix) {
-                    vec![GamepadEvent::Button {
+            EventType::ButtonPressed(button, _) | EventType::ButtonReleased(button, _) => {
+                let pressed = matches!(event, EventType::ButtonPressed(_, _));
+                match Self::button_to_id(button, prefix) {
+                    Some(control_id) => vec![GamepadEvent::Button {
                         control_id,
-                        pressed: true,
-                    }]
-                } else {
-                    vec![]
-                }
-            },
-            EventType::ButtonReleased(button, _) => {
-                if let Some(control_id) = Self::button_to_id(button, prefix) {
-                    vec![GamepadEvent::Button {
-                        control_id,
-                        pressed: false,
-                    }]
-                } else {
-                    vec![]
+                        pressed,
+                    }],
+                    None => vec![],
                 }
             },
             EventType::AxisChanged(axis, value, _) => {
@@ -647,9 +637,10 @@ impl HybridProviderState {
         prefix: &str,
         analog_config: Option<AnalogConfig>,
     ) -> Vec<GamepadEvent> {
-        self.emit_axis_with_zero_detection(id, axis, value, prefix, analog_config)
-            .into_iter()
-            .collect()
+        match self.emit_axis_with_zero_detection(id, axis, value, prefix, analog_config) {
+            Some(event) => vec![event],
+            None => vec![],
+        }
     }
 
     /// Map gilrs button to standardized control ID

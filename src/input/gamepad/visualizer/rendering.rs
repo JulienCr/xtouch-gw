@@ -7,8 +7,8 @@ use super::super::visualizer_state::{
     ControllerBackend, ControllerState, StickState, StickTrail, TriggerState,
 };
 use super::drawing::{
-    draw_crosshair, draw_position_marker, draw_trail, magnitude_color, render_circle_plot,
-    render_square_plot,
+    draw_crosshair, draw_position_marker, draw_trail, magnitude, magnitude_color,
+    render_circle_plot, render_square_plot,
 };
 
 /// Render a stick visualization with optional deadzone display
@@ -128,9 +128,8 @@ fn render_xinput_stick(
 fn render_gilrs_dual_stick(ui: &mut egui::Ui, stick: &StickState, trail: &StickTrail) {
     let raw_x = stick.gilrs_raw_x.unwrap_or(0.0);
     let raw_y = stick.gilrs_raw_y.unwrap_or(0.0);
-    let raw_magnitude = (raw_x * raw_x + raw_y * raw_y).sqrt();
-    let norm_magnitude =
-        (stick.normalized_x * stick.normalized_x + stick.normalized_y * stick.normalized_y).sqrt();
+    let raw_magnitude = magnitude(raw_x, raw_y);
+    let norm_magnitude = magnitude(stick.normalized_x, stick.normalized_y);
 
     // Two plots side by side
     ui.horizontal(|ui| {
@@ -232,13 +231,13 @@ fn render_normalized_values(ui: &mut egui::Ui, stick: &StickState) {
 
 /// Render magnitude with color coding
 fn render_magnitude(ui: &mut egui::Ui, norm_x: f32, norm_y: f32) {
-    let magnitude = (norm_x * norm_x + norm_y * norm_y).sqrt();
+    let mag = magnitude(norm_x, norm_y);
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Mag: ").color(egui::Color32::from_gray(180)));
 
         ui.label(
-            egui::RichText::new(format!("{:.3}", magnitude))
-                .color(magnitude_color(magnitude))
+            egui::RichText::new(format!("{:.3}", mag))
+                .color(magnitude_color(mag))
                 .family(egui::FontFamily::Monospace),
         );
 

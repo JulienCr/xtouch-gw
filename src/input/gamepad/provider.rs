@@ -241,24 +241,14 @@ impl GilrsProvider {
         stick_buffers: &mut HashMap<(gilrs::GamepadId, StickId), StickBuffer>,
     ) -> Vec<GamepadEvent> {
         match event {
-            EventType::ButtonPressed(button, _) => {
-                if let Some(control_id) = Self::button_to_id(button, prefix) {
-                    vec![GamepadEvent::Button {
+            EventType::ButtonPressed(button, _) | EventType::ButtonReleased(button, _) => {
+                let pressed = matches!(event, EventType::ButtonPressed(_, _));
+                match Self::button_to_id(button, prefix) {
+                    Some(control_id) => vec![GamepadEvent::Button {
                         control_id,
-                        pressed: true,
-                    }]
-                } else {
-                    vec![]
-                }
-            },
-            EventType::ButtonReleased(button, _) => {
-                if let Some(control_id) = Self::button_to_id(button, prefix) {
-                    vec![GamepadEvent::Button {
-                        control_id,
-                        pressed: false,
-                    }]
-                } else {
-                    vec![]
+                        pressed,
+                    }],
+                    None => vec![],
                 }
             },
             EventType::AxisChanged(axis, value, _) => {

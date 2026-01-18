@@ -5,6 +5,12 @@
 
 use egui::{Color32, Painter, Pos2, Stroke};
 
+/// Calculate the magnitude (length) of a 2D vector
+#[inline]
+pub fn magnitude(x: f32, y: f32) -> f32 {
+    (x * x + y * y).sqrt()
+}
+
 /// Draw a center crosshair on the painter
 pub fn draw_crosshair(painter: &Painter, center: Pos2, size: f32, color: Color32) {
     painter.line_segment(
