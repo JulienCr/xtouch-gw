@@ -12,6 +12,15 @@ use super::camera::ViewMode;
 use super::driver::ObsDriver;
 use super::{Driver, ExecutionContext, IndicatorCallback};
 
+/// Extract gamepad slot from control_id (e.g., "gamepad1" from "gamepad1.btn.a")
+fn extract_gamepad_slot(control_id: &str) -> String {
+    control_id
+        .split('.')
+        .next()
+        .unwrap_or("gamepad1")
+        .to_string()
+}
+
 impl ObsDriver {
     /// Resolve camera_id to (scene, source) from camera_control config.
     /// Returns None if camera_id is not found (assumes it's already scene/source format).
@@ -561,17 +570,43 @@ impl Driver for ObsDriver {
             },
 
             "selectCamera" => {
+                // Only act on button press (value > 0 or None for legacy compatibility)
+                let is_release = ctx
+                    .value
+                    .as_ref()
+                    .and_then(|v| v.as_f64())
+                    .map(|v| v == 0.0)
+                    .unwrap_or(false);
+
+                if is_release {
+                    return Ok(()); // Ignore button release
+                }
+
                 let camera_id = params
                     .first()
                     .and_then(|v| v.as_str())
                     .context("Camera ID required")?;
 
-                // Parse optional target parameter: "preview", "program", or absent (legacy behavior)
+                // Parse optional target parameter: "preview", "program", or absent (check modifier)
                 let explicit_target = params.get(1).and_then(|v| v.as_str());
+
+                // Get gamepad slot from control_id for PTZ modifier check
+                let gamepad_slot = ctx
+                    .control_id
+                    .as_ref()
+                    .map(|id| extract_gamepad_slot(id))
+                    .unwrap_or_else(|| "gamepad1".to_string());
+
+                // Check if PTZ modifier is held for this gamepad slot
+                let modifier_held = ctx
+                    .camera_targets
+                    .as_ref()
+                    .map(|ct| ct.is_ptz_modifier_held(&gamepad_slot))
+                    .unwrap_or(false);
 
                 // Get view mode and resolve scene names from config
                 let view_mode = self.camera_control_state.read().current_view_mode;
-                let (camera_scene, split_scene) = {
+                let (camera_scene, split_scene, ptz_enabled) = {
                     let config_guard = self.camera_control_config.read();
                     let config = config_guard
                         .as_ref()
@@ -589,7 +624,7 @@ impl Driver for ObsDriver {
                         ViewMode::SplitRight => Some(config.splits.right.clone()),
                     };
 
-                    (camera.scene.clone(), split)
+                    (camera.scene.clone(), split, camera.enable_ptz)
                 };
 
                 match view_mode {
@@ -597,7 +632,15 @@ impl Driver for ObsDriver {
                         let guard = self.client.read().await;
                         let client = guard.as_ref().context("OBS not connected")?;
 
+                        // Check if this is a gamepad control
+                        let is_gamepad = ctx
+                            .control_id
+                            .as_ref()
+                            .map(|id| id.starts_with("gamepad"))
+                            .unwrap_or(false);
+
                         // Determine whether to use preview or program
+                        // Priority: explicit_target > gamepad modifier logic > legacy behavior
                         let use_preview = match explicit_target {
                             Some("preview") => {
                                 // Force preview mode - auto-enable studio mode if needed
@@ -609,7 +652,20 @@ impl Driver for ObsDriver {
                                 true
                             },
                             Some("program") => false,
-                            _ => *self.studio_mode.read(), // Legacy behavior
+                            None if is_gamepad && modifier_held => {
+                                // Gamepad + PTZ modifier held - force preview mode
+                                if !*self.studio_mode.read() {
+                                    info!("Enabling studio mode for PTZ modifier preview");
+                                    client.ui().set_studio_mode_enabled(true).await?;
+                                    *self.studio_mode.write() = true;
+                                }
+                                true
+                            },
+                            None if is_gamepad => {
+                                // Gamepad without modifier - force program mode
+                                false
+                            },
+                            _ => *self.studio_mode.read(), // Legacy behavior for non-gamepad
                         };
 
                         let target_name = if use_preview { "preview" } else { "program" };
@@ -623,6 +679,22 @@ impl Driver for ObsDriver {
                                 .scenes()
                                 .set_current_preview_scene(&camera_scene)
                                 .await?;
+
+                            // If modifier held and PTZ enabled, also set PTZ target
+                            if modifier_held && ptz_enabled {
+                                if let Some(ref camera_targets) = ctx.camera_targets {
+                                    if let Err(e) =
+                                        camera_targets.set_target(&gamepad_slot, camera_id)
+                                    {
+                                        warn!("Failed to set PTZ target: {}", e);
+                                    } else {
+                                        info!(
+                                            "🎮 PTZ target set: {} -> {}",
+                                            gamepad_slot, camera_id
+                                        );
+                                    }
+                                }
+                            }
                         } else {
                             client
                                 .scenes()
@@ -740,6 +812,34 @@ impl Driver for ObsDriver {
 
                 // Update state
                 self.camera_control_state.write().current_view_mode = ViewMode::Full;
+
+                Ok(())
+            },
+
+            "setPtzModifier" => {
+                // Track PTZ modifier state (e.g., when LT is held on gamepad)
+                // This enables preview mode for selectCamera actions
+                let control_id = ctx.control_id.as_deref().unwrap_or("unknown");
+                let slot = extract_gamepad_slot(control_id);
+
+                // Get pressed state from context value (> 0 = pressed, 0 = released)
+                let pressed = ctx
+                    .value
+                    .as_ref()
+                    .and_then(|v| v.as_f64())
+                    .map(|v| v > 0.0)
+                    .unwrap_or(false);
+
+                // Update modifier state in camera_targets
+                if let Some(ref camera_targets) = ctx.camera_targets {
+                    camera_targets.set_ptz_modifier(&slot, pressed);
+                    debug!(
+                        "🎮 PTZ modifier: {} = {} (control: {})",
+                        slot, pressed, control_id
+                    );
+                } else {
+                    warn!("setPtzModifier: camera_targets not available in context");
+                }
 
                 Ok(())
             },

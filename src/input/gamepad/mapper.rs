@@ -5,7 +5,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 use crate::api::CameraStateMessage;
 use crate::config::{AnalogConfig, GamepadConfig};
@@ -14,10 +14,6 @@ use crate::router::Router;
 use super::analog::{apply_inversion, process_axis};
 use super::hybrid_provider::{EventCallback, HybridGamepadProvider};
 use super::provider::GamepadEvent;
-
-/// LT threshold for "pressed" detection (normalized value -1.0 to 1.0)
-/// LT is normalized from 0-255 to -1.0..1.0, so 0.3 means ~65% pressed
-const LT_THRESHOLD: f32 = 0.3;
 
 /// Gamepad mapper - connects provider events to router
 ///
@@ -44,14 +40,14 @@ impl GamepadMapper {
         provider: Arc<HybridGamepadProvider>,
         router: Arc<Router>,
         _config: &GamepadConfig,
-        update_tx: broadcast::Sender<CameraStateMessage>,
+        _update_tx: broadcast::Sender<CameraStateMessage>,
     ) -> Result<Self> {
         // Create channel for sequential event processing
         let (event_tx, event_rx) = mpsc::unbounded_channel::<GamepadEvent>();
 
         // Spawn single task that processes events SEQUENTIALLY
         // This guarantees order and eliminates race conditions
-        Self::spawn_event_processor(event_rx, router.clone(), update_tx);
+        Self::spawn_event_processor(event_rx, router.clone());
 
         // Subscribe to provider events - just forward to channel
         let tx_clone = event_tx.clone();
@@ -73,12 +69,9 @@ impl GamepadMapper {
     fn spawn_event_processor(
         mut event_rx: mpsc::UnboundedReceiver<GamepadEvent>,
         router: Arc<Router>,
-        update_tx: broadcast::Sender<CameraStateMessage>,
     ) {
         // Cache for redundant event filtering (no sequence needed - we process in order!)
         let mut last_axis_values: HashMap<String, f32> = HashMap::new();
-        // Track LT (left trigger) held state per gamepad for PTZ modifier
-        let mut lt_held: HashMap<String, bool> = HashMap::new();
 
         tokio::spawn(async move {
             debug!("Gamepad event processor started (sequential mode)");
@@ -89,19 +82,7 @@ impl GamepadMapper {
                         control_id,
                         pressed,
                     } => {
-                        // Track LT (left trigger) button state for PTZ modifier
-                        if control_id.ends_with(".btn.lt") {
-                            let prefix = control_id.split('.').next().unwrap_or("");
-                            lt_held.insert(prefix.to_string(), pressed);
-                            debug!("LT modifier: {} = {}", prefix, pressed);
-                            // Don't route LT button to router, just track state
-                            continue;
-                        }
-
-                        if let Err(e) =
-                            Self::handle_button(&control_id, pressed, &router, &lt_held, &update_tx)
-                                .await
-                        {
+                        if let Err(e) = Self::handle_button(&control_id, pressed, &router).await {
                             error!("Error handling button event: {}", e);
                         }
                     },
@@ -111,13 +92,6 @@ impl GamepadMapper {
                         analog_config,
                         sequence: _,
                     } => {
-                        // Also track LT from axis events (some controllers send axis instead of button)
-                        if control_id.ends_with(".axis.zl") {
-                            let prefix = control_id.split('.').next().unwrap_or("");
-                            let is_pressed = value > LT_THRESHOLD;
-                            lt_held.insert(prefix.to_string(), is_pressed);
-                        }
-
                         // sequence is ignored - we process in order!
                         if let Err(e) = Self::handle_axis(
                             &control_id,
@@ -139,124 +113,29 @@ impl GamepadMapper {
     }
 
     /// Handle button event
-    async fn handle_button(
-        control_id: &str,
-        pressed: bool,
-        router: &Arc<Router>,
-        lt_held: &HashMap<String, bool>,
-        update_tx: &broadcast::Sender<CameraStateMessage>,
-    ) -> Result<()> {
+    ///
+    /// Routes both press and release events to the router with the pressed state as value.
+    /// This allows actions like `setPtzModifier` to track button state, while actions
+    /// like `selectCamera` can ignore release events (value == 0).
+    async fn handle_button(control_id: &str, pressed: bool, router: &Arc<Router>) -> Result<()> {
         debug!("Button event: {} = {}", control_id, pressed);
 
-        // Only trigger on press (not release)
-        if !pressed {
-            return Ok(());
-        }
+        // Convert pressed state to numeric value (1.0 = pressed, 0.0 = released)
+        let value = if pressed { 1.0 } else { 0.0 };
 
-        // Extract gamepad prefix (e.g., "gamepad1" from "gamepad1.btn.a")
-        let prefix = control_id.split('.').next().unwrap_or("");
-        let is_lt_held = lt_held.get(prefix).copied().unwrap_or(false);
-
-        // Check if this is a camera button (A/B/X/Y)
-        let is_camera_button = [".btn.a", ".btn.b", ".btn.x", ".btn.y"]
-            .iter()
-            .any(|suffix| control_id.ends_with(suffix));
-
-        // Camera buttons get extra params: LT+button = preview, button alone = program
-        let extra_params = if !is_camera_button {
-            None
-        } else if is_lt_held {
-            // LT+button: Preview mode + set PTZ target
-            if let Err(e) = Self::handle_ptz_target(control_id, prefix, router, update_tx).await {
-                debug!("PTZ target error: {}", e);
-            }
-            Some(vec![Value::String("preview".to_string())])
-        } else {
-            // Camera button alone: Direct to program
-            Some(vec![Value::String("program".to_string())])
-        };
-
-        // Route the control event
-        match router.handle_control(control_id, None, extra_params).await {
-            Ok(_) => debug!("✅ Router handled control: {}", control_id),
+        // Route the control event with the pressed state as value
+        match router
+            .handle_control(control_id, Some(Value::from(value)), None)
+            .await
+        {
+            Ok(_) => debug!(
+                "✅ Router handled button: {} = {}",
+                control_id,
+                if pressed { "pressed" } else { "released" }
+            ),
             Err(e) => debug!("⚠️  Router error for {}: {}", control_id, e),
         }
 
-        Ok(())
-    }
-
-    /// Handle LT+button: set PTZ camera target
-    async fn handle_ptz_target(
-        control_id: &str,
-        gamepad_slot: &str,
-        router: &Arc<Router>,
-        update_tx: &broadcast::Sender<CameraStateMessage>,
-    ) -> Result<()> {
-        // 1. Get the camera ID from the button's mapping in config
-        let camera_id: Option<String> = {
-            let config = router.config.read().await;
-
-            // Look up in pages_global.controls
-            config
-                .pages_global
-                .as_ref()
-                .and_then(|pg| pg.controls.as_ref())
-                .and_then(|controls| controls.get(control_id))
-                .filter(|m| m.action.as_deref() == Some("selectCamera"))
-                .and_then(|m| m.params.as_ref())
-                .and_then(|params| params.first())
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-        };
-
-        let camera_id = match camera_id {
-            Some(id) => id,
-            None => {
-                debug!(
-                    "No selectCamera mapping for {}, ignoring LT+button",
-                    control_id
-                );
-                return Ok(());
-            },
-        };
-
-        // 2. Check if PTZ is enabled for this camera
-        let ptz_enabled = {
-            let config = router.config.read().await;
-            config
-                .obs
-                .as_ref()
-                .and_then(|o| o.camera_control.as_ref())
-                .and_then(|cc| cc.cameras.iter().find(|c| c.id == camera_id))
-                .map(|c| c.enable_ptz)
-                .unwrap_or(false)
-        };
-
-        if !ptz_enabled {
-            debug!("PTZ disabled for camera {}, ignoring LT+button", camera_id);
-            return Ok(());
-        }
-
-        // 3. Set the PTZ target
-        let camera_targets = router.get_camera_targets();
-        camera_targets.set_target(gamepad_slot, &camera_id)?;
-
-        // 4. Broadcast update to Stream Deck
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
-
-        let message = CameraStateMessage::TargetChanged {
-            gamepad_slot: gamepad_slot.to_string(),
-            camera_id: camera_id.clone(),
-            timestamp,
-        };
-
-        // Best-effort broadcast (ignore if no subscribers)
-        let _ = update_tx.send(message);
-
-        info!("PTZ target set: {} -> {}", gamepad_slot, camera_id);
         Ok(())
     }
 
