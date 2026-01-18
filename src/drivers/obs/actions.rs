@@ -21,6 +21,64 @@ fn extract_gamepad_slot(control_id: &str) -> String {
         .to_string()
 }
 
+/// Context for setting PTZ target from gamepad controls
+struct PtzTargetContext<'a> {
+    control_id: Option<&'a str>,
+    camera_targets: Option<&'a std::sync::Arc<crate::router::CameraTargetState>>,
+}
+
+impl<'a> PtzTargetContext<'a> {
+    /// Create context from ExecutionContext
+    fn from_ctx(ctx: &'a ExecutionContext) -> Self {
+        Self {
+            control_id: ctx.control_id.as_deref(),
+            camera_targets: ctx.camera_targets.as_ref(),
+        }
+    }
+
+    /// Check if this is a gamepad control
+    fn is_gamepad(&self) -> bool {
+        self.control_id
+            .map(|id| id.starts_with("gamepad"))
+            .unwrap_or(false)
+    }
+
+    /// Get gamepad slot from control_id
+    fn gamepad_slot(&self) -> String {
+        self.control_id
+            .map(extract_gamepad_slot)
+            .unwrap_or_else(|| "gamepad1".to_string())
+    }
+
+    /// Set PTZ target for gamepad if applicable. Returns true if target was set.
+    fn set_ptz_target(&self, camera_id: &str, ptz_enabled: bool, context_label: &str) -> bool {
+        if !self.is_gamepad() || !ptz_enabled {
+            return false;
+        }
+
+        let Some(camera_targets) = self.camera_targets else {
+            return false;
+        };
+
+        let slot = self.gamepad_slot();
+        match camera_targets.set_target(&slot, camera_id) {
+            Ok(()) => {
+                tracing::info!(
+                    "PTZ target set ({}): {} -> {}",
+                    context_label,
+                    slot,
+                    camera_id
+                );
+                true
+            },
+            Err(e) => {
+                tracing::warn!("Failed to set PTZ target on {}: {}", context_label, e);
+                false
+            },
+        }
+    }
+}
+
 impl ObsDriver {
     /// Resolve camera_id to (scene, source) from camera_control config.
     /// Returns None if camera_id is not found (assumes it's already scene/source format).
@@ -589,19 +647,13 @@ impl Driver for ObsDriver {
 
                 // Parse optional target parameter: "preview", "program", or absent (check modifier)
                 let explicit_target = params.get(1).and_then(|v| v.as_str());
-
-                // Get gamepad slot from control_id for PTZ modifier check
-                let gamepad_slot = ctx
-                    .control_id
-                    .as_ref()
-                    .map(|id| extract_gamepad_slot(id))
-                    .unwrap_or_else(|| "gamepad1".to_string());
+                let ptz_ctx = PtzTargetContext::from_ctx(&ctx);
 
                 // Check if PTZ modifier is held for this gamepad slot
                 let modifier_held = ctx
                     .camera_targets
                     .as_ref()
-                    .map(|ct| ct.is_ptz_modifier_held(&gamepad_slot))
+                    .map(|ct| ct.is_ptz_modifier_held(&ptz_ctx.gamepad_slot()))
                     .unwrap_or(false);
 
                 // Get view mode and resolve scene names from config
@@ -632,13 +684,6 @@ impl Driver for ObsDriver {
                         let guard = self.client.read().await;
                         let client = guard.as_ref().context("OBS not connected")?;
 
-                        // Check if this is a gamepad control
-                        let is_gamepad = ctx
-                            .control_id
-                            .as_ref()
-                            .map(|id| id.starts_with("gamepad"))
-                            .unwrap_or(false);
-
                         // Determine whether to use preview or program
                         // Priority: explicit_target > gamepad modifier logic > legacy behavior
                         let use_preview = match explicit_target {
@@ -652,7 +697,7 @@ impl Driver for ObsDriver {
                                 true
                             },
                             Some("program") => false,
-                            None if is_gamepad && modifier_held => {
+                            None if ptz_ctx.is_gamepad() && modifier_held => {
                                 // Gamepad + PTZ modifier held - force preview mode
                                 if !*self.studio_mode.read() {
                                     info!("Enabling studio mode for PTZ modifier preview");
@@ -661,7 +706,7 @@ impl Driver for ObsDriver {
                                 }
                                 true
                             },
-                            None if is_gamepad => {
+                            None if ptz_ctx.is_gamepad() => {
                                 // Gamepad without modifier - force program mode
                                 false
                             },
@@ -670,7 +715,7 @@ impl Driver for ObsDriver {
 
                         let target_name = if use_preview { "preview" } else { "program" };
                         info!(
-                            "🎬 OBS: Select camera '{}' (FULL mode) → {} '{}'",
+                            "OBS: Select camera '{}' (FULL mode) -> {} '{}'",
                             camera_id, target_name, camera_scene
                         );
 
@@ -681,19 +726,8 @@ impl Driver for ObsDriver {
                                 .await?;
 
                             // If modifier held and PTZ enabled, also set PTZ target
-                            if modifier_held && ptz_enabled {
-                                if let Some(ref camera_targets) = ctx.camera_targets {
-                                    if let Err(e) =
-                                        camera_targets.set_target(&gamepad_slot, camera_id)
-                                    {
-                                        warn!("Failed to set PTZ target: {}", e);
-                                    } else {
-                                        info!(
-                                            "🎮 PTZ target set: {} -> {}",
-                                            gamepad_slot, camera_id
-                                        );
-                                    }
-                                }
+                            if modifier_held {
+                                ptz_ctx.set_ptz_target(camera_id, ptz_enabled, "FULL+modifier");
                             }
                         } else {
                             client
@@ -708,14 +742,17 @@ impl Driver for ObsDriver {
 
                         // Note: explicit_target is ignored in split mode (modifies sources, not scenes)
                         if let Some(target) = explicit_target {
-                            debug!("🎬 OBS: Ignoring target '{}' in SPLIT mode (split modifies sources, not scenes)", target);
+                            debug!("Ignoring target '{}' in SPLIT mode (split modifies sources, not scenes)", target);
                         }
 
                         info!(
-                            "🎬 OBS: Select camera '{}' (SPLIT mode) in '{}'",
+                            "OBS: Select camera '{}' (SPLIT mode) in '{}'",
                             camera_id, split_scene
                         );
                         self.set_split_camera(&split_scene, camera_id).await?;
+
+                        // Set PTZ target automatically in SPLIT mode (no modifier needed)
+                        ptz_ctx.set_ptz_target(camera_id, ptz_enabled, "SPLIT");
                     },
                 }
 
@@ -780,38 +817,63 @@ impl Driver for ObsDriver {
                 // Set the camera in the split
                 self.set_split_camera(&split_scene, &last_camera).await?;
 
+                // Set PTZ target for the displayed camera
+                let ptz_enabled = self.is_ptz_enabled(&last_camera);
+                PtzTargetContext::from_ctx(&ctx).set_ptz_target(
+                    &last_camera,
+                    ptz_enabled,
+                    "enterSplit",
+                );
+
                 Ok(())
             },
 
             "exitSplit" => {
-                let (last_camera, camera_scene) = {
+                let (target_camera, camera_scene) = {
                     let config_guard = self.camera_control_config.read();
                     let config = config_guard
                         .as_ref()
                         .context("Camera control not configured")?;
 
-                    // Find last camera scene
-                    let last_camera = self.camera_control_state.read().last_camera.clone();
+                    // Use default_camera if configured, otherwise first camera
+                    let target_camera = config
+                        .default_camera
+                        .clone()
+                        .or_else(|| config.cameras.first().map(|c| c.id.clone()))
+                        .unwrap_or_else(|| "Main".to_string());
+
                     let camera = config
                         .cameras
                         .iter()
-                        .find(|c| c.id == last_camera)
+                        .find(|c| c.id == target_camera)
                         .or_else(|| config.cameras.first())
                         .context("No cameras configured")?;
 
-                    (last_camera, camera.scene.clone())
+                    (target_camera, camera.scene.clone())
                 };
 
                 info!(
                     "🎬 OBS: Exit split -> camera '{}' scene '{}'",
-                    last_camera, camera_scene
+                    target_camera, camera_scene
                 );
 
                 // Switch to full scene
                 self.set_scene_for_mode(&camera_scene).await?;
 
                 // Update state
-                self.camera_control_state.write().current_view_mode = ViewMode::Full;
+                {
+                    let mut state = self.camera_control_state.write();
+                    state.current_view_mode = ViewMode::Full;
+                    state.last_camera = target_camera.clone();
+                }
+
+                // Set PTZ target to match the displayed camera
+                let ptz_enabled = self.is_ptz_enabled(&target_camera);
+                PtzTargetContext::from_ctx(&ctx).set_ptz_target(
+                    &target_camera,
+                    ptz_enabled,
+                    "exitSplit",
+                );
 
                 Ok(())
             },

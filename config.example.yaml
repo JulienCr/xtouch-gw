@@ -21,9 +21,11 @@ obs:
   host: "127.0.0.1"
   port: 4455
   password: ""
-  
+
   # Configuration du contrôle caméra (split views)
+  # default_camera: Camera to switch to when exiting split mode (default: first camera)
   camera_control:
+    default_camera: "Main"
     cameras:
       - id: "Main"
         scene: "--- CAM Main"

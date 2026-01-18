@@ -65,6 +65,9 @@ pub struct ObsConfig {
 pub struct CameraControlConfig {
     pub cameras: Vec<CameraConfig>,
     pub splits: SplitConfig,
+    /// Default camera to switch to when exiting split mode. If not set, uses first camera.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_camera: Option<String>,
 }
 
 /// Individual camera configuration
