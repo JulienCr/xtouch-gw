@@ -1,4 +1,8 @@
 //! GilRs gamepad provider with hot-plug support
+//!
+//! **Legacy provider** - This module is kept for reference. The production codebase uses
+//! [`HybridGamepadProvider`](super::hybrid_provider::HybridGamepadProvider) which combines
+//! XInput and gilrs backends with improved change detection and sequence numbering.
 
 use super::axis::gilrs_axis_to_control_id;
 use super::normalize::normalize_gilrs_stick;
@@ -328,7 +332,10 @@ impl GilrsProvider {
             StickId::Right => (Axis::RightStickX, Axis::RightStickY),
         };
 
-        // Emit both normalized axes (radial normalization couples them)
+        // NOTE: This legacy provider emits both axes unconditionally, even if only
+        // one axis changed. This can cause redundant event processing. The modern
+        // HybridGamepadProvider uses `emit_axis_with_zero_detection` to filter out
+        // redundant events when an axis hasn't meaningfully changed.
         vec![
             GamepadEvent::Axis {
                 control_id: gilrs_axis_to_control_id(x_axis, prefix),

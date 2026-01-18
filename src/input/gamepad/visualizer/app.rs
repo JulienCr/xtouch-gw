@@ -376,5 +376,18 @@ const CAPTURE_BUTTON_INDEX: &str = "index: 13";
 /// The Capture button is reported as `Button::Unknown` with code containing "index: 13".
 fn is_capture_button(code: &Code) -> bool {
     let code_str = format!("{:?}", code);
-    code_str.contains("Button") && code_str.contains(CAPTURE_BUTTON_INDEX)
+    let has_index = code_str.contains(CAPTURE_BUTTON_INDEX);
+    let has_button = code_str.contains("Button");
+
+    // Runtime validation: if we see the expected index but the Debug output no longer
+    // contains "Button", log the full Code format so changes in gilrs formatting
+    // can be noticed and this workaround can be updated accordingly.
+    if has_index && !has_button {
+        tracing::warn!(
+            "Possible Capture button with unexpected gilrs::ev::Code Debug format: {:?}",
+            code
+        );
+    }
+
+    has_index && has_button
 }
