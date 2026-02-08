@@ -5,7 +5,7 @@ import { CameraResetAction } from "./actions/camera-reset";
 import { disconnectAllClients } from "./services/xtouch-client";
 
 // Configure logging
-streamDeck.logger.setLevel(LogLevel.DEBUG);
+streamDeck.logger.setLevel(LogLevel.INFO);
 
 // Register actions
 streamDeck.actions.registerAction(new CameraSelectAction());

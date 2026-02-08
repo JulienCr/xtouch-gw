@@ -87,6 +87,52 @@ async function apiRequest(baseUrl, path, options) {
     return undefined;
 }
 /**
+ * Set the camera target for a gamepad slot via HTTP API.
+ *
+ * @param serverAddress The server address (host:port)
+ * @param slot The gamepad slot identifier
+ * @param cameraId The camera ID to target
+ * @param target Optional: "preview" or "program" to also switch OBS scene (default: "preview")
+ */
+async function setCamera(serverAddress, slot, cameraId, target = "preview") {
+    streamDeck.logger.info(`Setting camera target: slot=${slot}, camera=${cameraId}, target=${target}`);
+    const path = `/api/gamepad/${encodeURIComponent(slot)}/camera`;
+    await apiRequest(serverAddress, path, { method: "PUT", body: { camera_id: cameraId, target } });
+    streamDeck.logger.info(`Camera target set successfully: ${slot} -> ${cameraId} (${target})`);
+}
+/**
+ * Reset a camera's zoom and/or position via HTTP API.
+ *
+ * @param serverAddress The server address (host:port)
+ * @param cameraId The camera ID to reset
+ * @param mode The reset mode: "position", "zoom", or "both"
+ */
+async function resetCamera(serverAddress, cameraId, mode) {
+    streamDeck.logger.info(`Resetting camera: id=${cameraId}, mode=${mode}`);
+    const path = `/api/cameras/${encodeURIComponent(cameraId)}/reset`;
+    await apiRequest(serverAddress, path, { method: "POST", body: { mode } });
+    streamDeck.logger.info(`Camera reset successful: ${cameraId}`);
+}
+/**
+ * Fetch available gamepad slots via HTTP API.
+ *
+ * @param serverAddress The server address (host:port)
+ * @returns Array of gamepad slot information
+ */
+async function getGamepads(serverAddress) {
+    return apiRequest(serverAddress, "/api/gamepads");
+}
+/**
+ * Fetch available cameras via HTTP API.
+ *
+ * @param serverAddress The server address (host:port)
+ * @returns Array of camera information
+ */
+async function getCameras(serverAddress) {
+    return apiRequest(serverAddress, "/api/cameras");
+}
+
+/**
  * Client for communicating with the XTouch GW server.
  * Handles WebSocket connection for real-time state updates and HTTP API calls for camera targeting.
  */
@@ -378,31 +424,25 @@ class XTouchClient {
      * @param target Optional: "preview" or "program" to also switch OBS scene (default: "preview")
      */
     async setCameraTarget(slot, cameraId, target = "preview") {
-        streamDeck.logger.info(`Setting camera target: slot=${slot}, camera=${cameraId}, target=${target}`);
-        const path = `/api/gamepad/${encodeURIComponent(slot)}/camera`;
-        await apiRequest(this._serverAddress, path, { method: "PUT", body: { camera_id: cameraId, target } });
-        streamDeck.logger.info(`Camera target set successfully: ${slot} -> ${cameraId} (${target})`);
+        await setCamera(this._serverAddress, slot, cameraId, target);
     }
     /**
      * Fetch available gamepad slots via HTTP API.
      */
     async getGamepadSlots() {
-        return apiRequest(this._serverAddress, "/api/gamepads");
+        return getGamepads(this._serverAddress);
     }
     /**
      * Fetch available cameras via HTTP API.
      */
     async getCameras() {
-        return apiRequest(this._serverAddress, "/api/cameras");
+        return getCameras(this._serverAddress);
     }
     /**
      * Reset a camera's zoom and/or position via HTTP API.
      */
     async resetCamera(cameraId, mode) {
-        streamDeck.logger.info(`Resetting camera: id=${cameraId}, mode=${mode}`);
-        const path = `/api/cameras/${encodeURIComponent(cameraId)}/reset`;
-        await apiRequest(this._serverAddress, path, { method: "POST", body: { mode } });
-        streamDeck.logger.info(`Camera reset successful: ${cameraId}`);
+        await resetCamera(this._serverAddress, cameraId, mode);
     }
 }
 // Reconnect configuration
@@ -1358,7 +1398,7 @@ let CameraResetAction = (() => {
 })();
 
 // Configure logging
-streamDeck.logger.setLevel(LogLevel.DEBUG);
+streamDeck.logger.setLevel(LogLevel.INFO);
 // Register actions
 streamDeck.actions.registerAction(new CameraSelectAction());
 streamDeck.actions.registerAction(new CameraResetAction());
