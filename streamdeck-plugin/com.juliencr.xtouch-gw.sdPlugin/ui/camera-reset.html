@@ -244,6 +244,7 @@
 
     let debounceTimer = null;
     let isConnected = false;
+    let listenersInitialized = false;
 
     // DOM Elements
     const serverAddressInput = document.getElementById("serverAddress");
@@ -329,6 +330,9 @@
     }
 
     function setupEventListeners() {
+      if (listenersInitialized) return;
+      listenersInitialized = true;
+
       // Server address input with debounce
       serverAddressInput.addEventListener("input", function() {
         currentSettings.serverAddress = this.value;

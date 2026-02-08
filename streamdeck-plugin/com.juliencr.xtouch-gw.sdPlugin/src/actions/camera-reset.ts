@@ -10,7 +10,7 @@ import {
   BaseSettings,
 } from "./action-base";
 
-import { XTouchClient, ConnectionStatus } from "../services/xtouch-client";
+import type { XTouchClient, XTouchState, ConnectionStatus } from "../services/xtouch-client";
 import { renderResetButtonImage } from "../services/button-renderer";
 
 import type { JsonValue } from "@elgato/streamdeck";
@@ -65,6 +65,8 @@ export class CameraResetAction extends CameraActionBase<CameraResetSettings, Cam
       client: null,
       keyAction,
       connectionStatus: "disconnected",
+      stateChangeCallback: null,
+      connectionChangeCallback: null,
     };
   }
 
@@ -84,10 +86,15 @@ export class CameraResetAction extends CameraActionBase<CameraResetSettings, Cam
     return settings.cameraId;
   }
 
-  protected override setupClientCallbacks(client: XTouchClient, serverAddress: string): void {
-    client.onConnectionChange = (status: ConnectionStatus) => {
+  protected override setupClientCallbacks(
+    client: XTouchClient,
+    serverAddress: string
+  ): { stateChange: ((state: XTouchState) => void) | null; connectionChange: ((status: ConnectionStatus) => void) | null } {
+    const connectionChange = (status: ConnectionStatus) => {
       this.handleConnectionChange(status, serverAddress);
     };
+    client.addConnectionChangeListener(connectionChange);
+    return { stateChange: null, connectionChange };
   }
 
   /**

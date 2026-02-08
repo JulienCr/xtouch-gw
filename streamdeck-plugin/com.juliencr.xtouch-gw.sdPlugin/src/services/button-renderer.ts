@@ -30,17 +30,30 @@ interface RenderContext {
 }
 
 /**
- * Create a render context with canvas and scaling helper.
+ * Cache of render contexts by canvas size.
+ * Reuses native Canvas objects to avoid repeated C++ allocations
+ * that the Node.js GC cannot reclaim fast enough.
  */
-function createRenderContext(size: number = DEFAULT_BUTTON_SIZE): RenderContext {
-  const canvas = createCanvas(size, size);
-  const ctx = canvas.getContext("2d");
-  return {
-    canvas,
-    ctx,
-    size,
-    scaled: (baseValue: number) => Math.round((size * baseValue) / DEFAULT_BUTTON_SIZE),
-  };
+const canvasCache = new Map<number, RenderContext>();
+
+/**
+ * Get a reusable render context, creating one if needed for this size.
+ * Clears the canvas before returning so each render starts fresh.
+ */
+function getRenderContext(size: number = DEFAULT_BUTTON_SIZE): RenderContext {
+  let cached = canvasCache.get(size);
+  if (!cached) {
+    const canvas = createCanvas(size, size);
+    cached = {
+      canvas,
+      ctx: canvas.getContext("2d"),
+      size,
+      scaled: (baseValue: number) => Math.round((size * baseValue) / DEFAULT_BUTTON_SIZE),
+    };
+    canvasCache.set(size, cached);
+  }
+  cached.ctx.clearRect(0, 0, size, size);
+  return cached;
 }
 
 /**
@@ -278,7 +291,7 @@ function drawResetIcon(
  * - Camera icon in the center, text at the bottom
  */
 export function renderButtonImage(state: ButtonState, size: number = DEFAULT_BUTTON_SIZE): string {
-  const { canvas, ctx, scaled } = createRenderContext(size);
+  const { canvas, ctx, scaled } = getRenderContext(size);
 
   const borderWidth = scaled(10);
   const indicatorHeight = scaled(6);
@@ -336,7 +349,7 @@ export function renderButtonImage(state: ButtonState, size: number = DEFAULT_BUT
  * Shows a dark gray background with a red "!" icon.
  */
 export function renderDisconnectedImage(size: number = DEFAULT_BUTTON_SIZE): string {
-  const { canvas, ctx, scaled } = createRenderContext(size);
+  const { canvas, ctx, scaled } = getRenderContext(size);
 
   const fontSize = scaled(48);
   const labelFontSize = scaled(14);
@@ -360,7 +373,7 @@ export function renderDisconnectedImage(size: number = DEFAULT_BUTTON_SIZE): str
  * Shows a dark gray background with a gear icon and "Config" label.
  */
 export function renderNotConfiguredImage(size: number = DEFAULT_BUTTON_SIZE): string {
-  const { canvas, ctx, scaled } = createRenderContext(size);
+  const { canvas, ctx, scaled } = getRenderContext(size);
 
   const iconFontSize = scaled(36);
   const labelFontSize = scaled(14);
@@ -387,7 +400,7 @@ export function renderNotConfiguredImage(size: number = DEFAULT_BUTTON_SIZE): st
  * - Camera ID text at bottom
  */
 export function renderResetButtonImage(state: ResetButtonState, size: number = DEFAULT_BUTTON_SIZE): string {
-  const { canvas, ctx, scaled } = createRenderContext(size);
+  const { canvas, ctx, scaled } = getRenderContext(size);
 
   const fontSize = scaled(24);
   const padding = scaled(6);
@@ -416,7 +429,7 @@ export function renderResetButtonImage(state: ResetButtonState, size: number = D
  * Used for reset confirmation instead of the green checkmark.
  */
 export function renderFlashImage(size: number = DEFAULT_BUTTON_SIZE): string {
-  const { canvas, ctx } = createRenderContext(size);
+  const { canvas, ctx } = getRenderContext(size);
 
   ctx.fillStyle = Colors.FLASH_BG;
   ctx.fillRect(0, 0, size, size);

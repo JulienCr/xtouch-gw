@@ -10,6 +10,7 @@ import {
   XTouchClient,
   ConnectionStatus,
   getClient,
+  disconnectClient,
 } from "../services/xtouch-client";
 
 import {
@@ -39,6 +40,10 @@ export interface BaseContextState<TSettings extends BaseSettings> {
   client: XTouchClient | null;
   keyAction: KeyAction<TSettings>;
   connectionStatus: ConnectionStatus;
+  /** Stored reference for removing state change listener on disconnect */
+  stateChangeCallback: ((state: import("../services/xtouch-client").XTouchState) => void) | null;
+  /** Stored reference for removing connection change listener on disconnect */
+  connectionChangeCallback: ((status: ConnectionStatus) => void) | null;
 }
 
 /**
@@ -119,10 +124,18 @@ export abstract class CameraActionBase<
   protected abstract getFallbackTitle(contextState: TContextState): string;
 
   /**
-   * Set up client callbacks for state and connection changes.
+   * Set up client listeners for state and connection changes.
    * Called after connecting to a new client.
+   * Must call client.addStateChangeListener / client.addConnectionChangeListener
+   * and return the callbacks so they can be removed on disconnect.
    */
-  protected abstract setupClientCallbacks(client: XTouchClient, serverAddress: string): void;
+  protected abstract setupClientCallbacks(
+    client: XTouchClient,
+    serverAddress: string
+  ): {
+    stateChange: ((state: import("../services/xtouch-client").XTouchState) => void) | null;
+    connectionChange: ((status: ConnectionStatus) => void) | null;
+  };
 
   /**
    * Update action-specific state from the current client.
@@ -168,12 +181,31 @@ export abstract class CameraActionBase<
 
   /**
    * Called when the action disappears from the Stream Deck.
-   * Cleans up resources.
+   * Cleans up listeners and orphaned clients.
    */
   override async onWillDisappear(ev: WillDisappearEvent<TSettings>): Promise<void> {
     const contextId = ev.action.id;
     streamDeck.logger.info(`Action disappeared: context=${contextId}`);
-    this.contexts.delete(contextId);
+
+    const contextState = this.contexts.get(contextId);
+    if (contextState) {
+      const serverAddress = contextState.settings.serverAddress;
+      this.disconnectContextClient(contextState);
+      this.contexts.delete(contextId);
+
+      // Cleanup orphaned client if no other contexts use this address
+      if (serverAddress) {
+        const normalizedAddr = serverAddress.toLowerCase().trim();
+        const stillUsed = [...this.contexts.values()].some(
+          (ctx) => ctx.settings.serverAddress.toLowerCase().trim() === normalizedAddr
+        );
+        if (!stillUsed) {
+          disconnectClient(serverAddress);
+        }
+      }
+    } else {
+      this.contexts.delete(contextId);
+    }
   }
 
   /**
@@ -199,6 +231,17 @@ export abstract class CameraActionBase<
       streamDeck.logger.info(`Server address changed: ${oldServerAddress} -> ${newSettings.serverAddress}`);
       this.disconnectContextClient(contextState);
 
+      // Cleanup orphaned client if no other contexts use the old address
+      if (oldServerAddress) {
+        const normalizedOld = oldServerAddress.toLowerCase().trim();
+        const stillUsed = [...this.contexts.values()].some(
+          (ctx) => ctx.settings.serverAddress.toLowerCase().trim() === normalizedOld
+        );
+        if (!stillUsed) {
+          disconnectClient(oldServerAddress);
+        }
+      }
+
       if (newSettings.serverAddress) {
         this.connectContext(contextId);
       }
@@ -209,12 +252,18 @@ export abstract class CameraActionBase<
   }
 
   /**
-   * Disconnect the client from a context (clears callbacks only).
+   * Disconnect the client from a context by removing its listeners.
    */
   protected disconnectContextClient(contextState: TContextState): void {
     if (contextState.client) {
-      contextState.client.onStateChange = null;
-      contextState.client.onConnectionChange = null;
+      if (contextState.stateChangeCallback) {
+        contextState.client.removeStateChangeListener(contextState.stateChangeCallback);
+        contextState.stateChangeCallback = null;
+      }
+      if (contextState.connectionChangeCallback) {
+        contextState.client.removeConnectionChangeListener(contextState.connectionChangeCallback);
+        contextState.connectionChangeCallback = null;
+      }
       contextState.client = null;
     }
   }
@@ -235,7 +284,9 @@ export abstract class CameraActionBase<
     const client = getClient(serverAddress);
     contextState.client = client;
 
-    this.setupClientCallbacks(client, serverAddress);
+    const callbacks = this.setupClientCallbacks(client, serverAddress);
+    contextState.stateChangeCallback = callbacks.stateChange;
+    contextState.connectionChangeCallback = callbacks.connectionChange;
 
     if (client.connectionStatus === "disconnected") {
       client.connect();

@@ -13,9 +13,9 @@ import {
 } from "./action-base";
 
 import {
-  XTouchClient,
-  XTouchState,
-  ConnectionStatus,
+  type XTouchClient,
+  type XTouchState,
+  type ConnectionStatus,
 } from "../services/xtouch-client";
 
 import { renderButtonImage } from "../services/button-renderer";
@@ -82,6 +82,8 @@ export class CameraSelectAction extends CameraActionBase<CameraSelectSettings, C
       connectionStatus: "disconnected",
       longPressTimer: null,
       longPressTriggered: false,
+      stateChangeCallback: null,
+      connectionChangeCallback: null,
     };
   }
 
@@ -114,13 +116,19 @@ export class CameraSelectAction extends CameraActionBase<CameraSelectSettings, C
     return settings.cameraId;
   }
 
-  protected override setupClientCallbacks(client: XTouchClient, serverAddress: string): void {
-    client.onStateChange = (state: XTouchState) => {
+  protected override setupClientCallbacks(
+    client: XTouchClient,
+    serverAddress: string
+  ): { stateChange: ((state: XTouchState) => void) | null; connectionChange: ((status: ConnectionStatus) => void) | null } {
+    const stateChange = (state: XTouchState) => {
       this.handleStateChange(state);
     };
-    client.onConnectionChange = (status: ConnectionStatus) => {
+    const connectionChange = (status: ConnectionStatus) => {
       this.handleConnectionChange(status, serverAddress);
     };
+    client.addStateChangeListener(stateChange);
+    client.addConnectionChangeListener(connectionChange);
+    return { stateChange, connectionChange };
   }
 
   protected override updateStateFromClient(contextState: CameraSelectContextState): void {

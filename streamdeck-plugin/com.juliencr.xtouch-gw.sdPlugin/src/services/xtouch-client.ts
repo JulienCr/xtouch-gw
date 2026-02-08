@@ -124,9 +124,9 @@ export class XTouchClient {
   private _cameras: Map<string, CameraInfo> = new Map();
   private _onAirCameraId: string | null = null;
 
-  // Callbacks
-  private _onStateChange: ((state: XTouchState) => void) | null = null;
-  private _onConnectionChange: ((status: ConnectionStatus) => void) | null = null;
+  // Listener sets (supports multiple actions sharing one client)
+  private _stateChangeListeners = new Set<(state: XTouchState) => void>();
+  private _connectionChangeListeners = new Set<(status: ConnectionStatus) => void>();
 
   // Reconnect configuration
   private static readonly INITIAL_RECONNECT_DELAY_MS = 1000;
@@ -154,17 +154,38 @@ export class XTouchClient {
   }
 
   /**
-   * Set callback for state changes
+   * Add a listener for state changes.
    */
-  set onStateChange(callback: ((state: XTouchState) => void) | null) {
-    this._onStateChange = callback;
+  addStateChangeListener(callback: (state: XTouchState) => void): void {
+    this._stateChangeListeners.add(callback);
   }
 
   /**
-   * Set callback for connection status changes
+   * Remove a state change listener.
    */
-  set onConnectionChange(callback: ((status: ConnectionStatus) => void) | null) {
-    this._onConnectionChange = callback;
+  removeStateChangeListener(callback: (state: XTouchState) => void): void {
+    this._stateChangeListeners.delete(callback);
+  }
+
+  /**
+   * Add a listener for connection status changes.
+   */
+  addConnectionChangeListener(callback: (status: ConnectionStatus) => void): void {
+    this._connectionChangeListeners.add(callback);
+  }
+
+  /**
+   * Remove a connection change listener.
+   */
+  removeConnectionChangeListener(callback: (status: ConnectionStatus) => void): void {
+    this._connectionChangeListeners.delete(callback);
+  }
+
+  /**
+   * Check if this client has any registered listeners.
+   */
+  get hasListeners(): boolean {
+    return this._stateChangeListeners.size > 0 || this._connectionChangeListeners.size > 0;
   }
 
   /**
@@ -373,31 +394,35 @@ export class XTouchClient {
   }
 
   /**
-   * Set connection status and emit change event
+   * Set connection status and notify all listeners.
    */
   private setConnectionStatus(status: ConnectionStatus): void {
     if (this._connectionStatus === status) return;
 
     this._connectionStatus = status;
 
-    if (this._onConnectionChange) {
+    for (const listener of this._connectionChangeListeners) {
       try {
-        this._onConnectionChange(status);
+        listener(status);
       } catch (error) {
-        streamDeck.logger.error(`Error in connection change callback: ${error}`);
+        streamDeck.logger.error(`Error in connection change listener: ${error}`);
       }
     }
   }
 
   /**
-   * Emit state change event
+   * Notify all state change listeners.
+   * Builds the state snapshot once and shares it across all listeners.
    */
   private emitStateChange(): void {
-    if (this._onStateChange) {
+    if (this._stateChangeListeners.size === 0) return;
+
+    const state = this.getState();
+    for (const listener of this._stateChangeListeners) {
       try {
-        this._onStateChange(this.getState());
+        listener(state);
       } catch (error) {
-        streamDeck.logger.error(`Error in state change callback: ${error}`);
+        streamDeck.logger.error(`Error in state change listener: ${error}`);
       }
     }
   }
