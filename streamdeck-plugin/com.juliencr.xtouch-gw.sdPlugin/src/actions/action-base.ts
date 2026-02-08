@@ -193,13 +193,10 @@ export abstract class CameraActionBase<
       this.disconnectContextClient(contextState);
       this.contexts.delete(contextId);
 
-      // Cleanup orphaned client if no other contexts use this address
+      // Cleanup orphaned client if no listeners remain (across all action types)
       if (serverAddress) {
-        const normalizedAddr = serverAddress.toLowerCase().trim();
-        const stillUsed = [...this.contexts.values()].some(
-          (ctx) => ctx.settings.serverAddress.toLowerCase().trim() === normalizedAddr
-        );
-        if (!stillUsed) {
+        const client = getClient(serverAddress);
+        if (!client.hasListeners) {
           disconnectClient(serverAddress);
         }
       }
@@ -231,13 +228,10 @@ export abstract class CameraActionBase<
       streamDeck.logger.info(`Server address changed: ${oldServerAddress} -> ${newSettings.serverAddress}`);
       this.disconnectContextClient(contextState);
 
-      // Cleanup orphaned client if no other contexts use the old address
+      // Cleanup orphaned client if no listeners remain (across all action types)
       if (oldServerAddress) {
-        const normalizedOld = oldServerAddress.toLowerCase().trim();
-        const stillUsed = [...this.contexts.values()].some(
-          (ctx) => ctx.settings.serverAddress.toLowerCase().trim() === normalizedOld
-        );
-        if (!stillUsed) {
+        const client = getClient(oldServerAddress);
+        if (!client.hasListeners) {
           disconnectClient(oldServerAddress);
         }
       }
