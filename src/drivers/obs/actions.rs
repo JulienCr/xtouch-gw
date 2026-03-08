@@ -828,6 +828,46 @@ impl Driver for ObsDriver {
                 Ok(())
             },
 
+            "toggleSplit" => {
+                // Only act on button press (value > 0 or None for legacy compatibility)
+                let is_release = ctx
+                    .value
+                    .as_ref()
+                    .and_then(|v| v.as_f64())
+                    .map(|v| v == 0.0)
+                    .unwrap_or(false);
+
+                if is_release {
+                    return Ok(()); // Ignore button release
+                }
+
+                let side = params
+                    .first()
+                    .and_then(|v| v.as_str())
+                    .context("Side required ('left' or 'right')")?;
+
+                // Validate side parameter
+                match side {
+                    "left" | "right" => {},
+                    _ => {
+                        return Err(anyhow!(
+                            "Invalid side '{}', must be 'left' or 'right'",
+                            side
+                        ))
+                    },
+                }
+
+                let current_mode = self.camera_control_state.read().current_view_mode;
+
+                if current_mode != ViewMode::Full {
+                    // Already in any split mode → exit to full
+                    self.execute("exitSplit", vec![], ctx).await
+                } else {
+                    // Full → enter requested split
+                    self.execute("enterSplit", params, ctx).await
+                }
+            },
+
             "exitSplit" => {
                 let (target_camera, camera_scene) = {
                     let config_guard = self.camera_control_config.read();
