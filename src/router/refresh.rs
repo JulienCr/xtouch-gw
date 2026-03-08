@@ -88,6 +88,34 @@ impl super::Router {
         *self.display_needs_update.lock().await = true;
     }
 
+    /// Check if a specific app is mapped to a fader channel on the given page
+    ///
+    /// BUG-010 FIX: Used during page refresh to prevent PB state from one app
+    /// (e.g., voicemeeter on page 1) from overriding the CC→PB transform of
+    /// another app (e.g., qlc on page 2) for the same fader channel.
+    fn is_app_mapped_to_fader(&self, page: &PageConfig, app_name: &str, pb_channel: u8) -> bool {
+        let mapping_db = match load_default_mappings() {
+            Ok(db) => db,
+            Err(_) => return false,
+        };
+
+        // Find the control ID for this PB channel (e.g., "fader2" for ch=2)
+        let control_id = Self::find_control_by_midi_spec(
+            &mapping_db,
+            |spec| matches!(spec, MidiSpec::PitchBend { channel } if *channel == pb_channel.saturating_sub(1)),
+        );
+
+        let Some(control_id) = control_id else {
+            return false;
+        };
+
+        // Check if this control is mapped to the given app on this page
+        match self.get_control_config(page, &control_id) {
+            Some(config) => config.app == app_name,
+            None => false,
+        }
+    }
+
     /// Convert MidiStateEntry to raw MIDI bytes for sending to X-Touch
     pub(crate) fn entry_to_midi_bytes(&self, entry: &MidiStateEntry) -> Vec<u8> {
         // Convert external channel (1-16) to MIDI wire format (0-15)
@@ -295,6 +323,36 @@ impl super::Router {
         })
     }
 
+    /// Direct Note state lookup for controls mapped on the current page
+    /// Used for passthrough controls where CC→Note transform doesn't apply
+    async fn try_direct_note_lookup(
+        &self,
+        page: &PageConfig,
+        app: &AppKey,
+        note: u8,
+    ) -> Option<MidiStateEntry> {
+        let mapping_db = load_default_mappings().ok()?;
+
+        // Find the control ID for this note (e.g., "mute1" for note=16)
+        let control_id = Self::find_control_by_midi_spec(
+            &mapping_db,
+            |spec| matches!(spec, MidiSpec::Note { note: n } if *n == note),
+        )?;
+
+        // Verify this control is configured on the current page
+        let control_config = self.get_control_config(page, &control_id)?;
+
+        // Ensure control's app matches
+        if control_config.app != app.as_str() {
+            return None;
+        }
+
+        // Look up the Note state directly from StateActor
+        self.state_actor
+            .get_known_latest(*app, MidiStatus::Note, Some(1), Some(note))
+            .await
+    }
+
     /// Create a reset MidiStateEntry (value=0) for page refresh
     fn make_reset_entry(
         port_id: &str,
@@ -382,8 +440,14 @@ impl super::Router {
                     .get_known_latest(*app, MidiStatus::PB, Some(ch), Some(0))
                     .await
                 {
-                    insert_prioritized(&mut pb_plan, ch, latest_pb, 3);
-                    continue;
+                    // BUG-010 FIX: Only use PB state if this app owns this fader on the current page.
+                    // Without this check, a PB value from app A (mapped on a different page)
+                    // can dominate the CC→PB transform for app B (mapped on this page),
+                    // because PB priority (3) > CC→PB priority (2).
+                    if self.is_app_mapped_to_fader(_page, app.as_str(), ch) {
+                        insert_prioritized(&mut pb_plan, ch, latest_pb, 3);
+                        continue;
+                    }
                 }
 
                 if let Some(transformed_pb) = self.try_cc_to_pb_transform(_page, app, ch).await {
@@ -396,13 +460,21 @@ impl super::Router {
                 }
             }
 
-            // Notes: 0-31 - Known state from CC transform (priority 2) or Note Off (priority 1)
+            // Notes: 0-31 - Known state from CC transform (priority 2), direct Note state (priority 2), or Note Off (priority 1)
             for note in 0..=31 {
                 if let Some(transformed_note) =
                     self.try_cc_to_note_transform(_page, app, note).await
                 {
                     let key = channel_data1_key(&transformed_note);
                     insert_prioritized(&mut note_plan, key, transformed_note, 2);
+                    continue;
+                }
+
+                // Direct Note state lookup (for passthrough controls like mute buttons)
+                // Only restore if this note belongs to a control mapped on the current page
+                if let Some(note_entry) = self.try_direct_note_lookup(_page, app, note).await {
+                    let key = channel_data1_key(&note_entry);
+                    insert_prioritized(&mut note_plan, key, note_entry, 2);
                     continue;
                 }
 

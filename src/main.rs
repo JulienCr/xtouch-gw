@@ -9,6 +9,7 @@ use tracing::{debug, info, warn};
 use tracing_subscriber::util::SubscriberInitExt;
 
 mod api;
+mod cli;
 mod config;
 mod control_mapping;
 mod drivers;
@@ -676,6 +677,23 @@ async fn run_app(
 
     info!("Ready to process MIDI events!");
 
+    // Spawn stdin reader on a blocking thread (stdin is synchronous)
+    let (stdin_tx, mut stdin_rx) = mpsc::unbounded_channel::<String>();
+    tokio::task::spawn_blocking(move || {
+        use std::io::BufRead;
+        let stdin = std::io::stdin();
+        for line in stdin.lock().lines() {
+            match line {
+                Ok(line) => {
+                    if stdin_tx.send(line).is_err() {
+                        break; // Channel closed, app shutting down
+                    }
+                },
+                Err(_) => break,
+            }
+        }
+    });
+
     // Main event loop
     tokio::pin!(shutdown);
 
@@ -957,6 +975,14 @@ async fn run_app(
                         info!("Shutdown requested from tray");
                         break;
                     }
+                }
+            }
+
+            // Handle stdin commands (REPL)
+            Some(line) = stdin_rx.recv() => {
+                if cli::process_command(&line, router.get_state_actor()).await {
+                    info!("Exit requested from REPL");
+                    break;
                 }
             }
 
