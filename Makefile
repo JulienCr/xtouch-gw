@@ -15,104 +15,65 @@ TS_DIR := D:\dev\xtouch-gw-v2
 CONFIG := config.example.yaml
 LOG_LEVEL := info
 
-# Colors for output (Windows compatible)
-NO_COLOR := \033[0m
-GREEN := \033[0;32m
-YELLOW := \033[0;33m
-BLUE := \033[0;34m
-RED := \033[0;31m
-
 ## help: Display this help message
 help:
-	@echo $(GREEN)XTouch GW v3 - Rust Implementation$(NO_COLOR)
-	@echo.
-	@echo $(YELLOW)Available targets:$(NO_COLOR)
-	@echo.
-	@echo $(BLUE)Development:$(NO_COLOR)
-	@echo   make build      - Build debug version
-	@echo   make release    - Build optimized release version
-	@echo   make run        - Run with example config
-	@echo   make dev        - Run in watch mode (auto-rebuild)
-	@echo   make watch      - Watch for changes and check
-	@echo.
-	@echo $(BLUE)Testing:$(NO_COLOR)
-	@echo   make test       - Run all tests
-	@echo   make bench      - Run benchmarks
-	@echo   make check      - Type check without building
-	@echo   make clippy     - Run clippy linter
-	@echo   make fmt        - Format code
-	@echo.
-	@echo $(BLUE)TypeScript Reference:$(NO_COLOR)
-	@echo   make ts-run     - Run TypeScript version
-	@echo   make ts-test    - Run TypeScript tests
-	@echo   make ts-sniff   - Run TypeScript MIDI sniffer
-	@echo   make compare    - Run both versions side-by-side
-	@echo.
-	@echo $(BLUE)Tools:$(NO_COLOR)
-	@echo   make sniffer    - Run MIDI sniffer (CLI)
-	@echo   make web-sniffer - Run web MIDI sniffer
-	@echo   make docs       - Generate documentation
-	@echo   make clean      - Clean build artifacts
-	@echo.
-	@echo $(BLUE)Setup:$(NO_COLOR)
-	@echo   make setup      - Initial project setup
-	@echo   make install-deps - Install Rust dependencies
-	@echo.
-	@echo $(BLUE)CI/Quality:$(NO_COLOR)
-	@echo   make ci         - Run CI checks (fmt, clippy, test)
-	@echo   make all        - Build everything and run tests
-	@echo.
+	@echo ""
+	@echo   XTouch GW v3 - Rust Implementation
+	@echo   ===================================
+	@echo ""
+	@powershell -Command "Get-Content $(MAKEFILE_LIST) | Select-String -Pattern '^## ' | ForEach-Object { $$_.Line -replace '^## ', '  make ' -replace ': ', ' - ' }"
+	@echo ""
 
 ## setup: Initial project setup
 setup:
-	@echo $(GREEN)Setting up XTouch GW v3...$(NO_COLOR)
+	@echo Setting up XTouch GW v3...
 	@if not exist "target" mkdir target
 	@if not exist ".state" mkdir .state
 	@if not exist "logs" mkdir logs
 	@if not exist "config.yaml" copy config.example.yaml config.yaml
-	@echo $(GREEN)Installing Rust dependencies...$(NO_COLOR)
+	@echo Installing Rust dependencies...
 	@$(CARGO) fetch
-	@echo $(GREEN)Setup complete!$(NO_COLOR)
+	@echo Setup complete!
 
 ## install-deps: Install/update Rust dependencies
 install-deps:
-	@echo $(YELLOW)Fetching dependencies...$(NO_COLOR)
+	@echo Fetching dependencies...
 	@$(CARGO) fetch
 	@$(CARGO) update
-	@echo $(GREEN)Dependencies updated!$(NO_COLOR)
+	@echo Dependencies updated!
 
 ## build: Build debug version
 build:
-	@echo $(YELLOW)Building debug version...$(NO_COLOR)
+	@echo Building debug version...
 	@$(CARGO) build
-	@echo $(GREEN)Build complete: target/debug/xtouch-gw.exe$(NO_COLOR)
+	@echo Build complete: target/debug/xtouch-gw.exe
 
 ## release: Build optimized release version
 release:
-	@echo $(YELLOW)Building release version...$(NO_COLOR)
+	@echo Building release version...
 	@$(CARGO) build --release
-	@echo $(GREEN)Build complete: target/release/xtouch-gw.exe$(NO_COLOR)
+	@echo Build complete: target/release/xtouch-gw.exe
 
 ## run: Run with example config
 run: build
-	@echo $(YELLOW)Running XTouch GW v3...$(NO_COLOR)
+	@echo Running XTouch GW v3...
 	@$(CARGO) run -- -c $(CONFIG) --log-level $(LOG_LEVEL)
 
 ## dev: Run in development mode with auto-rebuild
 dev:
-	@echo $(YELLOW)Starting development mode (Ctrl+C to stop)...$(NO_COLOR)
+	@echo Starting development mode (Ctrl+C to stop)...
 	@$(CARGO) watch -x "run -- -c $(CONFIG) --log-level debug"
 
 ## watch: Watch for changes and check
 watch:
-	@echo $(YELLOW)Watching for changes...$(NO_COLOR)
+	@echo Watching for changes...
 	@$(CARGO) watch -x check -x test
 
 ## test: Run all tests
 test:
-	@echo $(YELLOW)Running tests...$(NO_COLOR)
+	@echo Running tests...
 	@$(CARGO) test
-	@echo $(GREEN)Tests complete!$(NO_COLOR)
+	@echo Tests complete!
 
 ## test-verbose: Run tests with output
 test-verbose:
@@ -120,26 +81,26 @@ test-verbose:
 
 ## bench: Run benchmarks
 bench:
-	@echo $(YELLOW)Running benchmarks...$(NO_COLOR)
+	@echo Running benchmarks...
 	@$(CARGO) bench
 
 ## check: Type check without building
 check:
-	@echo $(YELLOW)Type checking...$(NO_COLOR)
+	@echo Type checking...
 	@$(CARGO) check
-	@echo $(GREEN)Type check complete!$(NO_COLOR)
+	@echo Type check complete!
 
 ## clippy: Run clippy linter
 clippy:
-	@echo $(YELLOW)Running clippy...$(NO_COLOR)
+	@echo Running clippy...
 	@$(CARGO) clippy -- -D warnings
-	@echo $(GREEN)Clippy complete!$(NO_COLOR)
+	@echo Clippy complete!
 
 ## fmt: Format code
 fmt:
-	@echo $(YELLOW)Formatting code...$(NO_COLOR)
+	@echo Formatting code...
 	@$(CARGO) fmt
-	@echo $(GREEN)Formatting complete!$(NO_COLOR)
+	@echo Formatting complete!
 
 ## fmt-check: Check formatting without changing files
 fmt-check:
@@ -147,77 +108,77 @@ fmt-check:
 
 ## clean: Clean build artifacts
 clean:
-	@echo $(YELLOW)Cleaning build artifacts...$(NO_COLOR)
+	@echo Cleaning build artifacts...
 	@$(CARGO) clean
 	@if exist "logs\*.log" del /Q logs\*.log
 	@if exist ".state\*.json" del /Q .state\*.json
-	@echo $(GREEN)Clean complete!$(NO_COLOR)
+	@echo Clean complete!
 
 ## docs: Generate documentation
 docs:
-	@echo $(YELLOW)Generating documentation...$(NO_COLOR)
+	@echo Generating documentation...
 	@$(CARGO) doc --no-deps --open
-	@echo $(GREEN)Documentation generated!$(NO_COLOR)
+	@echo Documentation generated!
 
 ## sniffer: Run MIDI sniffer (CLI)
 sniffer: build
-	@echo $(YELLOW)Starting MIDI sniffer...$(NO_COLOR)
+	@echo Starting MIDI sniffer...
 	@$(CARGO) run -- --sniffer
 
 ## web-sniffer: Run web MIDI sniffer
 web-sniffer: build
-	@echo $(YELLOW)Starting web MIDI sniffer on http://localhost:8123...$(NO_COLOR)
+	@echo Starting web MIDI sniffer on http://localhost:8123...
 	@$(CARGO) run -- --web-sniffer --web-port 8123
 
 # TypeScript reference commands
 ## ts-run: Run TypeScript version
 ts-run:
-	@echo $(YELLOW)Running TypeScript reference implementation...$(NO_COLOR)
+	@echo Running TypeScript reference implementation...
 	@cd $(TS_DIR) && $(PNPM) dev
 
 ## ts-test: Run TypeScript tests
 ts-test:
-	@echo $(YELLOW)Running TypeScript tests...$(NO_COLOR)
+	@echo Running TypeScript tests...
 	@cd $(TS_DIR) && $(PNPM) test
 
 ## ts-sniff: Run TypeScript MIDI sniffer
 ts-sniff:
-	@echo $(YELLOW)Starting TypeScript MIDI sniffer...$(NO_COLOR)
+	@echo Starting TypeScript MIDI sniffer...
 	@cd $(TS_DIR) && $(PNPM) sniff:web
 
 ## ts-build: Build TypeScript version
 ts-build:
-	@echo $(YELLOW)Building TypeScript version...$(NO_COLOR)
+	@echo Building TypeScript version...
 	@cd $(TS_DIR) && $(PNPM) build
 
-## compare: Run both versions side-by-side (requires multiple terminals)
+## compare: Run both versions side-by-side
 compare:
-	@echo $(GREEN)========================================$(NO_COLOR)
-	@echo $(GREEN) Running Both Versions Side-by-Side$(NO_COLOR)
-	@echo $(GREEN)========================================$(NO_COLOR)
-	@echo.
-	@echo $(YELLOW)Terminal 1:$(NO_COLOR) make ts-run
-	@echo $(YELLOW)Terminal 2:$(NO_COLOR) make run
-	@echo $(YELLOW)Terminal 3:$(NO_COLOR) make ts-sniff
-	@echo $(YELLOW)Terminal 4:$(NO_COLOR) make web-sniffer
-	@echo.
-	@echo $(BLUE)Starting Rust version in this terminal...$(NO_COLOR)
+	@echo ========================================
+	@echo  Running Both Versions Side-by-Side
+	@echo ========================================
+	@echo ""
+	@echo Terminal 1: make ts-run
+	@echo Terminal 2: make run
+	@echo Terminal 3: make ts-sniff
+	@echo Terminal 4: make web-sniffer
+	@echo ""
+	@echo Starting Rust version in this terminal...
 	@$(CARGO) run -- -c $(CONFIG) --log-level $(LOG_LEVEL)
 
 ## profile: Build and run with profiling
 profile:
-	@echo $(YELLOW)Building with profiling support...$(NO_COLOR)
+	@echo Building with profiling support...
 	@$(CARGO) build --profile profiling
-	@echo $(GREEN)Run with your profiler of choice on:$(NO_COLOR)
+	@echo Run with your profiler of choice on:
 	@echo   target/profiling/xtouch-gw.exe
 
 ## ci: Run all CI checks
 ci: fmt-check clippy test
-	@echo $(GREEN)All CI checks passed!$(NO_COLOR)
+	@echo All CI checks passed!
 
 ## all: Build everything and run tests
 all: clean build release test docs
-	@echo $(GREEN)Full build complete!$(NO_COLOR)
+	@echo Full build complete!
 
 # Development shortcuts
 b: build
@@ -237,37 +198,37 @@ run-config:
 
 # Environment info
 info:
-	@echo $(BLUE)Environment Information:$(NO_COLOR)
-	@echo.
+	@echo Environment Information:
+	@echo ""
 	@echo Rust version:
 	@rustc --version
-	@echo.
+	@echo ""
 	@echo Cargo version:
 	@$(CARGO) --version
-	@echo.
+	@echo ""
 	@echo Project root: %CD%
 	@echo TypeScript dir: $(TS_DIR)
-	@echo.
+	@echo ""
 	@echo Config file: $(CONFIG)
 	@echo Log level: $(LOG_LEVEL)
 
 # Installation helpers for Windows
 install-tools:
-	@echo $(YELLOW)Installing development tools...$(NO_COLOR)
+	@echo Installing development tools...
 	@$(CARGO) install cargo-watch
 	@$(CARGO) install cargo-edit
 	@$(CARGO) install cargo-audit
 	@$(CARGO) install cargo-outdated
 	@$(CARGO) install flamegraph
-	@echo $(GREEN)Tools installed!$(NO_COLOR)
+	@echo Tools installed!
 
 # Validate against TypeScript
 validate:
-	@echo $(YELLOW)Validation Steps:$(NO_COLOR)
+	@echo Validation Steps:
 	@echo 1. Start TypeScript version: make ts-run
 	@echo 2. Capture MIDI sequence
 	@echo 3. Start Rust version: make run
 	@echo 4. Compare MIDI outputs
 	@echo 5. Check state consistency
-	@echo.
+	@echo ""
 	@echo See DEVELOPMENT.md for detailed validation process.
