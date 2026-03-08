@@ -668,7 +668,7 @@ async fn run_app(
     debug!("Initial state applied to X-Touch");
 
     // Initialize gamepad if enabled
-    let _gamepad_mapper = if let Some(gamepad_config) = &config.gamepad {
+    let mut gamepad_mapper = if let Some(gamepad_config) = &config.gamepad {
         input::gamepad::init(gamepad_config, router.clone()).await
     } else {
         None
@@ -739,14 +739,18 @@ async fn run_app(
                         }
                     }
 
-                    // Update F-key LEDs to show active page
-                    let paging_channel = config.paging.as_ref().map(|p| p.channel).unwrap_or(1);
+                    // Update F-key LEDs to show active page (read current config, not stale startup copy)
+                    let router_config = router.config.read().await;
+                    let paging_channel = router_config.paging.as_ref().map(|p| p.channel).unwrap_or(1);
+                    let paging_clone = router_config.paging.clone();
+                    drop(router_config);
+
                     if let Err(e) = router.update_fkey_leds_for_active_page(&xtouch, paging_channel).await {
                         warn!("Failed to update F-key LEDs: {}", e);
                     }
 
                     // Also update prev/next navigation LEDs (keep them on)
-                    if let Some(paging) = &config.paging {
+                    if let Some(paging) = &paging_clone {
                         if let Err(e) = router.update_prev_next_leds(&xtouch, paging.prev_note, paging.next_note).await {
                             warn!("Failed to update prev/next LEDs: {}", e);
                         }
@@ -847,7 +851,70 @@ async fn run_app(
 
                 match router.update_config(new_config).await {
                     Ok(()) => {
-                        info!("✅ Configuration reloaded successfully without dropping events");
+                        info!("✅ Configuration reloaded successfully");
+
+                        // Send pending MIDI messages (fader positions, button states)
+                        let pending_midi = router.take_pending_midi().await;
+                        for msg in pending_midi {
+                            trace!("  → Sending reload MIDI: {:02X?}", msg);
+                            if let Err(e) = xtouch.send_raw(&msg).await {
+                                warn!("Failed to send config reload MIDI: {}", e);
+                            }
+                        }
+
+                        // Apply LCD labels and colors from (new) active page
+                        let active_page = router.get_active_page().await;
+                        let active_page_name = router.get_active_page_name().await;
+                        if let Some(page) = active_page {
+                            let labels = page.lcd.as_ref().and_then(|lcd| lcd.labels.as_ref());
+                            let colors_u8 = convert_lcd_colors(&page);
+                            if let Err(e) = xtouch.apply_lcd_for_page(labels, colors_u8.as_ref(), &active_page_name).await {
+                                warn!("Failed to apply LCD after config reload: {}", e);
+                            }
+                        }
+
+                        // Update F-key LEDs (read paging from router's config, not stale local)
+                        let router_config = router.config.read().await;
+                        let paging_channel = router_config.paging.as_ref().map(|p| p.channel).unwrap_or(1);
+                        let paging_clone = router_config.paging.clone();
+                        drop(router_config);
+
+                        if let Err(e) = router.update_fkey_leds_for_active_page(&xtouch, paging_channel).await {
+                            warn!("Failed to update F-key LEDs: {}", e);
+                        }
+                        if let Some(paging) = &paging_clone {
+                            if let Err(e) = router.update_prev_next_leds(&xtouch, paging.prev_note, paging.next_note).await {
+                                warn!("Failed to update prev/next LEDs: {}", e);
+                            }
+                        }
+
+                        // Re-initialize gamepad subsystem with new config
+                        let router_cfg = router.config.read().await;
+                        let new_gamepad_config = router_cfg.gamepad.clone();
+                        drop(router_cfg);
+
+                        if let Some(ref gp_config) = new_gamepad_config {
+                            match input::gamepad::init(gp_config, router.clone()).await {
+                                Some(new_mapper) => {
+                                    gamepad_mapper = Some(new_mapper);
+                                    info!("Gamepad subsystem reloaded");
+                                }
+                                None => {
+                                    gamepad_mapper = None;
+                                    info!("Gamepad subsystem disabled after config reload");
+                                }
+                            }
+                        } else {
+                            gamepad_mapper = None;
+                            debug!("Gamepad not configured, skipping gamepad init");
+                        }
+
+                        // Update API state gamepad slots
+                        *api_state.gamepad_slots.write() =
+                            build_gamepad_slot_infos_from_config(&new_gamepad_config);
+
+                        // Clear the display_needs_update flag (we just handled it)
+                        router.check_and_clear_display_update().await;
                     }
                     Err(e) => {
                         warn!("⚠️  Failed to reload config (keeping old config): {}", e);
@@ -1112,7 +1179,17 @@ fn build_camera_infos(config: &AppConfig) -> Vec<api::CameraInfo> {
 
 /// Build gamepad slot info list from configuration.
 fn build_gamepad_slot_infos(config: &AppConfig) -> Vec<api::GamepadSlotInfo> {
-    let Some(gamepad) = config.gamepad.as_ref() else {
+    build_gamepad_slot_infos_from_config(&config.gamepad)
+}
+
+/// Build gamepad slot info list from an optional `GamepadConfig`.
+///
+/// Used both at startup (via `build_gamepad_slot_infos`) and on hot-reload
+/// where only the gamepad portion of the config is available.
+fn build_gamepad_slot_infos_from_config(
+    gamepad: &Option<config::GamepadConfig>,
+) -> Vec<api::GamepadSlotInfo> {
+    let Some(gamepad) = gamepad.as_ref() else {
         return Vec::new();
     };
     let Some(slots) = gamepad.gamepads.as_ref() else {
