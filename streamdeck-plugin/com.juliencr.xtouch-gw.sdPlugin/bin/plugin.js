@@ -516,29 +516,18 @@ const Colors = {
     FLASH_BG: "#F9A825",
 };
 /**
- * Cache of render contexts by canvas size.
- * Reuses native Canvas objects to avoid repeated C++ allocations
- * that the Node.js GC cannot reclaim fast enough.
+ * Create a fresh render context with a new canvas.
+ * Each render gets its own canvas to avoid node-canvas issues
+ * with toDataURL() on cleared/reused canvases.
  */
-const canvasCache = new Map();
-/**
- * Get a reusable render context, creating one if needed for this size.
- * Clears the canvas before returning so each render starts fresh.
- */
-function getRenderContext(size = DEFAULT_BUTTON_SIZE) {
-    let cached = canvasCache.get(size);
-    if (!cached) {
-        const canvas = createCanvas(size, size);
-        cached = {
-            canvas,
-            ctx: canvas.getContext("2d"),
-            size,
-            scaled: (baseValue) => Math.round((size * baseValue) / DEFAULT_BUTTON_SIZE),
-        };
-        canvasCache.set(size, cached);
-    }
-    cached.ctx.clearRect(0, 0, size, size);
-    return cached;
+function createRenderContext(size = DEFAULT_BUTTON_SIZE) {
+    const canvas = createCanvas(size, size);
+    return {
+        canvas,
+        ctx: canvas.getContext("2d"),
+        size,
+        scaled: (baseValue) => Math.round((size * baseValue) / DEFAULT_BUTTON_SIZE),
+    };
 }
 /**
  * Truncate text to fit within a given width, adding "..." if needed.
@@ -711,7 +700,7 @@ function drawResetIcon(ctx, x, y, iconSize, color) {
  * - Camera icon in the center, text at the bottom
  */
 function renderButtonImage(state, size = DEFAULT_BUTTON_SIZE) {
-    const { canvas, ctx, scaled } = getRenderContext(size);
+    const { canvas, ctx, scaled } = createRenderContext(size);
     const borderWidth = scaled(10);
     const indicatorHeight = scaled(6);
     const fontSize = scaled(24);
@@ -726,8 +715,7 @@ function renderButtonImage(state, size = DEFAULT_BUTTON_SIZE) {
         ctx.lineWidth = borderWidth;
         const offset = borderWidth / 2;
         const cornerRadius = Math.round(size * 7 / 72);
-        ctx.beginPath();
-        ctx.roundRect(offset, offset, size - borderWidth, size - borderWidth, cornerRadius);
+        drawRoundedRect(ctx, offset, offset, size - borderWidth, size - borderWidth, cornerRadius);
         ctx.stroke();
     }
     // Camera icon
@@ -759,7 +747,7 @@ function renderButtonImage(state, size = DEFAULT_BUTTON_SIZE) {
  * Shows a dark gray background with a red "!" icon.
  */
 function renderDisconnectedImage(size = DEFAULT_BUTTON_SIZE) {
-    const { canvas, ctx, scaled } = getRenderContext(size);
+    const { canvas, ctx, scaled } = createRenderContext(size);
     const fontSize = scaled(48);
     const labelFontSize = scaled(14);
     ctx.fillStyle = Colors.DISCONNECTED_BG;
@@ -777,7 +765,7 @@ function renderDisconnectedImage(size = DEFAULT_BUTTON_SIZE) {
  * Shows a dark gray background with a gear icon and "Config" label.
  */
 function renderNotConfiguredImage(size = DEFAULT_BUTTON_SIZE) {
-    const { canvas, ctx, scaled } = getRenderContext(size);
+    const { canvas, ctx, scaled } = createRenderContext(size);
     const iconFontSize = scaled(36);
     const labelFontSize = scaled(14);
     ctx.fillStyle = Colors.INACTIVE_BG;
@@ -798,7 +786,7 @@ function renderNotConfiguredImage(size = DEFAULT_BUTTON_SIZE) {
  * - Camera ID text at bottom
  */
 function renderResetButtonImage(state, size = DEFAULT_BUTTON_SIZE) {
-    const { canvas, ctx, scaled } = getRenderContext(size);
+    const { canvas, ctx, scaled } = createRenderContext(size);
     const fontSize = scaled(24);
     const padding = scaled(6);
     const iconSize = scaled(44);
@@ -819,7 +807,7 @@ function renderResetButtonImage(state, size = DEFAULT_BUTTON_SIZE) {
  * Used for reset confirmation instead of the green checkmark.
  */
 function renderFlashImage(size = DEFAULT_BUTTON_SIZE) {
-    const { canvas, ctx } = getRenderContext(size);
+    const { canvas, ctx } = createRenderContext(size);
     ctx.fillStyle = Colors.FLASH_BG;
     ctx.fillRect(0, 0, size, size);
     return canvas.toDataURL("image/png");

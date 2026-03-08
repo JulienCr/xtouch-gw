@@ -30,30 +30,18 @@ interface RenderContext {
 }
 
 /**
- * Cache of render contexts by canvas size.
- * Reuses native Canvas objects to avoid repeated C++ allocations
- * that the Node.js GC cannot reclaim fast enough.
+ * Create a fresh render context with a new canvas.
+ * Each render gets its own canvas to avoid node-canvas issues
+ * with toDataURL() on cleared/reused canvases.
  */
-const canvasCache = new Map<number, RenderContext>();
-
-/**
- * Get a reusable render context, creating one if needed for this size.
- * Clears the canvas before returning so each render starts fresh.
- */
-function getRenderContext(size: number = DEFAULT_BUTTON_SIZE): RenderContext {
-  let cached = canvasCache.get(size);
-  if (!cached) {
-    const canvas = createCanvas(size, size);
-    cached = {
-      canvas,
-      ctx: canvas.getContext("2d"),
-      size,
-      scaled: (baseValue: number) => Math.round((size * baseValue) / DEFAULT_BUTTON_SIZE),
-    };
-    canvasCache.set(size, cached);
-  }
-  cached.ctx.clearRect(0, 0, size, size);
-  return cached;
+function createRenderContext(size: number = DEFAULT_BUTTON_SIZE): RenderContext {
+  const canvas = createCanvas(size, size);
+  return {
+    canvas,
+    ctx: canvas.getContext("2d"),
+    size,
+    scaled: (baseValue: number) => Math.round((size * baseValue) / DEFAULT_BUTTON_SIZE),
+  };
 }
 
 /**
@@ -291,7 +279,7 @@ function drawResetIcon(
  * - Camera icon in the center, text at the bottom
  */
 export function renderButtonImage(state: ButtonState, size: number = DEFAULT_BUTTON_SIZE): string {
-  const { canvas, ctx, scaled } = getRenderContext(size);
+  const { canvas, ctx, scaled } = createRenderContext(size);
 
   const borderWidth = scaled(10);
   const indicatorHeight = scaled(6);
@@ -309,8 +297,7 @@ export function renderButtonImage(state: ButtonState, size: number = DEFAULT_BUT
     ctx.lineWidth = borderWidth;
     const offset = borderWidth / 2;
     const cornerRadius = Math.round(size * 7 / 72);
-    ctx.beginPath();
-    ctx.roundRect(offset, offset, size - borderWidth, size - borderWidth, cornerRadius);
+    drawRoundedRect(ctx, offset, offset, size - borderWidth, size - borderWidth, cornerRadius);
     ctx.stroke();
   }
 
@@ -349,7 +336,7 @@ export function renderButtonImage(state: ButtonState, size: number = DEFAULT_BUT
  * Shows a dark gray background with a red "!" icon.
  */
 export function renderDisconnectedImage(size: number = DEFAULT_BUTTON_SIZE): string {
-  const { canvas, ctx, scaled } = getRenderContext(size);
+  const { canvas, ctx, scaled } = createRenderContext(size);
 
   const fontSize = scaled(48);
   const labelFontSize = scaled(14);
@@ -373,7 +360,7 @@ export function renderDisconnectedImage(size: number = DEFAULT_BUTTON_SIZE): str
  * Shows a dark gray background with a gear icon and "Config" label.
  */
 export function renderNotConfiguredImage(size: number = DEFAULT_BUTTON_SIZE): string {
-  const { canvas, ctx, scaled } = getRenderContext(size);
+  const { canvas, ctx, scaled } = createRenderContext(size);
 
   const iconFontSize = scaled(36);
   const labelFontSize = scaled(14);
@@ -400,7 +387,7 @@ export function renderNotConfiguredImage(size: number = DEFAULT_BUTTON_SIZE): st
  * - Camera ID text at bottom
  */
 export function renderResetButtonImage(state: ResetButtonState, size: number = DEFAULT_BUTTON_SIZE): string {
-  const { canvas, ctx, scaled } = getRenderContext(size);
+  const { canvas, ctx, scaled } = createRenderContext(size);
 
   const fontSize = scaled(24);
   const padding = scaled(6);
@@ -429,7 +416,7 @@ export function renderResetButtonImage(state: ResetButtonState, size: number = D
  * Used for reset confirmation instead of the green checkmark.
  */
 export function renderFlashImage(size: number = DEFAULT_BUTTON_SIZE): string {
-  const { canvas, ctx } = getRenderContext(size);
+  const { canvas, ctx } = createRenderContext(size);
 
   ctx.fillStyle = Colors.FLASH_BG;
   ctx.fillRect(0, 0, size, size);
