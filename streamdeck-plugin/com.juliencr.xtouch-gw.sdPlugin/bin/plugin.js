@@ -87,6 +87,52 @@ async function apiRequest(baseUrl, path, options) {
     return undefined;
 }
 /**
+ * Set the camera target for a gamepad slot via HTTP API.
+ *
+ * @param serverAddress The server address (host:port)
+ * @param slot The gamepad slot identifier
+ * @param cameraId The camera ID to target
+ * @param target Optional: "preview" or "program" to also switch OBS scene (default: "preview")
+ */
+async function setCamera(serverAddress, slot, cameraId, target = "preview") {
+    streamDeck.logger.info(`Setting camera target: slot=${slot}, camera=${cameraId}, target=${target}`);
+    const path = `/api/gamepad/${encodeURIComponent(slot)}/camera`;
+    await apiRequest(serverAddress, path, { method: "PUT", body: { camera_id: cameraId, target } });
+    streamDeck.logger.info(`Camera target set successfully: ${slot} -> ${cameraId} (${target})`);
+}
+/**
+ * Reset a camera's zoom and/or position via HTTP API.
+ *
+ * @param serverAddress The server address (host:port)
+ * @param cameraId The camera ID to reset
+ * @param mode The reset mode: "position", "zoom", or "both"
+ */
+async function resetCamera(serverAddress, cameraId, mode) {
+    streamDeck.logger.info(`Resetting camera: id=${cameraId}, mode=${mode}`);
+    const path = `/api/cameras/${encodeURIComponent(cameraId)}/reset`;
+    await apiRequest(serverAddress, path, { method: "POST", body: { mode } });
+    streamDeck.logger.info(`Camera reset successful: ${cameraId}`);
+}
+/**
+ * Fetch available gamepad slots via HTTP API.
+ *
+ * @param serverAddress The server address (host:port)
+ * @returns Array of gamepad slot information
+ */
+async function getGamepads(serverAddress) {
+    return apiRequest(serverAddress, "/api/gamepads");
+}
+/**
+ * Fetch available cameras via HTTP API.
+ *
+ * @param serverAddress The server address (host:port)
+ * @returns Array of camera information
+ */
+async function getCameras(serverAddress) {
+    return apiRequest(serverAddress, "/api/cameras");
+}
+
+/**
  * Client for communicating with the XTouch GW server.
  * Handles WebSocket connection for real-time state updates and HTTP API calls for camera targeting.
  */
@@ -101,9 +147,9 @@ class XTouchClient {
         this._gamepads = new Map();
         this._cameras = new Map();
         this._onAirCameraId = null;
-        // Callbacks
-        this._onStateChange = null;
-        this._onConnectionChange = null;
+        // Listener sets (supports multiple actions sharing one client)
+        this._stateChangeListeners = new Set();
+        this._connectionChangeListeners = new Set();
         this._serverAddress = serverAddress;
     }
     /**
@@ -119,16 +165,34 @@ class XTouchClient {
         return this._connectionStatus;
     }
     /**
-     * Set callback for state changes
+     * Add a listener for state changes.
      */
-    set onStateChange(callback) {
-        this._onStateChange = callback;
+    addStateChangeListener(callback) {
+        this._stateChangeListeners.add(callback);
     }
     /**
-     * Set callback for connection status changes
+     * Remove a state change listener.
      */
-    set onConnectionChange(callback) {
-        this._onConnectionChange = callback;
+    removeStateChangeListener(callback) {
+        this._stateChangeListeners.delete(callback);
+    }
+    /**
+     * Add a listener for connection status changes.
+     */
+    addConnectionChangeListener(callback) {
+        this._connectionChangeListeners.add(callback);
+    }
+    /**
+     * Remove a connection change listener.
+     */
+    removeConnectionChangeListener(callback) {
+        this._connectionChangeListeners.delete(callback);
+    }
+    /**
+     * Check if this client has any registered listeners.
+     */
+    get hasListeners() {
+        return this._stateChangeListeners.size > 0 || this._connectionChangeListeners.size > 0;
     }
     /**
      * Connect to the XTouch GW WebSocket server.
@@ -296,31 +360,35 @@ class XTouchClient {
         this.setConnectionStatus("disconnected");
     }
     /**
-     * Set connection status and emit change event
+     * Set connection status and notify all listeners.
      */
     setConnectionStatus(status) {
         if (this._connectionStatus === status)
             return;
         this._connectionStatus = status;
-        if (this._onConnectionChange) {
+        for (const listener of this._connectionChangeListeners) {
             try {
-                this._onConnectionChange(status);
+                listener(status);
             }
             catch (error) {
-                streamDeck.logger.error(`Error in connection change callback: ${error}`);
+                streamDeck.logger.error(`Error in connection change listener: ${error}`);
             }
         }
     }
     /**
-     * Emit state change event
+     * Notify all state change listeners.
+     * Builds the state snapshot once and shares it across all listeners.
      */
     emitStateChange() {
-        if (this._onStateChange) {
+        if (this._stateChangeListeners.size === 0)
+            return;
+        const state = this.getState();
+        for (const listener of this._stateChangeListeners) {
             try {
-                this._onStateChange(this.getState());
+                listener(state);
             }
             catch (error) {
-                streamDeck.logger.error(`Error in state change callback: ${error}`);
+                streamDeck.logger.error(`Error in state change listener: ${error}`);
             }
         }
     }
@@ -356,31 +424,25 @@ class XTouchClient {
      * @param target Optional: "preview" or "program" to also switch OBS scene (default: "preview")
      */
     async setCameraTarget(slot, cameraId, target = "preview") {
-        streamDeck.logger.info(`Setting camera target: slot=${slot}, camera=${cameraId}, target=${target}`);
-        const path = `/api/gamepad/${encodeURIComponent(slot)}/camera`;
-        await apiRequest(this._serverAddress, path, { method: "PUT", body: { camera_id: cameraId, target } });
-        streamDeck.logger.info(`Camera target set successfully: ${slot} -> ${cameraId} (${target})`);
+        await setCamera(this._serverAddress, slot, cameraId, target);
     }
     /**
      * Fetch available gamepad slots via HTTP API.
      */
     async getGamepadSlots() {
-        return apiRequest(this._serverAddress, "/api/gamepads");
+        return getGamepads(this._serverAddress);
     }
     /**
      * Fetch available cameras via HTTP API.
      */
     async getCameras() {
-        return apiRequest(this._serverAddress, "/api/cameras");
+        return getCameras(this._serverAddress);
     }
     /**
      * Reset a camera's zoom and/or position via HTTP API.
      */
     async resetCamera(cameraId, mode) {
-        streamDeck.logger.info(`Resetting camera: id=${cameraId}, mode=${mode}`);
-        const path = `/api/cameras/${encodeURIComponent(cameraId)}/reset`;
-        await apiRequest(this._serverAddress, path, { method: "POST", body: { mode } });
-        streamDeck.logger.info(`Camera reset successful: ${cameraId}`);
+        await resetCamera(this._serverAddress, cameraId, mode);
     }
 }
 // Reconnect configuration
@@ -409,6 +471,32 @@ function getClient(serverAddress) {
     }
     return client;
 }
+/**
+ * Disconnect and remove a client instance.
+ * Use this when the server address changes or plugin unloads.
+ *
+ * @param serverAddress The server address to disconnect
+ */
+function disconnectClient(serverAddress) {
+    const normalizedAddress = serverAddress.toLowerCase().trim();
+    const client = clientInstances.get(normalizedAddress);
+    if (client) {
+        client.disconnect();
+        clientInstances.delete(normalizedAddress);
+        streamDeck.logger.info(`Disconnected and removed XTouchClient for ${normalizedAddress}`);
+    }
+}
+/**
+ * Disconnect all client instances.
+ * Use this on plugin shutdown.
+ */
+function disconnectAllClients() {
+    for (const [address, client] of clientInstances) {
+        client.disconnect();
+        streamDeck.logger.info(`Disconnected XTouchClient for ${address}`);
+    }
+    clientInstances.clear();
+}
 
 /**
  * Default button size in pixels (Stream Deck @2x resolution)
@@ -428,14 +516,15 @@ const Colors = {
     FLASH_BG: "#F9A825",
 };
 /**
- * Create a render context with canvas and scaling helper.
+ * Create a fresh render context with a new canvas.
+ * Each render gets its own canvas to avoid node-canvas issues
+ * with toDataURL() on cleared/reused canvases.
  */
 function createRenderContext(size = DEFAULT_BUTTON_SIZE) {
     const canvas = createCanvas(size, size);
-    const ctx = canvas.getContext("2d");
     return {
         canvas,
-        ctx,
+        ctx: canvas.getContext("2d"),
         size,
         scaled: (baseValue) => Math.round((size * baseValue) / DEFAULT_BUTTON_SIZE),
     };
@@ -626,8 +715,7 @@ function renderButtonImage(state, size = DEFAULT_BUTTON_SIZE) {
         ctx.lineWidth = borderWidth;
         const offset = borderWidth / 2;
         const cornerRadius = Math.round(size * 7 / 72);
-        ctx.beginPath();
-        ctx.roundRect(offset, offset, size - borderWidth, size - borderWidth, cornerRadius);
+        drawRoundedRect(ctx, offset, offset, size - borderWidth, size - borderWidth, cornerRadius);
         ctx.stroke();
     }
     // Camera icon
@@ -807,12 +895,27 @@ class CameraActionBase extends SingletonAction {
     }
     /**
      * Called when the action disappears from the Stream Deck.
-     * Cleans up resources.
+     * Cleans up listeners and orphaned clients.
      */
     async onWillDisappear(ev) {
         const contextId = ev.action.id;
         streamDeck.logger.info(`Action disappeared: context=${contextId}`);
-        this.contexts.delete(contextId);
+        const contextState = this.contexts.get(contextId);
+        if (contextState) {
+            const serverAddress = contextState.settings.serverAddress;
+            this.disconnectContextClient(contextState);
+            this.contexts.delete(contextId);
+            // Cleanup orphaned client if no listeners remain (across all action types)
+            if (serverAddress) {
+                const client = getClient(serverAddress);
+                if (!client.hasListeners) {
+                    disconnectClient(serverAddress);
+                }
+            }
+        }
+        else {
+            this.contexts.delete(contextId);
+        }
     }
     /**
      * Called when settings are received from the property inspector.
@@ -832,6 +935,13 @@ class CameraActionBase extends SingletonAction {
         if (newSettings.serverAddress !== oldServerAddress) {
             streamDeck.logger.info(`Server address changed: ${oldServerAddress} -> ${newSettings.serverAddress}`);
             this.disconnectContextClient(contextState);
+            // Cleanup orphaned client if no listeners remain (across all action types)
+            if (oldServerAddress) {
+                const client = getClient(oldServerAddress);
+                if (!client.hasListeners) {
+                    disconnectClient(oldServerAddress);
+                }
+            }
             if (newSettings.serverAddress) {
                 this.connectContext(contextId);
             }
@@ -840,12 +950,18 @@ class CameraActionBase extends SingletonAction {
         await this.updateDisplay(contextState);
     }
     /**
-     * Disconnect the client from a context (clears callbacks only).
+     * Disconnect the client from a context by removing its listeners.
      */
     disconnectContextClient(contextState) {
         if (contextState.client) {
-            contextState.client.onStateChange = null;
-            contextState.client.onConnectionChange = null;
+            if (contextState.stateChangeCallback) {
+                contextState.client.removeStateChangeListener(contextState.stateChangeCallback);
+                contextState.stateChangeCallback = null;
+            }
+            if (contextState.connectionChangeCallback) {
+                contextState.client.removeConnectionChangeListener(contextState.connectionChangeCallback);
+                contextState.connectionChangeCallback = null;
+            }
             contextState.client = null;
         }
     }
@@ -863,7 +979,9 @@ class CameraActionBase extends SingletonAction {
         streamDeck.logger.info(`Connecting context ${contextId} to ${serverAddress}`);
         const client = getClient(serverAddress);
         contextState.client = client;
-        this.setupClientCallbacks(client, serverAddress);
+        const callbacks = this.setupClientCallbacks(client, serverAddress);
+        contextState.stateChangeCallback = callbacks.stateChange;
+        contextState.connectionChangeCallback = callbacks.connectionChange;
         if (client.connectionStatus === "disconnected") {
             client.connect();
         }
@@ -997,6 +1115,8 @@ let CameraSelectAction = (() => {
                 connectionStatus: "disconnected",
                 longPressTimer: null,
                 longPressTriggered: false,
+                stateChangeCallback: null,
+                connectionChangeCallback: null,
             };
         }
         renderImage(contextState) {
@@ -1026,12 +1146,15 @@ let CameraSelectAction = (() => {
             return settings.cameraId;
         }
         setupClientCallbacks(client, serverAddress) {
-            client.onStateChange = (state) => {
+            const stateChange = (state) => {
                 this.handleStateChange(state);
             };
-            client.onConnectionChange = (status) => {
+            const connectionChange = (status) => {
                 this.handleConnectionChange(status, serverAddress);
             };
+            client.addStateChangeListener(stateChange);
+            client.addConnectionChangeListener(connectionChange);
+            return { stateChange, connectionChange };
         }
         updateStateFromClient(contextState) {
             const { client, settings } = contextState;
@@ -1211,6 +1334,8 @@ let CameraResetAction = (() => {
                 client: null,
                 keyAction,
                 connectionStatus: "disconnected",
+                stateChangeCallback: null,
+                connectionChangeCallback: null,
             };
         }
         renderImage(contextState) {
@@ -1227,9 +1352,11 @@ let CameraResetAction = (() => {
             return settings.cameraId;
         }
         setupClientCallbacks(client, serverAddress) {
-            client.onConnectionChange = (status) => {
+            const connectionChange = (status) => {
                 this.handleConnectionChange(status, serverAddress);
             };
+            client.addConnectionChangeListener(connectionChange);
+            return { stateChange: null, connectionChange };
         }
         /**
          * Called when the key is pressed.
@@ -1259,10 +1386,13 @@ let CameraResetAction = (() => {
 })();
 
 // Configure logging
-streamDeck.logger.setLevel(LogLevel.DEBUG);
+streamDeck.logger.setLevel(LogLevel.INFO);
 // Register actions
 streamDeck.actions.registerAction(new CameraSelectAction());
 streamDeck.actions.registerAction(new CameraResetAction());
+// Cleanup WebSocket connections on process shutdown
+process.on("SIGTERM", () => disconnectAllClients());
+process.on("SIGINT", () => disconnectAllClients());
 // Connect to Stream Deck
 streamDeck.connect();
 streamDeck.logger.info("XTouch GW Camera Control plugin connected");

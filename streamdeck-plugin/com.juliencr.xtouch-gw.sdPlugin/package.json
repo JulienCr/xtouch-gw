@@ -7,11 +7,13 @@
   "scripts": {
     "build": "rollup -c",
     "watch": "rollup -c -w",
-    "clean": "rimraf bin/*.js bin/*.map"
+    "clean": "rimraf bin/*.js bin/*.map",
+    "install-plugin": "rollup -c && npx @elgato/cli link",
+    "restart-plugin": "npx @elgato/cli restart com.juliencr.xtouch-gw"
   },
   "dependencies": {
     "@elgato/streamdeck": "^1.0.0",
-    "canvas": "^3.2.1",
+    "@napi-rs/canvas": "^0.1.90",
     "ws": "^8.19.0"
   },
   "devDependencies": {
@@ -29,7 +31,7 @@
   },
   "pnpm": {
     "onlyBuiltDependencies": [
-      "canvas"
+      "@napi-rs/canvas"
     ]
   }
 }

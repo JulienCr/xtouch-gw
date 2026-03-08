@@ -1,111 +1,33 @@
 import streamDeck from "@elgato/streamdeck";
 import { WebSocket, type RawData } from "ws";
 
-/**
- * Gamepad slot information from the XTouch GW API
- */
-export interface GamepadSlotInfo {
-  slot: string;
-  product_match: string;
-  camera_target_mode: string;
-  current_camera: string | null;
-}
+import type {
+  GamepadSlotInfo,
+  CameraInfo,
+  ConnectionStatus,
+  XTouchState,
+  SnapshotMessage,
+  TargetChangedMessage,
+  OnAirChangedMessage,
+  WebSocketMessage,
+} from "./xtouch-types";
 
-/**
- * Camera information from the XTouch GW API
- */
-export interface CameraInfo {
-  id: string;
-  scene: string;
-  source: string;
-  split_source: string;
-  enable_ptz: boolean;
-}
+import { setCamera, resetCamera, getGamepads, getCameras } from "./xtouch-api";
 
-/**
- * Connection status for the WebSocket client
- */
-export type ConnectionStatus = "disconnected" | "connecting" | "connected";
+// Re-export all types so existing imports from "../services/xtouch-client" still work
+export type {
+  GamepadSlotInfo,
+  CameraInfo,
+  ConnectionStatus,
+  XTouchState,
+  SnapshotMessage,
+  TargetChangedMessage,
+  OnAirChangedMessage,
+  WebSocketMessage,
+} from "./xtouch-types";
 
-/**
- * Full state snapshot from the XTouch GW server
- */
-export interface XTouchState {
-  gamepads: Map<string, GamepadSlotInfo>;
-  cameras: Map<string, CameraInfo>;
-  onAirCameraId: string | null;
-  connectionStatus: ConnectionStatus;
-}
-
-/**
- * Snapshot message received on WebSocket connect
- */
-interface SnapshotMessage {
-  type: "snapshot";
-  gamepads: GamepadSlotInfo[];
-  cameras: CameraInfo[];
-  on_air_camera: string | null;
-  timestamp: number;
-}
-
-/**
- * Target changed message received when a gamepad's camera target changes
- */
-interface TargetChangedMessage {
-  type: "target_changed";
-  gamepad_slot: string;
-  camera_id: string;
-  timestamp: number;
-}
-
-/**
- * On air changed message received when OBS program scene changes
- */
-interface OnAirChangedMessage {
-  type: "on_air_changed";
-  camera_id: string;
-  scene_name: string;
-  timestamp: number;
-}
-
-/**
- * Union type for all WebSocket messages
- */
-type WebSocketMessage = SnapshotMessage | TargetChangedMessage | OnAirChangedMessage;
-
-/**
- * Make an HTTP request to the XTouch GW API.
- * Handles response checking and JSON parsing.
- */
-async function apiRequest<T>(
-  baseUrl: string,
-  path: string,
-  options?: { method?: string; body?: object }
-): Promise<T> {
-  const url = `http://${baseUrl}${path}`;
-  const fetchOptions: RequestInit = {
-    method: options?.method ?? "GET",
-    headers: { "Content-Type": "application/json" },
-  };
-
-  if (options?.body) {
-    fetchOptions.body = JSON.stringify(options.body);
-  }
-
-  const response = await fetch(url, fetchOptions);
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`API ${options?.method ?? "GET"} ${path}: HTTP ${response.status} - ${errorText}`);
-  }
-
-  const contentType = response.headers.get("content-type");
-  if (contentType?.includes("application/json")) {
-    return (await response.json()) as T;
-  }
-
-  return undefined as T;
-}
+// Re-export HTTP API functions for consumers that import from this module
+export { apiRequest, setCamera, resetCamera, getGamepads, getCameras } from "./xtouch-api";
 
 /**
  * Client for communicating with the XTouch GW server.
@@ -124,9 +46,9 @@ export class XTouchClient {
   private _cameras: Map<string, CameraInfo> = new Map();
   private _onAirCameraId: string | null = null;
 
-  // Callbacks
-  private _onStateChange: ((state: XTouchState) => void) | null = null;
-  private _onConnectionChange: ((status: ConnectionStatus) => void) | null = null;
+  // Listener sets (supports multiple actions sharing one client)
+  private _stateChangeListeners = new Set<(state: XTouchState) => void>();
+  private _connectionChangeListeners = new Set<(status: ConnectionStatus) => void>();
 
   // Reconnect configuration
   private static readonly INITIAL_RECONNECT_DELAY_MS = 1000;
@@ -154,17 +76,38 @@ export class XTouchClient {
   }
 
   /**
-   * Set callback for state changes
+   * Add a listener for state changes.
    */
-  set onStateChange(callback: ((state: XTouchState) => void) | null) {
-    this._onStateChange = callback;
+  addStateChangeListener(callback: (state: XTouchState) => void): void {
+    this._stateChangeListeners.add(callback);
   }
 
   /**
-   * Set callback for connection status changes
+   * Remove a state change listener.
    */
-  set onConnectionChange(callback: ((status: ConnectionStatus) => void) | null) {
-    this._onConnectionChange = callback;
+  removeStateChangeListener(callback: (state: XTouchState) => void): void {
+    this._stateChangeListeners.delete(callback);
+  }
+
+  /**
+   * Add a listener for connection status changes.
+   */
+  addConnectionChangeListener(callback: (status: ConnectionStatus) => void): void {
+    this._connectionChangeListeners.add(callback);
+  }
+
+  /**
+   * Remove a connection change listener.
+   */
+  removeConnectionChangeListener(callback: (status: ConnectionStatus) => void): void {
+    this._connectionChangeListeners.delete(callback);
+  }
+
+  /**
+   * Check if this client has any registered listeners.
+   */
+  get hasListeners(): boolean {
+    return this._stateChangeListeners.size > 0 || this._connectionChangeListeners.size > 0;
   }
 
   /**
@@ -373,31 +316,35 @@ export class XTouchClient {
   }
 
   /**
-   * Set connection status and emit change event
+   * Set connection status and notify all listeners.
    */
   private setConnectionStatus(status: ConnectionStatus): void {
     if (this._connectionStatus === status) return;
 
     this._connectionStatus = status;
 
-    if (this._onConnectionChange) {
+    for (const listener of this._connectionChangeListeners) {
       try {
-        this._onConnectionChange(status);
+        listener(status);
       } catch (error) {
-        streamDeck.logger.error(`Error in connection change callback: ${error}`);
+        streamDeck.logger.error(`Error in connection change listener: ${error}`);
       }
     }
   }
 
   /**
-   * Emit state change event
+   * Notify all state change listeners.
+   * Builds the state snapshot once and shares it across all listeners.
    */
   private emitStateChange(): void {
-    if (this._onStateChange) {
+    if (this._stateChangeListeners.size === 0) return;
+
+    const state = this.getState();
+    for (const listener of this._stateChangeListeners) {
       try {
-        this._onStateChange(this.getState());
+        listener(state);
       } catch (error) {
-        streamDeck.logger.error(`Error in state change callback: ${error}`);
+        streamDeck.logger.error(`Error in state change listener: ${error}`);
       }
     }
   }
@@ -437,34 +384,28 @@ export class XTouchClient {
    * @param target Optional: "preview" or "program" to also switch OBS scene (default: "preview")
    */
   async setCameraTarget(slot: string, cameraId: string, target: "preview" | "program" = "preview"): Promise<void> {
-    streamDeck.logger.info(`Setting camera target: slot=${slot}, camera=${cameraId}, target=${target}`);
-    const path = `/api/gamepad/${encodeURIComponent(slot)}/camera`;
-    await apiRequest(this._serverAddress, path, { method: "PUT", body: { camera_id: cameraId, target } });
-    streamDeck.logger.info(`Camera target set successfully: ${slot} -> ${cameraId} (${target})`);
+    await setCamera(this._serverAddress, slot, cameraId, target);
   }
 
   /**
    * Fetch available gamepad slots via HTTP API.
    */
   async getGamepadSlots(): Promise<GamepadSlotInfo[]> {
-    return apiRequest<GamepadSlotInfo[]>(this._serverAddress, "/api/gamepads");
+    return getGamepads(this._serverAddress);
   }
 
   /**
    * Fetch available cameras via HTTP API.
    */
   async getCameras(): Promise<CameraInfo[]> {
-    return apiRequest<CameraInfo[]>(this._serverAddress, "/api/cameras");
+    return getCameras(this._serverAddress);
   }
 
   /**
    * Reset a camera's zoom and/or position via HTTP API.
    */
   async resetCamera(cameraId: string, mode: "position" | "zoom" | "both"): Promise<void> {
-    streamDeck.logger.info(`Resetting camera: id=${cameraId}, mode=${mode}`);
-    const path = `/api/cameras/${encodeURIComponent(cameraId)}/reset`;
-    await apiRequest(this._serverAddress, path, { method: "POST", body: { mode } });
-    streamDeck.logger.info(`Camera reset successful: ${cameraId}`);
+    await resetCamera(this._serverAddress, cameraId, mode);
   }
 }
 

@@ -30,14 +30,15 @@ interface RenderContext {
 }
 
 /**
- * Create a render context with canvas and scaling helper.
+ * Create a fresh render context with a new canvas.
+ * Each render gets its own canvas to avoid node-canvas issues
+ * with toDataURL() on cleared/reused canvases.
  */
 function createRenderContext(size: number = DEFAULT_BUTTON_SIZE): RenderContext {
   const canvas = createCanvas(size, size);
-  const ctx = canvas.getContext("2d");
   return {
     canvas,
-    ctx,
+    ctx: canvas.getContext("2d"),
     size,
     scaled: (baseValue: number) => Math.round((size * baseValue) / DEFAULT_BUTTON_SIZE),
   };
@@ -296,8 +297,7 @@ export function renderButtonImage(state: ButtonState, size: number = DEFAULT_BUT
     ctx.lineWidth = borderWidth;
     const offset = borderWidth / 2;
     const cornerRadius = Math.round(size * 7 / 72);
-    ctx.beginPath();
-    ctx.roundRect(offset, offset, size - borderWidth, size - borderWidth, cornerRadius);
+    drawRoundedRect(ctx, offset, offset, size - borderWidth, size - borderWidth, cornerRadius);
     ctx.stroke();
   }
 

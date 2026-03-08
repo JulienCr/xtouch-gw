@@ -3,173 +3,7 @@
 <head>
   <meta charset="utf-8">
   <title>Camera Reset</title>
-  <style>
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
-
-    body {
-      background-color: #2D2D2D;
-      color: #FFFFFF;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      font-size: 12px;
-      line-height: 1.4;
-      padding: 0;
-      margin: 0;
-    }
-
-    .sdpi-wrapper {
-      padding: 12px;
-    }
-
-    .sdpi-item {
-      display: flex;
-      align-items: center;
-      margin-bottom: 10px;
-      min-height: 28px;
-    }
-
-    .sdpi-item-label {
-      flex: 0 0 70px;
-      color: #A0A0A0;
-      font-size: 11px;
-      text-align: right;
-      padding-right: 12px;
-    }
-
-    .sdpi-item-value {
-      flex: 1;
-      min-width: 0;
-    }
-
-    input[type="text"],
-    select {
-      width: 100%;
-      height: 26px;
-      padding: 4px 8px;
-      background-color: #3D3D3D;
-      border: 1px solid #5D5D5D;
-      border-radius: 3px;
-      color: #FFFFFF;
-      font-size: 11px;
-      outline: none;
-      transition: border-color 0.2s ease;
-    }
-
-    input[type="text"]:focus,
-    select:focus {
-      border-color: #0078D4;
-    }
-
-    input[type="text"]::placeholder {
-      color: #808080;
-    }
-
-    select {
-      cursor: pointer;
-      appearance: none;
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23808080' d='M3 4.5L6 8l3-3.5H3z'/%3E%3C/svg%3E");
-      background-repeat: no-repeat;
-      background-position: right 8px center;
-      padding-right: 24px;
-    }
-
-    select:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
-
-    select option {
-      background-color: #3D3D3D;
-      color: #FFFFFF;
-    }
-
-    button {
-      width: 100%;
-      height: 28px;
-      padding: 0 12px;
-      background-color: #0078D4;
-      border: none;
-      border-radius: 3px;
-      color: #FFFFFF;
-      font-size: 11px;
-      font-weight: 500;
-      cursor: pointer;
-      transition: background-color 0.2s ease;
-    }
-
-    button:hover {
-      background-color: #1084D9;
-    }
-
-    button:active {
-      background-color: #006CBD;
-    }
-
-    button:disabled {
-      background-color: #4D4D4D;
-      cursor: not-allowed;
-    }
-
-    .status-indicator {
-      display: flex;
-      align-items: center;
-      height: 26px;
-    }
-
-    .status-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      margin-right: 8px;
-      flex-shrink: 0;
-      background-color: #808080;
-    }
-
-    .status-dot.connected {
-      background-color: #4CAF50;
-    }
-
-    .status-dot.connecting {
-      background-color: #FF9800;
-      animation: pulse 1s ease-in-out infinite;
-    }
-
-    .status-dot.disconnected {
-      background-color: #F44336;
-    }
-
-    .status-dot.not-configured {
-      background-color: #808080;
-    }
-
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.4; }
-    }
-
-    .status-text {
-      font-size: 11px;
-      color: #A0A0A0;
-    }
-
-    .loading-option {
-      font-style: italic;
-      color: #808080;
-    }
-
-    .error-option {
-      color: #F44336;
-    }
-
-    .divider {
-      height: 1px;
-      background-color: #404040;
-      margin: 12px 0;
-    }
-  </style>
+  <link rel="stylesheet" href="shared.css">
 </head>
 <body>
   <div class="sdpi-wrapper">
@@ -226,309 +60,86 @@
   </div>
 
   <script>
-    // Constants
-    const DEFAULT_SERVER_ADDRESS = "localhost:8125";
+    // Action-specific DOM elements
+    var cameraIdSelect = document.getElementById("cameraId");
+    var resetModeSelect = document.getElementById("resetMode");
 
-    // Stream Deck WebSocket connection
-    let websocket = null;
-    let uuid = null;
-    let actionInfo = null;
-    let inInfo = null;
+    // Action-specific configuration for the shared framework
+    window.piConfig = {
+      defaultSettings: {
+        serverAddress: "localhost:8125",
+        cameraId: "",
+        resetMode: "both"
+      },
 
-    // State
-    let currentSettings = {
-      serverAddress: DEFAULT_SERVER_ADDRESS,
-      cameraId: "",
-      resetMode: "both"
-    };
-
-    let debounceTimer = null;
-    let isConnected = false;
-
-    // DOM Elements
-    const serverAddressInput = document.getElementById("serverAddress");
-    const cameraIdSelect = document.getElementById("cameraId");
-    const resetModeSelect = document.getElementById("resetMode");
-    const statusDot = document.getElementById("statusDot");
-    const statusText = document.getElementById("statusText");
-    const testButton = document.getElementById("testConnection");
-
-    // Stream Deck calls this function when the PI is loaded
-    function connectElgatoStreamDeckSocket(inPort, inPropertyInspectorUUID, inRegisterEvent, inInfo, inActionInfo) {
-      console.log("connectElgatoStreamDeckSocket called", { inPort, inPropertyInspectorUUID, inRegisterEvent });
-
-      uuid = inPropertyInspectorUUID;
-      actionInfo = JSON.parse(inActionInfo);
-      inInfo = JSON.parse(inInfo);
-
-      // Load settings from actionInfo
-      if (actionInfo && actionInfo.payload && actionInfo.payload.settings) {
-        currentSettings = {
-          serverAddress: actionInfo.payload.settings.serverAddress || DEFAULT_SERVER_ADDRESS,
-          cameraId: actionInfo.payload.settings.cameraId || "",
-          resetMode: actionInfo.payload.settings.resetMode || "both"
+      buildSettingsFromPayload: function(payload) {
+        return {
+          serverAddress: payload.serverAddress || "localhost:8125",
+          cameraId: payload.cameraId || "",
+          resetMode: payload.resetMode || "both"
         };
-        console.log("Loaded settings from actionInfo:", currentSettings);
-        applySettingsToUI();
-      }
+      },
 
-      // Connect to Stream Deck
-      websocket = new WebSocket("ws://127.0.0.1:" + inPort);
+      applySettingsToUI: function(settings) {
+        document.getElementById("serverAddress").value = settings.serverAddress || "localhost:8125";
+        resetModeSelect.value = settings.resetMode || "both";
+        // Camera will be set after dropdown is populated
+      },
 
-      websocket.onopen = function() {
-        console.log("WebSocket connected to Stream Deck");
-        // Register the Property Inspector
-        websocket.send(JSON.stringify({
-          event: inRegisterEvent,
-          uuid: inPropertyInspectorUUID
-        }));
-
-        // Request settings
-        websocket.send(JSON.stringify({
-          event: "getSettings",
-          context: uuid
-        }));
-      };
-
-      websocket.onmessage = function(evt) {
-        const data = JSON.parse(evt.data);
-        console.log("Received from Stream Deck:", data);
-
-        if (data.event === "didReceiveSettings") {
-          const settings = data.payload.settings || {};
-          currentSettings = {
-            serverAddress: settings.serverAddress || DEFAULT_SERVER_ADDRESS,
-            cameraId: settings.cameraId || "",
-            resetMode: settings.resetMode || "both"
-          };
-          console.log("Applied settings from didReceiveSettings:", currentSettings);
-          applySettingsToUI();
-
-          // Auto-connect if server is configured
-          if (currentSettings.serverAddress) {
-            fetchDropdownData();
-          }
-        }
-      };
-
-      websocket.onerror = function(error) {
-        console.error("WebSocket error:", error);
-      };
-
-      websocket.onclose = function() {
-        console.log("WebSocket closed");
-      };
-
-      // Setup event listeners
-      setupEventListeners();
-
-      // Auto-connect if server is already configured
-      if (currentSettings.serverAddress) {
-        fetchDropdownData();
-      }
-    }
-
-    function setupEventListeners() {
-      // Server address input with debounce
-      serverAddressInput.addEventListener("input", function() {
-        currentSettings.serverAddress = this.value;
-
-        // Clear previous timer
-        if (debounceTimer) {
-          clearTimeout(debounceTimer);
-        }
-
-        // Reset status while typing
-        setStatus("not-configured", "Not configured");
-        resetDropdowns();
-
-        // Debounce API calls
-        debounceTimer = setTimeout(function() {
-          if (currentSettings.serverAddress) {
-            saveSettings();
-            fetchDropdownData();
-          }
-        }, 500);
-      });
-
-      // Camera change
-      cameraIdSelect.addEventListener("change", function() {
-        currentSettings.cameraId = this.value;
-        saveSettings();
-      });
-
-      // Reset mode change
-      resetModeSelect.addEventListener("change", function() {
-        currentSettings.resetMode = this.value;
-        saveSettings();
-      });
-
-      // Test connection button
-      testButton.addEventListener("click", function() {
-        testConnection();
-      });
-    }
-
-    function applySettingsToUI() {
-      serverAddressInput.value = currentSettings.serverAddress || DEFAULT_SERVER_ADDRESS;
-      resetModeSelect.value = currentSettings.resetMode || "both";
-
-      // Camera will be set after dropdown is populated
-    }
-
-    function saveSettings() {
-      console.log("Saving settings:", currentSettings);
-      if (websocket && websocket.readyState === WebSocket.OPEN && uuid) {
-        websocket.send(JSON.stringify({
-          event: "setSettings",
-          context: uuid,
-          payload: currentSettings
-        }));
-        console.log("Settings saved via WebSocket");
-      } else {
-        console.warn("WebSocket not connected, cannot save settings");
-      }
-    }
-
-    function setStatus(status, message) {
-      statusDot.className = "status-dot " + status;
-      statusText.textContent = message;
-      isConnected = (status === "connected");
-    }
-
-    function resetDropdowns() {
-      cameraIdSelect.innerHTML = '<option value="">-- Connect to server --</option>';
-      cameraIdSelect.disabled = true;
-    }
-
-    function setDropdownLoading(select, message) {
-      select.innerHTML = '<option value="" class="loading-option">' + message + '</option>';
-      select.disabled = true;
-    }
-
-    function setDropdownError(select, message) {
-      select.innerHTML = '<option value="" class="error-option">' + message + '</option>';
-      select.disabled = true;
-    }
-
-    async function fetchDropdownData() {
-      const serverAddress = currentSettings.serverAddress;
-      if (!serverAddress) {
-        setStatus("not-configured", "Not configured");
-        return;
-      }
-
-      setStatus("connecting", "Connecting...");
-      setDropdownLoading(cameraIdSelect, "Loading...");
-
-      try {
-        const camerasResponse = await fetch("http://" + serverAddress + "/api/cameras", {
-          method: "GET",
-          headers: { "Accept": "application/json" }
+      setupActionListeners: function(saveSettingsFn) {
+        cameraIdSelect.addEventListener("change", function() {
+          currentSettings.cameraId = this.value;
+          saveSettingsFn();
         });
 
-        if (!camerasResponse.ok) {
-          throw new Error("API returned error status");
+        resetModeSelect.addEventListener("change", function() {
+          currentSettings.resetMode = this.value;
+          saveSettingsFn();
+        });
+      },
+
+      resetDropdowns: function() {
+        cameraIdSelect.innerHTML = '<option value="">-- Connect to server --</option>';
+        cameraIdSelect.disabled = true;
+      },
+
+      fetchDropdownData: async function(serverAddress) {
+        if (!serverAddress) {
+          setStatus("not-configured", "Not configured");
+          return;
         }
 
-        const cameras = await camerasResponse.json();
+        setStatus("connecting", "Connecting...");
+        setDropdownLoading(cameraIdSelect, "Loading...");
 
-        populateCameraDropdown(cameras);
+        try {
+          var camerasResponse = await apiFetch(serverAddress, "/api/cameras");
 
-        setStatus("connected", "Connected");
-
-        // Restore selected value
-        if (currentSettings.cameraId) {
-          const cameraOption = cameraIdSelect.querySelector('option[value="' + currentSettings.cameraId + '"]');
-          if (cameraOption) {
-            cameraIdSelect.value = currentSettings.cameraId;
+          if (!camerasResponse.ok) {
+            throw new Error("API returned error status");
           }
-        }
 
-      } catch (error) {
-        console.error("Failed to fetch data:", error);
-        setStatus("disconnected", "Connection failed");
-        setDropdownError(cameraIdSelect, "Connection failed");
-      }
-    }
+          var cameras = await camerasResponse.json();
 
-    function populateCameraDropdown(cameras) {
-      cameraIdSelect.innerHTML = '<option value="">-- Select camera --</option>';
+          populateCameraDropdown(cameraIdSelect, cameras);
 
-      if (Array.isArray(cameras)) {
-        cameras.forEach(function(camera) {
-          const option = document.createElement("option");
-          // Handle both object format {id: "cam1", name: "Camera 1"} and string format
-          if (typeof camera === "object") {
-            option.value = camera.id || camera.camera_id || "";
-            option.textContent = camera.name || camera.id || camera.camera_id || "Unknown";
-          } else {
-            option.value = camera;
-            option.textContent = camera;
-          }
-          cameraIdSelect.appendChild(option);
-        });
-        cameraIdSelect.disabled = false;
-      } else if (typeof cameras === "object" && cameras !== null) {
-        // Handle object format {camera_id: {name: "..."}, ...}
-        Object.keys(cameras).forEach(function(cameraId) {
-          const option = document.createElement("option");
-          option.value = cameraId;
-          const info = cameras[cameraId];
-          option.textContent = (info && info.name) ? info.name : cameraId;
-          cameraIdSelect.appendChild(option);
-        });
-        cameraIdSelect.disabled = false;
-      }
-    }
-
-    async function testConnection() {
-      const serverAddress = currentSettings.serverAddress;
-      if (!serverAddress) {
-        setStatus("not-configured", "Enter server address");
-        return;
-      }
-
-      testButton.disabled = true;
-      testButton.textContent = "Testing...";
-      setStatus("connecting", "Connecting...");
-
-      try {
-        const response = await fetch("http://" + serverAddress + "/api/health", {
-          method: "GET",
-          headers: { "Accept": "application/json" }
-        });
-
-        if (response.ok) {
           setStatus("connected", "Connected");
-          // Refresh dropdown data on successful connection
-          await fetchDropdownData();
-        } else {
-          setStatus("disconnected", "Server error: " + response.status);
-        }
-      } catch (error) {
-        console.error("Connection test failed:", error);
-        setStatus("disconnected", "Connection failed");
-      } finally {
-        testButton.disabled = false;
-        testButton.textContent = "Test Connection";
-      }
-    }
 
-    // Fallback for development/testing outside Stream Deck
-    // Stream Deck will call connectElgatoStreamDeckSocket automatically
-    // If running standalone, initialize with mock after timeout
-    setTimeout(function() {
-      if (!websocket) {
-        console.log("Running in standalone mode (no Stream Deck connection)");
-        // Setup event listeners for standalone testing
-        setupEventListeners();
-        applySettingsToUI();
-        if (currentSettings.serverAddress) {
-          fetchDropdownData();
+          if (currentSettings.cameraId) {
+            var cameraOption = cameraIdSelect.querySelector('option[value="' + currentSettings.cameraId + '"]');
+            if (cameraOption) {
+              cameraIdSelect.value = currentSettings.cameraId;
+            }
+          }
+
+        } catch (error) {
+          console.error("Failed to fetch data:", error);
+          setStatus("disconnected", "Connection failed");
+          setDropdownError(cameraIdSelect, "Connection failed");
         }
       }
-    }, 1000);
+    };
   </script>
+  <script src="shared.js"></script>
 </body>
 </html>

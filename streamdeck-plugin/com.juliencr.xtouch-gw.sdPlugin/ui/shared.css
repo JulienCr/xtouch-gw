@@ -1,0 +1,167 @@
+/* Shared Property Inspector styles for XTouch GW Stream Deck plugin */
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: #2D2D2D;
+  color: #FFFFFF;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 0;
+  margin: 0;
+}
+
+.sdpi-wrapper {
+  padding: 12px;
+}
+
+.sdpi-item {
+  display: flex;
+  align-items: center;
+  margin-bottom: 10px;
+  min-height: 28px;
+}
+
+.sdpi-item-label {
+  flex: 0 0 70px;
+  color: #A0A0A0;
+  font-size: 11px;
+  text-align: right;
+  padding-right: 12px;
+}
+
+.sdpi-item-value {
+  flex: 1;
+  min-width: 0;
+}
+
+input[type="text"],
+select {
+  width: 100%;
+  height: 26px;
+  padding: 4px 8px;
+  background-color: #3D3D3D;
+  border: 1px solid #5D5D5D;
+  border-radius: 3px;
+  color: #FFFFFF;
+  font-size: 11px;
+  outline: none;
+  transition: border-color 0.2s ease;
+}
+
+input[type="text"]:focus,
+select:focus {
+  border-color: #0078D4;
+}
+
+input[type="text"]::placeholder {
+  color: #808080;
+}
+
+select {
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23808080' d='M3 4.5L6 8l3-3.5H3z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  padding-right: 24px;
+}
+
+select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+select option {
+  background-color: #3D3D3D;
+  color: #FFFFFF;
+}
+
+button {
+  width: 100%;
+  height: 28px;
+  padding: 0 12px;
+  background-color: #0078D4;
+  border: none;
+  border-radius: 3px;
+  color: #FFFFFF;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+button:hover {
+  background-color: #1084D9;
+}
+
+button:active {
+  background-color: #006CBD;
+}
+
+button:disabled {
+  background-color: #4D4D4D;
+  cursor: not-allowed;
+}
+
+.status-indicator {
+  display: flex;
+  align-items: center;
+  height: 26px;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 8px;
+  flex-shrink: 0;
+  background-color: #808080;
+}
+
+.status-dot.connected {
+  background-color: #4CAF50;
+}
+
+.status-dot.connecting {
+  background-color: #FF9800;
+  animation: pulse 1s ease-in-out infinite;
+}
+
+.status-dot.disconnected {
+  background-color: #F44336;
+}
+
+.status-dot.not-configured {
+  background-color: #808080;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.status-text {
+  font-size: 11px;
+  color: #A0A0A0;
+}
+
+.loading-option {
+  font-style: italic;
+  color: #808080;
+}
+
+.error-option {
+  color: #F44336;
+}
+
+.divider {
+  height: 1px;
+  background-color: #404040;
+  margin: 12px 0;
+}
