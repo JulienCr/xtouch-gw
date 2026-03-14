@@ -9,7 +9,7 @@ use tracing::info;
 use super::camera::ViewMode;
 use super::camera_actions::PtzTargetContext;
 use super::driver::ObsDriver;
-use super::{Driver, ExecutionContext};
+use super::ExecutionContext;
 
 impl ObsDriver {
     /// Execute the `enterSplit` action.
@@ -117,10 +117,10 @@ impl ObsDriver {
 
         if current_mode != ViewMode::Full {
             // Already in any split mode -> exit to full
-            self.execute("exitSplit", vec![], ctx).await
+            self.execute_exit_split(&ctx).await
         } else {
             // Full -> enter requested split
-            self.execute("enterSplit", params, ctx).await
+            self.execute_enter_split(&params, &ctx).await
         }
     }
 

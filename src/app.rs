@@ -137,7 +137,6 @@ pub async fn run_app(
             &obs_driver,
             &router,
             &control_db,
-            &config,
             &led_tx,
             &api_state,
             &tray_handler,
@@ -422,6 +421,9 @@ async fn handle_config_reload(
 ) {
     info!("Configuration file changed, reloading...");
 
+    // Extract gamepad config before moving new_config into update_config
+    let new_gamepad_config = new_config.gamepad.clone();
+
     match router.update_config(new_config).await {
         Ok(()) => {
             info!("Configuration reloaded successfully");
@@ -437,11 +439,6 @@ async fn handle_config_reload(
 
             // Update display for the (potentially new) active page
             display::update_xtouch_display(router, xtouch).await;
-
-            // Re-initialize gamepad subsystem with new config
-            let router_cfg = router.config.read().await;
-            let new_gamepad_config = router_cfg.gamepad.clone();
-            drop(router_cfg);
 
             if let Some(ref gp_config) = new_gamepad_config {
                 match input::gamepad::init(gp_config, router.clone()).await {

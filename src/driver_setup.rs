@@ -93,7 +93,6 @@ pub async fn register_obs_driver(
     obs_driver: &Arc<ObsDriver>,
     router: &Arc<Router>,
     control_db: &Arc<ControlMappingDB>,
-    config: &AppConfig,
     led_tx: &mpsc::UnboundedSender<Vec<u8>>,
     api_state: &Arc<api::ApiState>,
     tray_handler: &Arc<crate::tray::TrayMessageHandler>,
@@ -101,7 +100,6 @@ pub async fn register_obs_driver(
     let indicator_callback = obs_indicators::build_indicator_callback(
         router.clone(),
         control_db.clone(),
-        config.clone(),
         led_tx.clone(),
         Arc::clone(api_state),
     );

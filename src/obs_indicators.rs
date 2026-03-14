@@ -23,21 +23,23 @@ use crate::router::Router;
 /// - LED updates based on indicator signal evaluation
 /// - Program scene change broadcasts to the Stream Deck API
 /// - Preview scene change auto-targeting for dynamic gamepad slots
+///
+/// Uses the router's `Arc<RwLock<AppConfig>>` so that hot-reloaded config
+/// is automatically visible to subsequent indicator events.
 pub fn build_indicator_callback(
     router: Arc<Router>,
     control_db: Arc<ControlMappingDB>,
-    config: AppConfig,
     led_tx: mpsc::UnboundedSender<Vec<u8>>,
     api_state: Arc<api::ApiState>,
 ) -> IndicatorCallback {
     Arc::new(move |signal: String, value: serde_json::Value| {
         let router = router.clone();
         let control_db = control_db.clone();
-        let config = config.clone();
         let led_tx = led_tx.clone();
         let api_state = api_state.clone();
 
         tokio::spawn(async move {
+            let config = router.config.read().await.clone();
             handle_indicator_signal(
                 &router,
                 &control_db,

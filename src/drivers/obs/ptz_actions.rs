@@ -7,6 +7,7 @@ use serde_json::Value;
 use tracing::{debug, info};
 
 use super::analog::shape_analog;
+use super::camera_actions::PtzTargetContext;
 use super::driver::ObsDriver;
 
 /// PTZ axis for nudge/scale operations
@@ -150,11 +151,7 @@ impl ObsDriver {
             return Ok(());
         }
 
-        let is_gamepad = ctx
-            .control_id
-            .as_ref()
-            .map(|id| id.starts_with("gamepad"))
-            .unwrap_or(false);
+        let is_gamepad = PtzTargetContext::from_ctx(ctx).is_gamepad();
 
         if is_gamepad {
             let gain = match axis {
