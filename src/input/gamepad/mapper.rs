@@ -231,9 +231,11 @@ impl GamepadMapper {
     }
 
     /// Shutdown the mapper
+    ///
+    /// Sends shutdown signal to the provider's blocking thread, ensuring
+    /// it stops polling before the mapper is dropped.
     pub async fn shutdown(&self) -> Result<()> {
-        // Provider will be dropped automatically
-        // Event processor will stop when channel is dropped
+        self._provider.shutdown().await?;
         Ok(())
     }
 }

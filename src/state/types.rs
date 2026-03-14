@@ -18,6 +18,18 @@ pub enum MidiStatus {
     SysEx,
 }
 
+impl MidiStatus {
+    /// Numeric key for stable, allocation-free sorting
+    pub fn sort_key(&self) -> u8 {
+        match self {
+            MidiStatus::Note => 0,
+            MidiStatus::CC => 1,
+            MidiStatus::PB => 2,
+            MidiStatus::SysEx => 3,
+        }
+    }
+}
+
 impl std::fmt::Display for MidiStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

@@ -96,7 +96,7 @@ async fn handle_state_command(args: &[&str], state_actor: &StateActorHandle) {
 
         // Sort: status, then channel, then data1
         entries.sort_by(|a, b| {
-            let status_ord = format!("{:?}", a.addr.status).cmp(&format!("{:?}", b.addr.status));
+            let status_ord = a.addr.status.sort_key().cmp(&b.addr.status.sort_key());
             status_ord
                 .then(a.addr.channel.cmp(&b.addr.channel))
                 .then(a.addr.data1.cmp(&b.addr.data1))

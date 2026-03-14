@@ -6,6 +6,7 @@
 
 use anyhow::Result;
 use gilrs::{Event, EventType, Gilrs};
+use parking_lot::Mutex;
 use rusty_xinput::XInputHandle;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -31,7 +32,7 @@ pub type EventCallback = Arc<dyn Fn(GamepadEvent) + Send + Sync>;
 /// Hybrid gamepad provider with XInput and gilrs (WGI) support
 pub struct HybridGamepadProvider {
     event_listeners: Arc<RwLock<Vec<EventCallback>>>,
-    shutdown_tx: Option<mpsc::Sender<()>>,
+    shutdown_tx: Mutex<Option<mpsc::Sender<()>>>,
 }
 
 impl HybridGamepadProvider {
@@ -67,7 +68,7 @@ impl HybridGamepadProvider {
 
         Ok(Self {
             event_listeners,
-            shutdown_tx: Some(shutdown_tx),
+            shutdown_tx: Mutex::new(Some(shutdown_tx)),
         })
     }
 
@@ -132,8 +133,12 @@ impl HybridGamepadProvider {
     }
 
     /// Shutdown the provider
-    pub async fn shutdown(&mut self) -> Result<()> {
-        if let Some(tx) = self.shutdown_tx.take() {
+    ///
+    /// Takes `&self` (not `&mut self`) so it can be called through `Arc<Self>`.
+    /// Uses interior mutability via `parking_lot::Mutex` to take the shutdown sender.
+    pub async fn shutdown(&self) -> Result<()> {
+        let tx = self.shutdown_tx.lock().take();
+        if let Some(tx) = tx {
             let _ = tx.send(()).await;
             debug!("Hybrid gamepad provider shutdown requested");
         }
@@ -144,7 +149,7 @@ impl HybridGamepadProvider {
 impl Drop for HybridGamepadProvider {
     fn drop(&mut self) {
         // Attempt to send shutdown signal if not already sent
-        if let Some(tx) = self.shutdown_tx.take() {
+        if let Some(tx) = self.shutdown_tx.lock().take() {
             let _ = tx.try_send(());
         }
     }

@@ -93,15 +93,16 @@ impl super::Router {
     /// BUG-010 FIX: Used during page refresh to prevent PB state from one app
     /// (e.g., voicemeeter on page 1) from overriding the CC→PB transform of
     /// another app (e.g., qlc on page 2) for the same fader channel.
-    fn is_app_mapped_to_fader(&self, page: &PageConfig, app_name: &str, pb_channel: u8) -> bool {
-        let mapping_db = match load_default_mappings() {
-            Ok(db) => db,
-            Err(_) => return false,
-        };
-
+    fn is_app_mapped_to_fader(
+        &self,
+        page: &PageConfig,
+        app_name: &str,
+        pb_channel: u8,
+        mapping_db: &ControlMappingDB,
+    ) -> bool {
         // Find the control ID for this PB channel (e.g., "fader2" for ch=2)
         let control_id = Self::find_control_by_midi_spec(
-            &mapping_db,
+            mapping_db,
             |spec| matches!(spec, MidiSpec::PitchBend { channel } if *channel == pb_channel.saturating_sub(1)),
         );
 
@@ -223,12 +224,11 @@ impl super::Router {
         page: &PageConfig,
         app: &AppKey,
         pb_channel: u8,
+        mapping_db: &ControlMappingDB,
     ) -> Option<MidiStateEntry> {
-        let mapping_db = load_default_mappings().ok()?;
-
         // Find control ID for this PB channel (e.g., "fader1" for ch1)
         let control_id = Self::find_control_by_midi_spec(
-            &mapping_db,
+            mapping_db,
             |spec| matches!(spec, MidiSpec::PitchBend { channel } if *channel == pb_channel.saturating_sub(1)),
         )?;
 
@@ -280,12 +280,11 @@ impl super::Router {
         page: &PageConfig,
         app: &AppKey,
         note: u8,
+        mapping_db: &ControlMappingDB,
     ) -> Option<MidiStateEntry> {
-        let mapping_db = load_default_mappings().ok()?;
-
         // Find control ID for this Note (e.g., "mute1" for note=16)
         let control_id = Self::find_control_by_midi_spec(
-            &mapping_db,
+            mapping_db,
             |spec| matches!(spec, MidiSpec::Note { note: n } if *n == note),
         )?;
 
@@ -330,12 +329,11 @@ impl super::Router {
         page: &PageConfig,
         app: &AppKey,
         note: u8,
+        mapping_db: &ControlMappingDB,
     ) -> Option<MidiStateEntry> {
-        let mapping_db = load_default_mappings().ok()?;
-
         // Find the control ID for this note (e.g., "mute1" for note=16)
         let control_id = Self::find_control_by_midi_spec(
-            &mapping_db,
+            mapping_db,
             |spec| matches!(spec, MidiSpec::Note { note: n } if *n == note),
         )?;
 
@@ -417,6 +415,15 @@ impl super::Router {
             )
         }
 
+        // Load mapping DB once for the entire refresh plan
+        let mapping_db = match load_default_mappings() {
+            Ok(db) => db,
+            Err(e) => {
+                tracing::error!("Failed to load control mapping DB for page refresh: {}", e);
+                return Vec::new();
+            },
+        };
+
         // X-Touch buttons are on channel 1 (0-indexed as channel 0 in MIDI, but config uses 1)
         // Faders use channels 1-9 for PitchBend: 8 strip faders + 1 master fader
         // (fader1-8 on ch1-8, fader_master on ch9)
@@ -444,13 +451,16 @@ impl super::Router {
                     // Without this check, a PB value from app A (mapped on a different page)
                     // can dominate the CC→PB transform for app B (mapped on this page),
                     // because PB priority (3) > CC→PB priority (2).
-                    if self.is_app_mapped_to_fader(_page, app.as_str(), ch) {
+                    if self.is_app_mapped_to_fader(_page, app.as_str(), ch, &mapping_db) {
                         insert_prioritized(&mut pb_plan, ch, latest_pb, 3);
                         continue;
                     }
                 }
 
-                if let Some(transformed_pb) = self.try_cc_to_pb_transform(_page, app, ch).await {
+                if let Some(transformed_pb) = self
+                    .try_cc_to_pb_transform(_page, app, ch, &mapping_db)
+                    .await
+                {
                     trace!(
                         "  Adding CC->PB to plan: ch={} value={:?}",
                         ch,
@@ -462,8 +472,9 @@ impl super::Router {
 
             // Notes: 0-31 - Known state from CC transform (priority 2), direct Note state (priority 2), or Note Off (priority 1)
             for note in 0..=31 {
-                if let Some(transformed_note) =
-                    self.try_cc_to_note_transform(_page, app, note).await
+                if let Some(transformed_note) = self
+                    .try_cc_to_note_transform(_page, app, note, &mapping_db)
+                    .await
                 {
                     let key = channel_data1_key(&transformed_note);
                     insert_prioritized(&mut note_plan, key, transformed_note, 2);
@@ -472,7 +483,10 @@ impl super::Router {
 
                 // Direct Note state lookup (for passthrough controls like mute buttons)
                 // Only restore if this note belongs to a control mapped on the current page
-                if let Some(note_entry) = self.try_direct_note_lookup(_page, app, note).await {
+                if let Some(note_entry) = self
+                    .try_direct_note_lookup(_page, app, note, &mapping_db)
+                    .await
+                {
                     let key = channel_data1_key(&note_entry);
                     insert_prioritized(&mut note_plan, key, note_entry, 2);
                     continue;

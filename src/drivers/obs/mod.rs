@@ -10,9 +10,12 @@
 mod actions;
 mod analog;
 mod camera;
+mod camera_actions;
 mod connection;
 mod driver;
 mod encoder;
+mod ptz_actions;
+mod split_mode;
 mod transform;
 
 // Re-export main types
