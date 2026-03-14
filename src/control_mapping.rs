@@ -261,15 +261,18 @@ struct FileCache {
 static FILE_DB: OnceLock<Mutex<Option<FileCache>>> = OnceLock::new();
 
 /// Load the default control mappings (cached after first parse)
-pub fn load_default_mappings() -> Result<ControlMappingDB> {
+///
+/// Returns a static reference to avoid cloning the entire DB on every call.
+/// The DB is parsed once and cached in a `OnceLock`.
+pub fn load_default_mappings() -> Result<&'static ControlMappingDB> {
     if let Some(db) = DEFAULT_DB.get() {
-        return Ok(db.clone());
+        return Ok(db);
     }
 
     let db = ControlMappingDB::load_from_string(DEFAULT_CSV)?;
     // Ignore error if another thread set it first
-    let _ = DEFAULT_DB.set(db.clone());
-    Ok(db)
+    let _ = DEFAULT_DB.set(db);
+    Ok(DEFAULT_DB.get().expect("just set"))
 }
 
 /// Warm the default cache so parsing happens at startup

@@ -75,7 +75,7 @@ pub async fn load_control_database() -> Arc<ControlMappingDB> {
                     "Loaded embedded control database ({} controls)",
                     db.mappings.len()
                 );
-                Arc::new(db)
+                Arc::new(db.clone())
             },
             Err(e) => {
                 warn!("Failed to load control database: {}", e);
@@ -107,7 +107,8 @@ pub async fn register_obs_driver(
     obs_driver.subscribe_indicators(indicator_callback);
     debug!("Subscribed to OBS indicator signals");
 
-    let status_callback = tray_handler.subscribe_driver("OBS".to_string());
+    let status_callback =
+        tray_handler.subscribe_driver(crate::state::AppKey::Obs.as_str().to_string());
     obs_driver.subscribe_connection_status(status_callback);
 
     match router

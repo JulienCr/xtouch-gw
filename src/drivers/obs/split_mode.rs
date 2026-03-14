@@ -20,9 +20,6 @@ impl ObsDriver {
         params: &[Value],
         ctx: &ExecutionContext,
     ) -> Result<()> {
-        if ctx.is_button_release() {
-            return Ok(()); // Ignore button release
-        }
         let side = params
             .first()
             .and_then(|v| v.as_str())
@@ -90,13 +87,9 @@ impl ObsDriver {
     /// exits to full; otherwise enters the requested split side.
     pub(super) async fn execute_toggle_split(
         &self,
-        params: Vec<Value>,
-        ctx: ExecutionContext,
+        params: &[Value],
+        ctx: &ExecutionContext,
     ) -> Result<()> {
-        if ctx.is_button_release() {
-            return Ok(()); // Ignore button release
-        }
-
         let side = params
             .first()
             .and_then(|v| v.as_str())
@@ -117,10 +110,10 @@ impl ObsDriver {
 
         if current_mode != ViewMode::Full {
             // Already in any split mode -> exit to full
-            self.execute_exit_split(&ctx).await
+            self.execute_exit_split(ctx).await
         } else {
             // Full -> enter requested split
-            self.execute_enter_split(&params, &ctx).await
+            self.execute_enter_split(params, ctx).await
         }
     }
 
@@ -128,9 +121,6 @@ impl ObsDriver {
     ///
     /// Returns from split view to full mode, switching to the default camera scene.
     pub(super) async fn execute_exit_split(&self, ctx: &ExecutionContext) -> Result<()> {
-        if ctx.is_button_release() {
-            return Ok(()); // Ignore button release
-        }
         let (target_camera, camera_scene) = {
             let config_guard = self.camera_control_config.read();
             let config = config_guard

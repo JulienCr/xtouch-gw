@@ -184,11 +184,25 @@ impl Driver for ObsDriver {
             tracker.record("obs", crate::tray::ActivityDirection::Outbound);
         }
 
+        // Filter button releases for trigger-style actions (press-only semantics).
+        // Continuous actions (nudge, scale) and stateful actions (setPtzModifier)
+        // intentionally process releases and are excluded from this filter.
+        if ctx.is_button_release() {
+            match action {
+                "changeScene"
+                | "setScene"
+                | "toggleStudioMode"
+                | "TriggerStudioModeTransition"
+                | "selectCamera"
+                | "enterSplit"
+                | "toggleSplit"
+                | "exitSplit" => return Ok(()),
+                _ => {},
+            }
+        }
+
         match action {
             "changeScene" | "setScene" => {
-                if ctx.is_button_release() {
-                    return Ok(()); // Ignore button release
-                }
                 let scene_name = params
                     .first()
                     .and_then(|v| v.as_str())
@@ -206,11 +220,10 @@ impl Driver for ObsDriver {
             },
 
             "toggleStudioMode" => {
-                if ctx.is_button_release() {
-                    return Ok(()); // Ignore button release
-                }
-                let guard = self.client.read().await;
-                let client = guard.as_ref().context("OBS not connected")?;
+                let guard = self.get_connected_client().await?;
+                let client = guard
+                    .as_ref()
+                    .expect("invariant: get_connected_client ensures Some");
 
                 // Get current state and toggle
                 let current = *self.studio_mode.read();
@@ -231,12 +244,11 @@ impl Driver for ObsDriver {
             },
 
             "TriggerStudioModeTransition" => {
-                if ctx.is_button_release() {
-                    return Ok(()); // Ignore button release
-                }
                 info!("OBS Studio Transition requested");
-                let guard = self.client.read().await;
-                let client = guard.as_ref().context("OBS not connected")?;
+                let guard = self.get_connected_client().await?;
+                let client = guard
+                    .as_ref()
+                    .expect("invariant: get_connected_client ensures Some");
 
                 client.transitions().trigger().await?;
                 Ok(())
@@ -265,7 +277,7 @@ impl Driver for ObsDriver {
 
             "enterSplit" => self.execute_enter_split(&params, &ctx).await,
 
-            "toggleSplit" => self.execute_toggle_split(params, ctx).await,
+            "toggleSplit" => self.execute_toggle_split(&params, &ctx).await,
 
             "exitSplit" => self.execute_exit_split(&ctx).await,
 

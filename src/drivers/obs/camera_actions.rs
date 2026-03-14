@@ -92,10 +92,6 @@ impl ObsDriver {
         params: &[Value],
         ctx: &ExecutionContext,
     ) -> Result<()> {
-        if ctx.is_button_release() {
-            return Ok(()); // Ignore button release
-        }
-
         let camera_id = params
             .first()
             .and_then(|v| v.as_str())
@@ -187,8 +183,10 @@ impl ObsDriver {
         modifier_held: bool,
         ptz_enabled: bool,
     ) -> Result<()> {
-        let guard = self.client.read().await;
-        let client = guard.as_ref().context("OBS not connected")?;
+        let guard = self.get_connected_client().await?;
+        let client = guard
+            .as_ref()
+            .expect("invariant: get_connected_client ensures Some");
 
         // Determine whether to use preview or program
         // Priority: explicit_target > gamepad modifier logic > legacy behavior

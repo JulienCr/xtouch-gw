@@ -426,7 +426,7 @@ impl super::Router {
         // X-Touch buttons are on channel 1 (0-indexed as channel 0 in MIDI, but config uses 1)
         // Faders use channels 1-9 for PitchBend: 8 strip faders + 1 master fader
         // (fader1-8 on ch1-8, fader_master on ch9)
-        let channels: Vec<u8> = (1..=9).collect();
+        const FADER_CHANNELS: &[u8] = &[1, 2, 3, 4, 5, 6, 7, 8, 9];
 
         // Get apps mapped on this page (only restore state for mapped apps)
         let config = self.config.try_read().expect("Config lock poisoned");
@@ -440,7 +440,7 @@ impl super::Router {
             }
 
             // PB plan (priority: Known PB = 3 > Mapped CC->PB = 2)
-            for &ch in &channels {
+            for &ch in FADER_CHANNELS {
                 if let Some(latest_pb) = self
                     .state_actor
                     .get_known_latest(*app, MidiStatus::PB, Some(ch), Some(0))
@@ -497,7 +497,7 @@ impl super::Router {
             }
 
             // CC (rings): 0-31 - Always send 0 to clear previous page
-            for &ch in &channels {
+            for &ch in FADER_CHANNELS {
                 for cc in 0..=31 {
                     let zero = Self::make_reset_entry(app.as_str(), MidiStatus::CC, ch, cc);
                     let key = channel_data1_key(&zero);
@@ -507,7 +507,7 @@ impl super::Router {
         }
 
         // Fill missing fader channels with setpoint or zero fallback
-        for &ch in &channels {
+        for &ch in FADER_CHANNELS {
             if pb_plan.contains_key(&ch) {
                 continue;
             }

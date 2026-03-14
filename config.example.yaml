@@ -20,7 +20,7 @@ xtouch:
 obs:
   host: "127.0.0.1"
   port: 4455
-  password: "aaaaaa"
+  password: ""
   
   # Configuration du contrôle caméra (split views)
   camera_control:

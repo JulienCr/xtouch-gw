@@ -111,10 +111,8 @@ impl ObsDriver {
         let camera_control_config = Arc::clone(&self.camera_control_config);
         let camera_control_state = Arc::clone(&self.camera_control_state);
 
-        // Clone for reconnection trigger
+        // Clone for reconnection trigger and status emission
         let driver_for_reconnect = self.clone_for_task();
-        let status_callbacks = Arc::clone(&self.status_callbacks);
-        let current_status = Arc::clone(&self.current_status);
 
         tokio::spawn(async move {
             // Helper: Sync ViewMode from scene name
@@ -287,12 +285,7 @@ impl ObsDriver {
                 warn!("🔌 OBS event stream closed");
 
                 // Emit disconnected status
-                {
-                    *current_status.write() = crate::tray::ConnectionStatus::Disconnected;
-                    for callback in status_callbacks.read().iter() {
-                        callback(crate::tray::ConnectionStatus::Disconnected);
-                    }
-                }
+                driver_for_reconnect.emit_status(crate::tray::ConnectionStatus::Disconnected);
 
                 // Trigger automatic reconnection
                 let driver_clone = driver_for_reconnect.clone_for_task();
@@ -458,39 +451,5 @@ impl ObsDriver {
             );
             *last = Some(selected);
         }
-    }
-
-    /// Emit selectedScene signal with 80ms debouncing
-    /// Spawns a task that delays emission to coalesce rapid changes
-    pub(super) fn schedule_selected_scene_emit(&self) {
-        let studio_mode = *self.studio_mode.read();
-        let program_scene = self.program_scene.read().clone();
-        let preview_scene = self.preview_scene.read().clone();
-        let emitters = Arc::clone(&self.indicator_emitters);
-        let last_selected = Arc::clone(&self.last_selected_sent);
-
-        tokio::spawn(async move {
-            // Debounce for 80ms
-            tokio::time::sleep(Duration::from_millis(80)).await;
-
-            let selected = if studio_mode {
-                preview_scene
-            } else {
-                program_scene
-            };
-
-            // Only emit if changed
-            let mut last = last_selected.write();
-            if last.as_ref() != Some(&selected) {
-                let emitters_guard = emitters.read();
-                for emit in emitters_guard.iter() {
-                    emit(
-                        super::signals::SELECTED_SCENE.to_string(),
-                        Value::String(selected.clone()),
-                    );
-                }
-                *last = Some(selected);
-            }
-        });
     }
 }

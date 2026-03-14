@@ -214,8 +214,10 @@ impl ObsDriver {
         });
 
         // Send to OBS
-        let guard = self.client.read().await;
-        let client = guard.as_ref().context("OBS client not connected")?;
+        let guard = self.get_connected_client().await?;
+        let client = guard
+            .as_ref()
+            .expect("invariant: get_connected_client ensures Some");
 
         client
             .scene_items()
@@ -305,8 +307,10 @@ impl ObsDriver {
         }
 
         // Send to OBS
-        let guard = self.client.read().await;
-        let client = guard.as_ref().context("OBS client not connected")?;
+        let guard = self.get_connected_client().await?;
+        let client = guard
+            .as_ref()
+            .expect("invariant: get_connected_client ensures Some");
 
         client
             .scene_items()
