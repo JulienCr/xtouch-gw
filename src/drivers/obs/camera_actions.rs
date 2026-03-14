@@ -92,15 +92,7 @@ impl ObsDriver {
         params: &[Value],
         ctx: &ExecutionContext,
     ) -> Result<()> {
-        // Only act on button press (value > 0 or None for legacy compatibility)
-        let is_release = ctx
-            .value
-            .as_ref()
-            .and_then(|v| v.as_f64())
-            .map(|v| v == 0.0)
-            .unwrap_or(false);
-
-        if is_release {
+        if ctx.is_button_release() {
             return Ok(()); // Ignore button release
         }
 

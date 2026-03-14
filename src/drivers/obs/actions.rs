@@ -186,6 +186,9 @@ impl Driver for ObsDriver {
 
         match action {
             "changeScene" | "setScene" => {
+                if ctx.is_button_release() {
+                    return Ok(()); // Ignore button release
+                }
                 let scene_name = params
                     .first()
                     .and_then(|v| v.as_str())
@@ -203,6 +206,9 @@ impl Driver for ObsDriver {
             },
 
             "toggleStudioMode" => {
+                if ctx.is_button_release() {
+                    return Ok(()); // Ignore button release
+                }
                 let guard = self.client.read().await;
                 let client = guard.as_ref().context("OBS not connected")?;
 
@@ -225,6 +231,9 @@ impl Driver for ObsDriver {
             },
 
             "TriggerStudioModeTransition" => {
+                if ctx.is_button_release() {
+                    return Ok(()); // Ignore button release
+                }
                 info!("OBS Studio Transition requested");
                 let guard = self.client.read().await;
                 let client = guard.as_ref().context("OBS not connected")?;

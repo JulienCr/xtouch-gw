@@ -36,6 +36,21 @@ pub struct ExecutionContext {
     pub camera_targets: Option<Arc<crate::router::CameraTargetState>>,
 }
 
+impl ExecutionContext {
+    /// Check if this event represents a button release (value == 0.0)
+    ///
+    /// Used by trigger-style actions (e.g., TriggerStudioModeTransition) to ignore
+    /// button release events and only fire on press-down. Stateful actions like
+    /// setPtzModifier should NOT use this filter since they need both press and release.
+    pub fn is_button_release(&self) -> bool {
+        self.value
+            .as_ref()
+            .and_then(|v| v.as_f64())
+            .map(|v| v == 0.0)
+            .unwrap_or(false)
+    }
+}
+
 /// Driver trait - all application integrations implement this
 ///
 /// Note: All methods take &self (not &mut self) to support Arc<dyn Driver>.
