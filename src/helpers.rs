@@ -198,11 +198,6 @@ pub fn build_camera_infos(config: &AppConfig) -> Vec<crate::api::CameraInfo> {
         .collect()
 }
 
-/// Build gamepad slot info list from configuration.
-pub fn build_gamepad_slot_infos(config: &AppConfig) -> Vec<crate::api::GamepadSlotInfo> {
-    build_gamepad_slot_infos_from_config(&config.gamepad)
-}
-
 /// Build gamepad slot info list from an optional `GamepadConfig`.
 ///
 /// Used both at startup (via `build_gamepad_slot_infos`) and on hot-reload
@@ -229,23 +224,4 @@ pub fn build_gamepad_slot_infos_from_config(
             current_camera: None,
         })
         .collect()
-}
-
-/// Find the first gamepad slot configured with "dynamic" camera_target mode.
-///
-/// Returns the slot name (e.g., "gamepad1") if found, or None if no dynamic slot exists.
-pub fn find_dynamic_gamepad_slot(config: &AppConfig) -> Option<String> {
-    config
-        .gamepad
-        .as_ref()
-        .and_then(|g| g.gamepads.as_ref())
-        .and_then(|slots| {
-            slots.iter().enumerate().find_map(|(i, slot)| {
-                if slot.camera_target.as_deref() == Some("dynamic") {
-                    Some(format!("gamepad{}", i + 1))
-                } else {
-                    None
-                }
-            })
-        })
 }

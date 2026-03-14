@@ -110,8 +110,8 @@ pub async fn run_app(
     // Load control database for LED indicator mapping
     let control_db = driver_setup::load_control_database().await;
 
-    // Create LED update channel for indicator system
-    let (led_tx, mut led_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    // Create LED update channel for indicator system (bounded to prevent unbounded growth)
+    let (led_tx, mut led_rx) = mpsc::channel::<Vec<u8>>(64);
 
     // Create OBS driver and API state, then register
     let obs_driver: Option<Arc<ObsDriver>> = config
@@ -124,9 +124,9 @@ pub async fn run_app(
         available_cameras: Arc::new(parking_lot::RwLock::new(helpers::build_camera_infos(
             &config,
         ))),
-        gamepad_slots: Arc::new(parking_lot::RwLock::new(helpers::build_gamepad_slot_infos(
-            &config,
-        ))),
+        gamepad_slots: Arc::new(parking_lot::RwLock::new(
+            helpers::build_gamepad_slot_infos_from_config(&config.gamepad),
+        )),
         update_tx: tokio::sync::broadcast::channel(16).0,
         current_on_air_camera: Arc::new(parking_lot::RwLock::new(None)),
         obs_driver: obs_driver.clone(),
@@ -222,13 +222,7 @@ pub async fn run_app(
                 // Check if page changed and display needs update
                 if router.check_and_clear_display_update().await {
                     debug!("Updating display after page change...");
-                    let pending_midi = router.take_pending_midi().await;
-                    for msg in pending_midi {
-                        trace!("  -> Sending MIDI: {:02X?}", msg);
-                        if let Err(e) = xtouch.send_raw(&msg).await {
-                            warn!("Failed to send page refresh MIDI: {}", e);
-                        }
-                    }
+                    display::flush_pending_midi(&router, &xtouch, "page refresh").await;
                     display::update_xtouch_display(&router, &xtouch).await;
                     let active_page_name = router.get_active_page_name().await;
                     debug!("Display updated for page: {}", active_page_name);
@@ -285,7 +279,7 @@ async fn handle_tray_command(router: &Arc<Router>, cmd: crate::tray::TrayCommand
     match cmd {
         crate::tray::TrayCommand::ConnectObs => {
             debug!("Attempting to reconnect OBS from tray command...");
-            if let Some(obs_driver) = router.get_driver("obs").await {
+            if let Some(obs_driver) = router.get_driver(crate::state::AppKey::Obs.as_str()).await {
                 if let Err(e) = obs_driver.sync().await {
                     warn!("Failed to reconnect OBS: {}", e);
                 } else {
@@ -429,13 +423,7 @@ async fn handle_config_reload(
             info!("Configuration reloaded successfully");
 
             // Send pending MIDI messages (fader positions, button states)
-            let pending_midi = router.take_pending_midi().await;
-            for msg in pending_midi {
-                trace!("  -> Sending reload MIDI: {:02X?}", msg);
-                if let Err(e) = xtouch.send_raw(&msg).await {
-                    warn!("Failed to send config reload MIDI: {}", e);
-                }
-            }
+            display::flush_pending_midi(router, xtouch, "config reload").await;
 
             // Update display for the (potentially new) active page
             display::update_xtouch_display(router, xtouch).await;

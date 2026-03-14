@@ -72,6 +72,20 @@ pub fn convert_lcd_colors(page: &PageConfig) -> Option<Vec<u8>> {
     })
 }
 
+/// Flush pending MIDI messages from the router to the X-Touch hardware.
+///
+/// Takes all queued messages (e.g., from page refresh) and sends them sequentially.
+/// Used after page changes, config reloads, and startup refresh.
+pub async fn flush_pending_midi(router: &Router, xtouch: &Arc<XTouchDriver>, label: &str) {
+    let pending = router.take_pending_midi().await;
+    for msg in pending {
+        tracing::trace!("  -> Sending {} MIDI: {:02X?}", label, msg);
+        if let Err(e) = xtouch.send_raw(&msg).await {
+            warn!("Failed to send {} MIDI: {}", label, e);
+        }
+    }
+}
+
 /// Extract PitchBend channel and 14-bit value from raw MIDI feedback data.
 ///
 /// This helper is used to detect PitchBend messages early in the feedback handling

@@ -23,3 +23,11 @@ pub use driver::ObsDriver;
 
 // Re-export Driver trait and types from parent
 use super::{Driver, ExecutionContext, IndicatorCallback};
+
+/// OBS indicator signal names (shared between emitter and consumers).
+pub mod signals {
+    pub const CURRENT_PROGRAM_SCENE: &str = "obs.currentProgramScene";
+    pub const CURRENT_PREVIEW_SCENE: &str = "obs.currentPreviewScene";
+    pub const STUDIO_MODE: &str = "obs.studioMode";
+    pub const SELECTED_SCENE: &str = "obs.selectedScene";
+}

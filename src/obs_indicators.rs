@@ -10,10 +10,9 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use crate::api;
-use crate::config::AppConfig;
+use crate::config::{CameraControlConfig, XTouchMode};
 use crate::control_mapping::{ControlMappingDB, MidiSpec};
 use crate::drivers::IndicatorCallback;
-use crate::helpers::find_dynamic_gamepad_slot;
 use crate::router::Router;
 
 /// Build the OBS indicator callback closure.
@@ -29,7 +28,7 @@ use crate::router::Router;
 pub fn build_indicator_callback(
     router: Arc<Router>,
     control_db: Arc<ControlMappingDB>,
-    led_tx: mpsc::UnboundedSender<Vec<u8>>,
+    led_tx: mpsc::Sender<Vec<u8>>,
     api_state: Arc<api::ApiState>,
 ) -> IndicatorCallback {
     Arc::new(move |signal: String, value: serde_json::Value| {
@@ -39,11 +38,24 @@ pub fn build_indicator_callback(
         let api_state = api_state.clone();
 
         tokio::spawn(async move {
-            let config = router.config.read().await.clone();
+            // Extract only needed config fields under a short read guard (avoid full clone)
+            let (is_mcu_mode, camera_control, gamepad_config) = {
+                let config = router.config.read().await;
+                let is_mcu = config
+                    .xtouch
+                    .as_ref()
+                    .map(|x| matches!(x.mode, XTouchMode::Mcu))
+                    .unwrap_or(true);
+                let cc = config.obs.as_ref().and_then(|o| o.camera_control.clone());
+                let gp = config.gamepad.clone();
+                (is_mcu, cc, gp)
+            };
             handle_indicator_signal(
                 &router,
                 &control_db,
-                &config,
+                is_mcu_mode,
+                camera_control.as_ref(),
+                &gamepad_config,
                 &led_tx,
                 &api_state,
                 &signal,
@@ -61,8 +73,10 @@ pub fn build_indicator_callback(
 async fn handle_indicator_signal(
     router: &Router,
     control_db: &ControlMappingDB,
-    config: &AppConfig,
-    led_tx: &mpsc::UnboundedSender<Vec<u8>>,
+    is_mcu_mode: bool,
+    camera_control: Option<&CameraControlConfig>,
+    gamepad_config: &Option<crate::config::GamepadConfig>,
+    led_tx: &mpsc::Sender<Vec<u8>>,
     api_state: &api::ApiState,
     signal: &str,
     value: &serde_json::Value,
@@ -70,21 +84,14 @@ async fn handle_indicator_signal(
     // Evaluate which controls should be lit
     let lit_controls = router.evaluate_indicators(signal, value).await;
 
-    // Get MCU mode from config
-    let is_mcu_mode = config
-        .xtouch
-        .as_ref()
-        .map(|x| matches!(x.mode, crate::config::XTouchMode::Mcu))
-        .unwrap_or(true);
-
     // Send LED updates to channel for each control
     send_led_updates(&lit_controls, control_db, is_mcu_mode, led_tx);
 
     // Handle program scene change broadcasts
-    handle_program_scene_change(signal, value, config, api_state);
+    handle_program_scene_change(signal, value, camera_control, api_state);
 
     // Handle preview scene change auto-targeting
-    handle_preview_scene_change(signal, value, config, api_state);
+    handle_preview_scene_change(signal, value, camera_control, gamepad_config, api_state);
 }
 
 /// Send LED on/off messages for evaluated indicator controls.
@@ -92,7 +99,7 @@ fn send_led_updates(
     lit_controls: &HashMap<String, bool>,
     control_db: &ControlMappingDB,
     is_mcu_mode: bool,
-    led_tx: &mpsc::UnboundedSender<Vec<u8>>,
+    led_tx: &mpsc::Sender<Vec<u8>>,
 ) {
     for (control_id, should_be_lit) in lit_controls.iter() {
         if let Some(midi_spec) = control_db.get_midi_spec(control_id, is_mcu_mode) {
@@ -100,7 +107,7 @@ fn send_led_updates(
                 let velocity = if *should_be_lit { 127 } else { 0 };
                 let midi_msg = vec![0x90, note, velocity]; // Note On, channel 1
 
-                if let Err(e) = led_tx.send(midi_msg) {
+                if let Err(e) = led_tx.try_send(midi_msg) {
                     warn!("Failed to send LED update to channel: {}", e);
                 }
             }
@@ -112,19 +119,16 @@ fn send_led_updates(
 fn handle_program_scene_change(
     signal: &str,
     value: &serde_json::Value,
-    config: &AppConfig,
+    camera_control: Option<&CameraControlConfig>,
     api_state: &api::ApiState,
 ) {
-    if signal != "obs.currentProgramScene" {
+    if signal != crate::drivers::obs::signals::CURRENT_PROGRAM_SCENE {
         return;
     }
 
     if let Some(scene_name) = value.as_str() {
-        if let Some(camera_config) = config
-            .obs
-            .as_ref()
-            .and_then(|o| o.camera_control.as_ref())
-            .and_then(|cc| cc.cameras.iter().find(|c| c.scene == scene_name))
+        if let Some(camera_config) =
+            camera_control.and_then(|cc| cc.cameras.iter().find(|c| c.scene == scene_name))
         {
             api::broadcast_on_air_change(api_state, &camera_config.id, scene_name);
         }
@@ -138,10 +142,11 @@ fn handle_program_scene_change(
 fn handle_preview_scene_change(
     signal: &str,
     value: &serde_json::Value,
-    config: &AppConfig,
+    camera_control: Option<&CameraControlConfig>,
+    gamepad_config: &Option<crate::config::GamepadConfig>,
     api_state: &api::ApiState,
 ) {
-    if signal != "obs.currentPreviewScene" {
+    if signal != crate::drivers::obs::signals::CURRENT_PREVIEW_SCENE {
         return;
     }
 
@@ -161,11 +166,8 @@ fn handle_preview_scene_change(
     }
 
     // Find camera matching this scene
-    let Some(camera_config) = config
-        .obs
-        .as_ref()
-        .and_then(|o| o.camera_control.as_ref())
-        .and_then(|cc| cc.cameras.iter().find(|c| c.scene == scene_name))
+    let Some(camera_config) =
+        camera_control.and_then(|cc| cc.cameras.iter().find(|c| c.scene == scene_name))
     else {
         return;
     };
@@ -176,8 +178,8 @@ fn handle_preview_scene_change(
 
     let camera_id = &camera_config.id;
 
-    // Find the dynamic gamepad slot
-    let Some(gamepad_slot) = find_dynamic_gamepad_slot(config) else {
+    // Find the dynamic gamepad slot from gamepad config
+    let Some(gamepad_slot) = find_dynamic_gamepad_slot_from_config(gamepad_config) else {
         return;
     };
 
@@ -198,4 +200,22 @@ fn handle_preview_scene_change(
             gamepad_slot, camera_id, scene_name
         );
     }
+}
+
+/// Find first dynamic gamepad slot from an optional `GamepadConfig`.
+fn find_dynamic_gamepad_slot_from_config(
+    gamepad: &Option<crate::config::GamepadConfig>,
+) -> Option<String> {
+    gamepad
+        .as_ref()
+        .and_then(|g| g.gamepads.as_ref())
+        .and_then(|slots| {
+            slots.iter().enumerate().find_map(|(i, slot)| {
+                if slot.camera_target.as_deref() == Some("dynamic") {
+                    Some(format!("gamepad{}", i + 1))
+                } else {
+                    None
+                }
+            })
+        })
 }

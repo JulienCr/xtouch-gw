@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, warn};
 
 use crate::config::AppConfig;
 use crate::control_mapping::ControlMappingDB;
@@ -93,7 +93,7 @@ pub async fn register_obs_driver(
     obs_driver: &Arc<ObsDriver>,
     router: &Arc<Router>,
     control_db: &Arc<ControlMappingDB>,
-    led_tx: &mpsc::UnboundedSender<Vec<u8>>,
+    led_tx: &mpsc::Sender<Vec<u8>>,
     api_state: &Arc<api::ApiState>,
     tray_handler: &Arc<crate::tray::TrayMessageHandler>,
 ) {
@@ -111,7 +111,10 @@ pub async fn register_obs_driver(
     obs_driver.subscribe_connection_status(status_callback);
 
     match router
-        .register_driver("obs".to_string(), obs_driver.clone())
+        .register_driver(
+            crate::state::AppKey::Obs.as_str().to_string(),
+            obs_driver.clone(),
+        )
         .await
     {
         Ok(_) => info!("Registered OBS driver"),
@@ -145,12 +148,6 @@ pub async fn apply_startup_refresh(
     debug!("Applying initial state to X-Touch (post-driver registration)...");
     router.refresh_page().await;
 
-    let pending_midi = router.take_pending_midi().await;
-    for msg in pending_midi {
-        trace!("  -> Sending initial MIDI: {:02X?}", msg);
-        if let Err(e) = xtouch.send_raw(&msg).await {
-            warn!("Failed to send initial refresh MIDI: {}", e);
-        }
-    }
+    crate::display::flush_pending_midi(router, xtouch, "initial refresh").await;
     debug!("Initial state applied to X-Touch");
 }

@@ -333,13 +333,16 @@ impl Driver for ObsDriver {
 
         let emitters = self.indicator_emitters.read();
         if let Some(emit) = emitters.last() {
-            emit("obs.studioMode".to_string(), Value::Bool(studio_mode));
             emit(
-                "obs.currentProgramScene".to_string(),
+                super::signals::STUDIO_MODE.to_string(),
+                Value::Bool(studio_mode),
+            );
+            emit(
+                super::signals::CURRENT_PROGRAM_SCENE.to_string(),
                 Value::String(program_scene.clone()),
             );
             emit(
-                "obs.currentPreviewScene".to_string(),
+                super::signals::CURRENT_PREVIEW_SCENE.to_string(),
                 Value::String(preview_scene.clone()),
             );
 
@@ -349,7 +352,10 @@ impl Driver for ObsDriver {
             } else {
                 program_scene
             };
-            emit("obs.selectedScene".to_string(), Value::String(selected));
+            emit(
+                super::signals::SELECTED_SCENE.to_string(),
+                Value::String(selected),
+            );
         }
     }
 

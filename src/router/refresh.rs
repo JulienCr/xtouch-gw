@@ -402,16 +402,15 @@ impl super::Router {
             }
         }
 
-        let mut note_plan: HashMap<String, PlanEntry> = HashMap::new();
-        let mut cc_plan: HashMap<String, PlanEntry> = HashMap::new();
+        let mut note_plan: HashMap<(u8, u8), PlanEntry> = HashMap::new();
+        let mut cc_plan: HashMap<(u8, u8), PlanEntry> = HashMap::new();
         let mut pb_plan: HashMap<u8, PlanEntry> = HashMap::new();
 
-        /// Generate channel|data1 key for Note/CC plans
-        fn channel_data1_key(entry: &MidiStateEntry) -> String {
-            format!(
-                "{}|{}",
+        /// Generate (channel, data1) key for Note/CC plans (zero-allocation)
+        fn channel_data1_key(entry: &MidiStateEntry) -> (u8, u8) {
+            (
                 entry.addr.channel.unwrap_or(0),
-                entry.addr.data1.unwrap_or(0)
+                entry.addr.data1.unwrap_or(0),
             )
         }
 

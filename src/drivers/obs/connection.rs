@@ -203,7 +203,7 @@ impl ObsDriver {
                             let emitters_guard = emitters.read();
                             for emit in emitters_guard.iter() {
                                 emit(
-                                    "obs.currentProgramScene".to_string(),
+                                    super::signals::CURRENT_PROGRAM_SCENE.to_string(),
                                     Value::String(name.clone()),
                                 );
                             }
@@ -233,7 +233,10 @@ impl ObsDriver {
                             // Emit signal
                             let emitters_guard = emitters.read();
                             for emit in emitters_guard.iter() {
-                                emit("obs.studioMode".to_string(), Value::Bool(enabled));
+                                emit(
+                                    super::signals::STUDIO_MODE.to_string(),
+                                    Value::Bool(enabled),
+                                );
                             }
 
                             // Schedule selectedScene emission (debounced)
@@ -259,7 +262,7 @@ impl ObsDriver {
                             let emitters_guard = emitters.read();
                             for emit in emitters_guard.iter() {
                                 emit(
-                                    "obs.currentPreviewScene".to_string(),
+                                    super::signals::CURRENT_PREVIEW_SCENE.to_string(),
                                     Value::String(name.clone()),
                                 );
                             }
@@ -327,7 +330,7 @@ impl ObsDriver {
                 let emitters_guard = emitters.read();
                 for emit in emitters_guard.iter() {
                     emit(
-                        "obs.selectedScene".to_string(),
+                        super::signals::SELECTED_SCENE.to_string(),
                         Value::String(selected.clone()),
                     );
                 }
@@ -429,13 +432,13 @@ impl ObsDriver {
         let preview_scene = self.preview_scene.read().clone();
 
         // Emit individual signals
-        self.emit_signal("obs.studioMode", Value::Bool(studio_mode));
+        self.emit_signal(super::signals::STUDIO_MODE, Value::Bool(studio_mode));
         self.emit_signal(
-            "obs.currentProgramScene",
+            super::signals::CURRENT_PROGRAM_SCENE,
             Value::String(program_scene.clone()),
         );
         self.emit_signal(
-            "obs.currentPreviewScene",
+            super::signals::CURRENT_PREVIEW_SCENE,
             Value::String(preview_scene.clone()),
         );
 
@@ -449,7 +452,10 @@ impl ObsDriver {
         // Only emit if changed (deduplication)
         let mut last = self.last_selected_sent.write();
         if last.as_ref() != Some(&selected) {
-            self.emit_signal("obs.selectedScene", Value::String(selected.clone()));
+            self.emit_signal(
+                super::signals::SELECTED_SCENE,
+                Value::String(selected.clone()),
+            );
             *last = Some(selected);
         }
     }
@@ -479,7 +485,7 @@ impl ObsDriver {
                 let emitters_guard = emitters.read();
                 for emit in emitters_guard.iter() {
                     emit(
-                        "obs.selectedScene".to_string(),
+                        super::signals::SELECTED_SCENE.to_string(),
                         Value::String(selected.clone()),
                     );
                 }
