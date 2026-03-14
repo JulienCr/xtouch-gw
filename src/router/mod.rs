@@ -14,6 +14,7 @@ mod feedback;
 mod indicators;
 mod page;
 mod refresh;
+mod refresh_plan;
 mod xtouch_input;
 
 pub use camera_target::CameraTargetState;

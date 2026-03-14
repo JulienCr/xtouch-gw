@@ -144,7 +144,7 @@ impl ObsDriver {
                 .await?;
             },
             ViewMode::SplitLeft | ViewMode::SplitRight => {
-                let split_scene = split_scene.expect("split_scene must be Some for split modes");
+                let split_scene = split_scene.context("BUG: split_scene missing for split mode")?;
 
                 if let Some(target) = explicit_target {
                     debug!(

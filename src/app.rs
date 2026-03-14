@@ -50,6 +50,7 @@ pub async fn run_app(
         let handler = Arc::clone(&tray_handler);
         async move {
             handler.run().await;
+            warn!("TrayMessageHandler task exited unexpectedly");
         }
     });
     debug!(
@@ -182,7 +183,10 @@ pub async fn run_app(
                         break; // Channel closed, app shutting down
                     }
                 },
-                Err(_) => break,
+                Err(e) => {
+                    debug!("Stdin read error (REPL stopping): {}", e);
+                    break;
+                },
             }
         }
     });
@@ -428,19 +432,31 @@ async fn handle_config_reload(
             // Update display for the (potentially new) active page
             display::update_xtouch_display(router, xtouch).await;
 
+            // Shut down old gamepad mapper before creating new one
+            // (must use explicit shutdown(), not Drop, to ensure the blocking thread stops)
+            if let Some(old) = gamepad_mapper.take() {
+                if let Err(e) = old.shutdown().await {
+                    warn!("Failed to shut down old gamepad mapper: {}", e);
+                }
+            }
+
             if let Some(ref gp_config) = new_gamepad_config {
-                match input::gamepad::init(gp_config, router.clone()).await {
-                    Some(new_mapper) => {
-                        *gamepad_mapper = Some(new_mapper);
-                        info!("Gamepad subsystem reloaded");
-                    },
-                    None => {
-                        *gamepad_mapper = None;
-                        info!("Gamepad subsystem disabled after config reload");
-                    },
+                if gp_config.enabled {
+                    match input::gamepad::init(gp_config, router.clone()).await {
+                        Some(new_mapper) => {
+                            *gamepad_mapper = Some(new_mapper);
+                            info!("Gamepad subsystem reloaded");
+                        },
+                        None => {
+                            warn!(
+                                "Gamepad init failed after config reload (enabled=true in config)"
+                            );
+                        },
+                    }
+                } else {
+                    debug!("Gamepad disabled in config");
                 }
             } else {
-                *gamepad_mapper = None;
                 debug!("Gamepad not configured, skipping gamepad init");
             }
 

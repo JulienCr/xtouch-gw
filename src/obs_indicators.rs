@@ -189,16 +189,23 @@ fn handle_preview_scene_change(
     }
 
     // Update target and broadcast
-    if api_state
+    match api_state
         .camera_targets
         .set_target(&gamepad_slot, camera_id)
-        .is_ok()
     {
-        api::broadcast_target_change(api_state, &gamepad_slot, camera_id);
-        info!(
-            "Auto-targeted {} -> {} (preview: {})",
-            gamepad_slot, camera_id, scene_name
-        );
+        Ok(()) => {
+            api::broadcast_target_change(api_state, &gamepad_slot, camera_id);
+            info!(
+                "Auto-targeted {} -> {} (preview: {})",
+                gamepad_slot, camera_id, scene_name
+            );
+        },
+        Err(e) => {
+            warn!(
+                "Failed to auto-target {} -> {}: {}",
+                gamepad_slot, camera_id, e
+            );
+        },
     }
 }
 

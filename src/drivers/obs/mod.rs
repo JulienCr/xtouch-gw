@@ -14,6 +14,7 @@ mod camera_actions;
 mod connection;
 mod driver;
 mod encoder;
+mod event_listener;
 mod ptz_actions;
 mod split_mode;
 mod transform;

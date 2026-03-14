@@ -7,7 +7,7 @@ use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use super::driver::ObsDriver;
 
@@ -106,201 +106,27 @@ impl ObsDriver {
         let last_selected = Arc::clone(&self.last_selected_sent);
         let shutdown_flag = Arc::clone(&self.shutdown_flag);
         let activity_tracker = Arc::clone(&self.activity_tracker);
-
-        // Clone for ViewMode synchronization
         let camera_control_config = Arc::clone(&self.camera_control_config);
         let camera_control_state = Arc::clone(&self.camera_control_state);
-
-        // Clone for reconnection trigger and status emission
         let driver_for_reconnect = self.clone_for_task();
 
-        tokio::spawn(async move {
-            // Helper: Sync ViewMode from scene name
-            let sync_view_mode = |scene_name: &str| {
-                use crate::drivers::obs::camera::ViewMode;
-
-                let config_guard = camera_control_config.read();
-                if let Some(config) = config_guard.as_ref() {
-                    let view_mode = if scene_name == config.splits.left {
-                        Some(ViewMode::SplitLeft)
-                    } else if scene_name == config.splits.right {
-                        Some(ViewMode::SplitRight)
-                    } else if config.cameras.iter().any(|c| c.scene == scene_name) {
-                        Some(ViewMode::Full)
-                    } else {
-                        None
-                    };
-
-                    if let Some(new_mode) = view_mode {
-                        let mut state = camera_control_state.write();
-                        let old_mode = state.current_view_mode;
-                        state.current_view_mode = new_mode;
-
-                        if old_mode != new_mode {
-                            debug!(
-                                "ViewMode synced from scene '{}': {:?} → {:?}",
-                                scene_name, old_mode, new_mode
-                            );
-                        }
-                    }
-                }
-            };
-
-            loop {
-                if *shutdown_flag.lock() {
-                    debug!("OBS event listener shutting down");
-                    break;
-                }
-
-                // Get event stream
-                let events = {
-                    let guard = client.read().await;
-                    match guard.as_ref() {
-                        Some(c) => match c.events() {
-                            Ok(stream) => stream,
-                            Err(e) => {
-                                warn!("Failed to get OBS event stream: {}", e);
-                                tokio::time::sleep(Duration::from_secs(2)).await;
-                                continue;
-                            },
-                        },
-                        None => {
-                            // Not connected, wait and retry
-                            tokio::time::sleep(Duration::from_secs(1)).await;
-                            continue;
-                        },
-                    }
-                };
-
-                // Process events
-                use obws::events::Event;
-                use tokio_stream::StreamExt;
-
-                tokio::pin!(events);
-                while let Some(event) = events.next().await {
-                    if *shutdown_flag.lock() {
-                        break;
-                    }
-
-                    // Record inbound activity from OBS
-                    if let Some(ref tracker) = *activity_tracker.read() {
-                        tracker.record("obs", crate::tray::ActivityDirection::Inbound);
-                    }
-
-                    match event {
-                        Event::CurrentProgramSceneChanged { name } => {
-                            debug!("OBS program scene changed: {}", name);
-                            *program_scene.write() = name.clone();
-
-                            // Sync ViewMode if not in studio mode
-                            if !*studio_mode.read() {
-                                sync_view_mode(&name);
-                            }
-
-                            // Emit signals
-                            let emitters_guard = emitters.read();
-                            for emit in emitters_guard.iter() {
-                                emit(
-                                    super::signals::CURRENT_PROGRAM_SCENE.to_string(),
-                                    Value::String(name.clone()),
-                                );
-                            }
-
-                            // Schedule selectedScene emission (debounced)
-                            Self::emit_selected_debounced(
-                                *studio_mode.read(),
-                                program_scene.read().clone(),
-                                preview_scene.read().clone(),
-                                Arc::clone(&emitters),
-                                Arc::clone(&last_selected),
-                            );
-                        },
-
-                        Event::StudioModeStateChanged { enabled } => {
-                            debug!("OBS studio mode changed: {}", enabled);
-                            *studio_mode.write() = enabled;
-
-                            // Sync ViewMode based on which scene is now "active"
-                            let active_scene = if enabled {
-                                preview_scene.read().clone()
-                            } else {
-                                program_scene.read().clone()
-                            };
-                            sync_view_mode(&active_scene);
-
-                            // Emit signal
-                            let emitters_guard = emitters.read();
-                            for emit in emitters_guard.iter() {
-                                emit(
-                                    super::signals::STUDIO_MODE.to_string(),
-                                    Value::Bool(enabled),
-                                );
-                            }
-
-                            // Schedule selectedScene emission (debounced)
-                            Self::emit_selected_debounced(
-                                enabled,
-                                program_scene.read().clone(),
-                                preview_scene.read().clone(),
-                                Arc::clone(&emitters),
-                                Arc::clone(&last_selected),
-                            );
-                        },
-
-                        Event::CurrentPreviewSceneChanged { name } => {
-                            debug!("OBS preview scene changed: {}", name);
-                            *preview_scene.write() = name.clone();
-
-                            // Sync ViewMode in studio mode
-                            if *studio_mode.read() {
-                                sync_view_mode(&name);
-                            }
-
-                            // Emit signal
-                            let emitters_guard = emitters.read();
-                            for emit in emitters_guard.iter() {
-                                emit(
-                                    super::signals::CURRENT_PREVIEW_SCENE.to_string(),
-                                    Value::String(name.clone()),
-                                );
-                            }
-
-                            // Schedule selectedScene emission (debounced)
-                            Self::emit_selected_debounced(
-                                *studio_mode.read(),
-                                program_scene.read().clone(),
-                                preview_scene.read().clone(),
-                                Arc::clone(&emitters),
-                                Arc::clone(&last_selected),
-                            );
-                        },
-
-                        _ => {
-                            // Ignore other events
-                        },
-                    }
-                }
-
-                // Stream ended (disconnected)
-                warn!("🔌 OBS event stream closed");
-
-                // Emit disconnected status
-                driver_for_reconnect.emit_status(crate::tray::ConnectionStatus::Disconnected);
-
-                // Trigger automatic reconnection
-                let driver_clone = driver_for_reconnect.clone_for_task();
-                tokio::spawn(async move {
-                    driver_clone.schedule_reconnect().await;
-                });
-
-                // Exit listener - new one will be spawned after successful reconnect
-                break;
-            }
-        });
+        tokio::spawn(super::event_listener::run_event_listener(
+            client,
+            studio_mode,
+            program_scene,
+            preview_scene,
+            emitters,
+            last_selected,
+            shutdown_flag,
+            activity_tracker,
+            camera_control_config,
+            camera_control_state,
+            driver_for_reconnect,
+        ));
     }
 
     /// Static helper to emit selectedScene with debouncing
-    fn emit_selected_debounced(
+    pub(super) fn emit_selected_debounced(
         studio_mode: bool,
         program_scene: String,
         preview_scene: String,
