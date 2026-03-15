@@ -186,35 +186,30 @@ impl ObsDriver {
         let guard = self.get_connected_client().await?;
         let client = guard
             .as_ref()
-            .expect("invariant: get_connected_client ensures Some");
+            .context("BUG: get_connected_client returned None")?;
 
         // Determine whether to use preview or program
         // Priority: explicit_target > gamepad modifier logic > legacy behavior
+        let studio_mode_on = *self.studio_mode.read();
+        let needs_studio_mode = match explicit_target {
+            Some("preview") => true,
+            None if ptz_ctx.is_gamepad() && modifier_held => true,
+            _ => false,
+        };
+
+        // Auto-enable studio mode if a preview operation requires it
+        if needs_studio_mode && !studio_mode_on {
+            info!("Enabling studio mode for preview operation");
+            client.ui().set_studio_mode_enabled(true).await?;
+            *self.studio_mode.write() = true;
+        }
+
         let use_preview = match explicit_target {
-            Some("preview") => {
-                // Force preview mode - auto-enable studio mode if needed
-                if !*self.studio_mode.read() {
-                    info!("Enabling studio mode for preview operation");
-                    client.ui().set_studio_mode_enabled(true).await?;
-                    *self.studio_mode.write() = true;
-                }
-                true
-            },
+            Some("preview") => true,
             Some("program") => false,
-            None if ptz_ctx.is_gamepad() && modifier_held => {
-                // Gamepad + PTZ modifier held - force preview mode
-                if !*self.studio_mode.read() {
-                    info!("Enabling studio mode for PTZ modifier preview");
-                    client.ui().set_studio_mode_enabled(true).await?;
-                    *self.studio_mode.write() = true;
-                }
-                true
-            },
-            None if ptz_ctx.is_gamepad() => {
-                // Gamepad without modifier - force program mode
-                false
-            },
-            _ => *self.studio_mode.read(), // Legacy behavior for non-gamepad
+            None if ptz_ctx.is_gamepad() && modifier_held => true,
+            None if ptz_ctx.is_gamepad() => false,
+            _ => studio_mode_on, // Legacy behavior for non-gamepad
         };
 
         let target_name = if use_preview { "preview" } else { "program" };
