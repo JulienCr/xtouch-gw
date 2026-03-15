@@ -45,8 +45,8 @@ pub async fn run_app(
         activity_poll_interval,
     ));
 
-    // Spawn tray handler task (runs until shutdown)
-    let _handler_task = tokio::spawn({
+    // Spawn tray handler task (aborted during shutdown cleanup)
+    let handler_task = tokio::spawn({
         let handler = Arc::clone(&tray_handler);
         async move {
             handler.run().await;
@@ -164,7 +164,16 @@ pub async fn run_app(
 
     // Initialize gamepad if enabled
     let mut gamepad_mapper = if let Some(gamepad_config) = &config.gamepad {
-        input::gamepad::init(gamepad_config, router.clone()).await
+        match input::gamepad::init(gamepad_config, router.clone()).await {
+            Ok(mapper) => mapper,
+            Err(e) => {
+                warn!(
+                    "Gamepad initialization failed: {}. Continuing without gamepad.",
+                    e
+                );
+                None
+            },
+        }
     } else {
         None
     };
@@ -274,6 +283,7 @@ pub async fn run_app(
     }
 
     // Cleanup
+    handler_task.abort();
     shutdown_cleanup(&router, &xtouch).await
 }
 
@@ -441,20 +451,17 @@ async fn handle_config_reload(
             }
 
             if let Some(ref gp_config) = new_gamepad_config {
-                if gp_config.enabled {
-                    match input::gamepad::init(gp_config, router.clone()).await {
-                        Some(new_mapper) => {
-                            *gamepad_mapper = Some(new_mapper);
-                            info!("Gamepad subsystem reloaded");
-                        },
-                        None => {
-                            warn!(
-                                "Gamepad init failed after config reload (enabled=true in config)"
-                            );
-                        },
-                    }
-                } else {
-                    debug!("Gamepad disabled in config");
+                match input::gamepad::init(gp_config, router.clone()).await {
+                    Ok(Some(new_mapper)) => {
+                        *gamepad_mapper = Some(new_mapper);
+                        info!("Gamepad subsystem reloaded");
+                    },
+                    Ok(None) => {
+                        debug!("Gamepad disabled in config");
+                    },
+                    Err(e) => {
+                        warn!("Gamepad init failed after config reload: {}", e);
+                    },
                 }
             } else {
                 debug!("Gamepad not configured, skipping gamepad init");

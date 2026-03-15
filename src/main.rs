@@ -146,7 +146,7 @@ async fn main() -> Result<()> {
 
     // Initialize router with detected state path
     let sled_path_str = sled_path.to_string_lossy().to_string();
-    let mut router = Router::with_db_path((*initial_config).clone(), &sled_path_str);
+    let mut router = Router::with_db_path((*initial_config).clone(), &sled_path_str)?;
     router.set_activity_tracker(Arc::clone(&activity_tracker));
     let router = Arc::new(router);
     debug!(

@@ -20,10 +20,11 @@ pub mod visualizer_state;
 pub mod xinput_convert;
 
 use std::sync::Arc;
-use tracing::{debug, warn};
+use tracing::{debug, info};
 
 use crate::config::GamepadConfig;
 use crate::router::Router;
+use anyhow::{Context, Result};
 
 pub use hybrid_provider::HybridGamepadProvider;
 pub use mapper::GamepadMapper;
@@ -36,10 +37,12 @@ pub use visualizer::run_visualizer;
 /// * `router` - Router instance
 ///
 /// # Returns
-/// Configured mapper instance, or None if initialization fails
-pub async fn init(config: &GamepadConfig, router: Arc<Router>) -> Option<GamepadMapper> {
+/// `Ok(None)` if gamepad is disabled in config, `Ok(Some(mapper))` on success,
+/// `Err(...)` if initialization fails with gamepad enabled.
+pub async fn init(config: &GamepadConfig, router: Arc<Router>) -> Result<Option<GamepadMapper>> {
     if !config.enabled {
-        return None;
+        info!("Gamepad disabled in config");
+        return Ok(None);
     }
 
     debug!("Initializing gamepad input...");
@@ -66,30 +69,17 @@ pub async fn init(config: &GamepadConfig, router: Arc<Router>) -> Option<Gamepad
     };
 
     // Start hybrid provider with slot configs
-    let provider = match HybridGamepadProvider::start(slot_configs).await {
-        Ok(p) => Arc::new(p),
-        Err(e) => {
-            warn!(
-                "Failed to initialize hybrid gamepad provider: {}. Continuing without gamepad.",
-                e
-            );
-            return None;
-        },
-    };
+    let provider = HybridGamepadProvider::start(slot_configs)
+        .await
+        .context("Failed to initialize hybrid gamepad provider")?;
+    let provider = Arc::new(provider);
 
     // Attach mapper
-    let mapper = match GamepadMapper::attach(provider, router, config).await {
-        Ok(m) => m,
-        Err(e) => {
-            warn!(
-                "Failed to attach gamepad mapper: {}. Continuing without gamepad.",
-                e
-            );
-            return None;
-        },
-    };
+    let mapper = GamepadMapper::attach(provider, router, config)
+        .await
+        .context("Failed to attach gamepad mapper")?;
 
     debug!("Gamepad input initialized");
 
-    Some(mapper)
+    Ok(Some(mapper))
 }

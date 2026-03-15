@@ -115,7 +115,3 @@ pub mod obs;
 pub use console::ConsoleDriver;
 pub use midibridge::MidiBridgeDriver;
 pub use obs::ObsDriver;
-
-// Suppress unused warnings temporarily during Phase 5 development
-#[allow(unused_imports)]
-use {ConsoleDriver as _, MidiBridgeDriver as _, ObsDriver as _};

@@ -99,9 +99,13 @@ impl super::Router {
         pb_channel: u8,
         mapping_db: &ControlMappingDB,
     ) -> bool {
+        // PB channels are 1-based (faders 1-9), MIDI spec uses 0-based
+        if pb_channel == 0 {
+            return false;
+        }
         let control_id = Self::find_control_by_midi_spec(
             mapping_db,
-            |spec| matches!(spec, MidiSpec::PitchBend { channel } if *channel == pb_channel.saturating_sub(1)),
+            |spec| matches!(spec, MidiSpec::PitchBend { channel } if *channel == pb_channel - 1),
         );
 
         let Some(control_id) = control_id else {

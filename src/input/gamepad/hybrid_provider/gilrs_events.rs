@@ -14,7 +14,7 @@ use crate::input::gamepad::stick_buffer::{StickBuffer, StickId};
 
 impl HybridProviderState {
     /// Poll gilrs events (non-blocking)
-    pub(super) fn poll_gilrs_events(&mut self, event_tx: &mpsc::UnboundedSender<GamepadEvent>) {
+    pub(super) fn poll_gilrs_events(&mut self, event_tx: &mpsc::Sender<GamepadEvent>) {
         while let Some(Event { id, event, .. }) = self.gilrs.next_event() {
             let hybrid_id = HybridControllerId::from_gilrs(id);
 
@@ -31,7 +31,7 @@ impl HybridProviderState {
             for gamepad_event in self.convert_gilrs_event(id, event, &prefix, analog_config) {
                 debug!("gilrs event: {:?}", gamepad_event);
 
-                if event_tx.send(gamepad_event).is_err() {
+                if event_tx.try_send(gamepad_event).is_err() {
                     warn!("Event receiver dropped, shutting down gamepad loop");
                     return;
                 }

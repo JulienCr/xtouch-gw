@@ -223,7 +223,7 @@ impl Driver for ObsDriver {
                 let guard = self.get_connected_client().await?;
                 let client = guard
                     .as_ref()
-                    .expect("invariant: get_connected_client ensures Some");
+                    .context("BUG: get_connected_client returned None")?;
 
                 // Get current state and toggle
                 let current = *self.studio_mode.read();
@@ -248,7 +248,7 @@ impl Driver for ObsDriver {
                 let guard = self.get_connected_client().await?;
                 let client = guard
                     .as_ref()
-                    .expect("invariant: get_connected_client ensures Some");
+                    .context("BUG: get_connected_client returned None")?;
 
                 client.transitions().trigger().await?;
                 Ok(())

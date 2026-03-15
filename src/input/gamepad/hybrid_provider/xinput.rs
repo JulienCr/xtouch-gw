@@ -12,7 +12,7 @@ use crate::input::gamepad::xinput_convert::{
 
 impl HybridProviderState {
     /// Poll XInput events for all 4 possible controllers
-    pub(super) fn poll_xinput_events(&mut self, event_tx: &mpsc::UnboundedSender<GamepadEvent>) {
+    pub(super) fn poll_xinput_events(&mut self, event_tx: &mpsc::Sender<GamepadEvent>) {
         if self.xinput_handle.is_none() {
             return;
         }
@@ -54,7 +54,7 @@ impl HybridProviderState {
         &mut self,
         user_index: usize,
         state: rusty_xinput::XInputState,
-        event_tx: &mpsc::UnboundedSender<GamepadEvent>,
+        event_tx: &mpsc::Sender<GamepadEvent>,
     ) {
         let hybrid_id = HybridControllerId::from_xinput(user_index);
 
@@ -87,7 +87,7 @@ impl HybridProviderState {
 
         for event in button_events {
             debug!("XInput button event: {:?}", event);
-            if event_tx.send(event).is_err() {
+            if event_tx.try_send(event).is_err() {
                 warn!("Event receiver dropped, shutting down XInput polling");
                 return;
             }
@@ -104,7 +104,7 @@ impl HybridProviderState {
 
         for event in axis_events {
             debug!("XInput axis event: {:?}", event);
-            if event_tx.send(event).is_err() {
+            if event_tx.try_send(event).is_err() {
                 warn!("Event receiver dropped, shutting down XInput polling");
                 return;
             }

@@ -32,6 +32,8 @@ pub type EventCallback = Arc<dyn Fn(GamepadEvent) + Send + Sync>;
 pub struct HybridGamepadProvider {
     event_listeners: Arc<RwLock<Vec<EventCallback>>>,
     shutdown_tx: Mutex<Option<mpsc::Sender<()>>>,
+    /// Handle for the blocking event loop thread (joined on shutdown)
+    thread_handle: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl HybridGamepadProvider {
@@ -40,13 +42,16 @@ impl HybridGamepadProvider {
         let event_listeners = Arc::new(RwLock::new(Vec::<EventCallback>::new()));
         let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>(1);
 
-        // Create a channel for sending events from blocking thread to async world
-        let (event_tx, mut event_rx) = mpsc::unbounded_channel::<GamepadEvent>();
+        // Create a bounded channel for sending events from blocking thread to async world
+        let (event_tx, mut event_rx) = mpsc::channel::<GamepadEvent>(128);
 
         // Spawn blocking event loop in a dedicated thread
-        std::thread::spawn(move || {
-            Self::event_loop_blocking(slot_configs, event_tx, shutdown_rx);
-        });
+        let thread_handle = std::thread::Builder::new()
+            .name("gamepad-poll".into())
+            .spawn(move || {
+                Self::event_loop_blocking(slot_configs, event_tx, shutdown_rx);
+            })
+            .map_err(|e| anyhow::anyhow!("Failed to spawn gamepad thread: {}", e))?;
 
         // Spawn async task to forward events to listeners
         let listeners_clone = event_listeners.clone();
@@ -62,6 +67,7 @@ impl HybridGamepadProvider {
         Ok(Self {
             event_listeners,
             shutdown_tx: Mutex::new(Some(shutdown_tx)),
+            thread_handle: Mutex::new(Some(thread_handle)),
         })
     }
 
@@ -74,7 +80,7 @@ impl HybridGamepadProvider {
     /// Main event loop (runs in dedicated blocking thread)
     fn event_loop_blocking(
         slot_configs: Vec<(String, Option<AnalogConfig>)>,
-        event_tx: mpsc::UnboundedSender<GamepadEvent>,
+        event_tx: mpsc::Sender<GamepadEvent>,
         mut shutdown_rx: mpsc::Receiver<()>,
     ) {
         let mut state = match HybridProviderState::new(slot_configs) {
@@ -123,8 +129,9 @@ impl HybridGamepadProvider {
         }
     }
 
-    /// Shutdown the provider
+    /// Shutdown the provider, waiting for the polling thread to exit
     pub async fn shutdown(&self) -> Result<()> {
+        // Send shutdown signal
         let tx = self.shutdown_tx.lock().take();
         if let Some(tx) = tx {
             if tx.send(()).await.is_err() {
@@ -132,6 +139,37 @@ impl HybridGamepadProvider {
             }
             debug!("Hybrid gamepad provider shutdown requested");
         }
+
+        // Join the blocking thread (with timeout to avoid hanging)
+        let handle = self.thread_handle.lock().take();
+        if let Some(handle) = handle {
+            // Use spawn_blocking to avoid blocking the async runtime
+            let join_result = tokio::task::spawn_blocking(move || {
+                // Wait up to 2 seconds for the thread to exit
+                let start = std::time::Instant::now();
+                while !handle.is_finished() {
+                    if start.elapsed() > std::time::Duration::from_secs(2) {
+                        warn!("Gamepad polling thread did not exit within 2s timeout");
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                if let Err(e) = handle.join() {
+                    warn!("Gamepad polling thread panicked: {:?}", e);
+                } else {
+                    debug!("Gamepad polling thread joined successfully");
+                }
+            })
+            .await;
+
+            if let Err(e) = join_result {
+                warn!("Failed to join gamepad thread: {}", e);
+            }
+        }
+
+        // Clear event listeners to prevent stale callbacks
+        self.event_listeners.write().await.clear();
+
         Ok(())
     }
 }

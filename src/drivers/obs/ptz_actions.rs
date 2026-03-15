@@ -217,7 +217,7 @@ impl ObsDriver {
         let guard = self.get_connected_client().await?;
         let client = guard
             .as_ref()
-            .expect("invariant: get_connected_client ensures Some");
+            .context("BUG: get_connected_client returned None")?;
 
         client
             .scene_items()
@@ -310,7 +310,7 @@ impl ObsDriver {
         let guard = self.get_connected_client().await?;
         let client = guard
             .as_ref()
-            .expect("invariant: get_connected_client ensures Some");
+            .context("BUG: get_connected_client returned None")?;
 
         client
             .scene_items()

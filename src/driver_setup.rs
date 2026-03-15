@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::config::AppConfig;
 use crate::control_mapping::ControlMappingDB;
@@ -69,21 +69,27 @@ pub async fn load_control_database() -> Arc<ControlMappingDB> {
             info!("Loaded control database ({} controls)", db.mappings.len());
             Arc::new(db)
         },
-        Err(_) => match control_mapping::load_default_mappings() {
-            Ok(db) => {
-                info!(
-                    "Loaded embedded control database ({} controls)",
-                    db.mappings.len()
-                );
-                Arc::new(db.clone())
-            },
-            Err(e) => {
-                warn!("Failed to load control database: {}", e);
-                Arc::new(ControlMappingDB {
-                    mappings: Default::default(),
-                    groups: Default::default(),
-                })
-            },
+        Err(csv_err) => {
+            debug!("CSV control database not available: {}", csv_err);
+            match control_mapping::load_default_mappings() {
+                Ok(db) => {
+                    info!(
+                        "Loaded embedded control database ({} controls)",
+                        db.mappings.len()
+                    );
+                    Arc::new(db.clone())
+                },
+                Err(e) => {
+                    error!(
+                        "Failed to load control database (system will have no control mappings!): {}",
+                        e
+                    );
+                    Arc::new(ControlMappingDB {
+                        mappings: Default::default(),
+                        groups: Default::default(),
+                    })
+                },
+            }
         },
     }
 }

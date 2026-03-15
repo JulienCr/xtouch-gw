@@ -47,7 +47,7 @@ impl ObsDriver {
         let guard = self.get_connected_client().await?;
         let client = guard
             .as_ref()
-            .expect("invariant: get_connected_client ensures Some");
+            .context("BUG: get_connected_client returned None")?;
 
         let studio_mode = *self.studio_mode.read();
         if studio_mode {

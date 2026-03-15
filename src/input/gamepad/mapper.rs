@@ -21,7 +21,9 @@ use super::provider::GamepadEvent;
 pub struct GamepadMapper {
     _provider: Arc<HybridGamepadProvider>,
     /// Channel sender kept alive to prevent task shutdown
-    _event_tx: mpsc::UnboundedSender<GamepadEvent>,
+    _event_tx: mpsc::Sender<GamepadEvent>,
+    /// Handle for the event processor task (aborted on shutdown)
+    processor_handle: tokio::task::JoinHandle<()>,
 }
 
 impl GamepadMapper {
@@ -39,18 +41,21 @@ impl GamepadMapper {
         router: Arc<Router>,
         _config: &GamepadConfig,
     ) -> Result<Self> {
-        // Create channel for sequential event processing
-        let (event_tx, event_rx) = mpsc::unbounded_channel::<GamepadEvent>();
+        // Create bounded channel for sequential event processing (128 events buffer)
+        let (event_tx, event_rx) = mpsc::channel::<GamepadEvent>(128);
 
         // Spawn single task that processes events SEQUENTIALLY
         // This guarantees order and eliminates race conditions
-        Self::spawn_event_processor(event_rx, router.clone());
+        let processor_handle = Self::spawn_event_processor(event_rx, router.clone());
 
         // Subscribe to provider events - just forward to channel
         let tx_clone = event_tx.clone();
         let callback: EventCallback = Arc::new(move |event| {
-            if let Err(e) = tx_clone.send(event) {
-                warn!("Failed to send gamepad event to processor: {}", e);
+            if let Err(e) = tx_clone.try_send(event) {
+                warn!(
+                    "Failed to send gamepad event to processor (channel full or closed): {}",
+                    e
+                );
             }
         });
 
@@ -59,14 +64,15 @@ impl GamepadMapper {
         Ok(Self {
             _provider: provider,
             _event_tx: event_tx,
+            processor_handle,
         })
     }
 
     /// Spawn the sequential event processor task
     fn spawn_event_processor(
-        mut event_rx: mpsc::UnboundedReceiver<GamepadEvent>,
+        mut event_rx: mpsc::Receiver<GamepadEvent>,
         router: Arc<Router>,
-    ) {
+    ) -> tokio::task::JoinHandle<()> {
         // Cache for redundant event filtering (no sequence needed - we process in order!)
         let mut last_axis_values: HashMap<String, f32> = HashMap::new();
 
@@ -106,7 +112,7 @@ impl GamepadMapper {
             }
 
             debug!("Gamepad event processor stopped");
-        });
+        })
     }
 
     /// Handle button event
@@ -130,7 +136,7 @@ impl GamepadMapper {
                 control_id,
                 if pressed { "pressed" } else { "released" }
             ),
-            Err(e) => debug!("⚠️  Router error for {}: {}", control_id, e),
+            Err(e) => warn!("Router error for {}: {}", control_id, e),
         }
 
         Ok(())
@@ -195,7 +201,7 @@ impl GamepadMapper {
                         .await
                     {
                         Ok(_) => debug!("✅ Router handled axis (deadzone): {} = 0.0", control_id),
-                        Err(e) => debug!("⚠️  Router error for {}: {}", control_id, e),
+                        Err(e) => warn!("Router error for {}: {}", control_id, e),
                     }
                     cache.insert(control_id.to_string(), 0.0);
                 }
@@ -220,7 +226,7 @@ impl GamepadMapper {
                     "✅ Router handled axis: {} = {:.3}",
                     control_id, final_value
                 ),
-                Err(e) => debug!("⚠️  Router error for {}: {}", control_id, e),
+                Err(e) => warn!("Router error for {}: {}", control_id, e),
             }
 
             // Update cache
@@ -232,9 +238,13 @@ impl GamepadMapper {
 
     /// Shutdown the mapper
     ///
-    /// Sends shutdown signal to the provider's blocking thread, ensuring
-    /// it stops polling before the mapper is dropped.
-    pub async fn shutdown(&self) -> Result<()> {
+    /// Aborts the event processor task and sends shutdown signal to the
+    /// provider's blocking thread, ensuring it stops polling before the
+    /// mapper is dropped.
+    pub async fn shutdown(self) -> Result<()> {
+        // Abort the event processor task first to stop processing
+        self.processor_handle.abort();
+        // Then shut down the provider (joins the blocking thread)
         self._provider.shutdown().await?;
         Ok(())
     }

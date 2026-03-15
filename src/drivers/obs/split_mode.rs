@@ -96,23 +96,34 @@ impl ObsDriver {
             .context("Side required ('left' or 'right')")?;
 
         // Validate side parameter
-        match side {
-            "left" | "right" => {},
+        let target_mode = match side {
+            "left" => ViewMode::SplitLeft,
+            "right" => ViewMode::SplitRight,
             _ => {
                 return Err(anyhow!(
                     "Invalid side '{}', must be 'left' or 'right'",
                     side
                 ))
             },
-        }
+        };
 
-        let current_mode = self.camera_control_state.read().current_view_mode;
+        // Read current mode and optimistically update to prevent double-toggle race
+        let should_exit = {
+            let mut state = self.camera_control_state.write();
+            if state.current_view_mode != ViewMode::Full {
+                // Already in split -> mark as going to Full
+                state.current_view_mode = ViewMode::Full;
+                true
+            } else {
+                // Full -> mark as going to target split
+                state.current_view_mode = target_mode;
+                false
+            }
+        };
 
-        if current_mode != ViewMode::Full {
-            // Already in any split mode -> exit to full
+        if should_exit {
             self.execute_exit_split(ctx).await
         } else {
-            // Full -> enter requested split
             self.execute_enter_split(params, ctx).await
         }
     }
