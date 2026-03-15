@@ -6,8 +6,6 @@ This file provides guidance to Claude (or any AI assistant) when working with th
 
 XTouch GW v3 is a MIDI gateway that bridges a Behringer X-Touch control surface with desktop applications (Voicemeeter, QLC+, OBS Studio). This is a real-time system with strict latency requirements (<20ms end-to-end).
 
-## Essential Context
-
 ### What This Project Does
 1. **Receives MIDI** from Behringer X-Touch (faders, buttons, encoders)
 2. **Routes events** to applications via their APIs (WebSocket, MIDI)
@@ -16,33 +14,103 @@ XTouch GW v3 is a MIDI gateway that bridges a Behringer X-Touch control surface 
 5. **Prevents feedback loops** using time-windowed anti-echo logic
 
 ### Critical Performance Constraints
-- **Latency**: <20ms end-to-end (MIDI → App → Feedback)
+- **Latency**: <20ms end-to-end (MIDI -> App -> Feedback)
 - **Memory**: <50MB RAM usage
 - **CPU**: <1% during normal operation
 - **Reliability**: Zero panics in production
 
-## Quick Reference
-
-### Build Commands
+## Build Commands
 ```bash
-cargo build                # Debug build
-cargo build --release      # Optimized build
-cargo test                 # Run tests
-cargo clippy              # Linting
-cargo fmt                 # Format code
-cargo run -- -c config.yaml  # Run with config
+cargo build                   # Debug build
+cargo build --release         # Optimized build
+cargo test                    # Run tests
+cargo clippy                  # Linting
+cargo fmt                     # Format code
+cargo run -- -c config.yaml   # Run with config
 ```
 
-### Project Structure
+## Project Structure
 ```
 src/
 ├── main.rs                     # Entry point, Tokio runtime
+├── app.rs                      # Event loop and event handling
+├── cli.rs                      # REPL interface
+├── control_mapping.rs          # CSV control mapping parser
+├── display.rs                  # X-Touch LCD/LED update helpers
+├── driver_setup.rs             # Driver registration and init
+├── helpers.rs                  # Startup/shutdown utilities
+├── midi.rs                     # MIDI utilities and conversions
+├── obs_indicators.rs           # OBS LED/camera indicator callbacks
+├── paths.rs                    # Portable/installed path resolution
+├── sniffer.rs                  # MIDI debug/sniffing tools
+├── state.rs                    # State module re-export
+├── xtouch.rs                   # X-Touch driver entry
+│
+├── api/                        # HTTP/WebSocket API
+│   └── mod.rs
+│
 ├── config/                     # YAML configuration types
+│   ├── mod.rs
+│   └── watcher.rs              # Config file watcher (hot-reload)
+│
+├── drivers/                    # Application drivers
+│   ├── mod.rs                  # Driver trait + registration
+│   ├── console.rs              # Console/debug driver
+│   ├── midibridge.rs           # Generic MIDI bridge driver
+│   └── obs/                    # OBS Studio driver (WebSocket)
+│       ├── mod.rs
+│       ├── driver.rs           # Main OBS driver impl
+│       ├── connection.rs       # WebSocket connection management
+│       ├── event_listener.rs   # OBS event subscriptions
+│       ├── actions.rs          # Button/fader action dispatch
+│       ├── analog.rs           # Analog control handling
+│       ├── encoder.rs          # Encoder rotation handling
+│       ├── camera.rs           # Camera/PTZ control
+│       ├── camera_actions.rs   # Camera action dispatch
+│       ├── ptz_actions.rs      # PTZ movement actions
+│       ├── split_mode.rs       # Split-screen mode
+│       └── transform.rs        # OBS source transforms
+│
+├── input/                      # External input handling
+│   ├── mod.rs
+│   └── gamepad/                # Gamepad/controller input
+│       ├── mod.rs
+│       ├── mapper.rs           # Gamepad-to-action mapping
+│       ├── provider.rs         # Gamepad provider trait
+│       ├── analog.rs           # Analog stick processing
+│       ├── axis.rs             # Axis normalization
+│       ├── buttons.rs          # Button state handling
+│       ├── diagnostics.rs      # Gamepad diagnostics
+│       ├── normalize.rs        # Value normalization
+│       ├── slot.rs             # Gamepad slot management
+│       ├── stick_buffer.rs     # Stick input buffering
+│       ├── xinput_convert.rs   # XInput conversion
+│       ├── hybrid_id.rs        # Hybrid provider ID
+│       ├── hybrid_provider/    # Hybrid gilrs+XInput provider
+│       │   ├── mod.rs
+│       │   ├── gilrs_events.rs
+│       │   ├── scan.rs
+│       │   └── xinput.rs
+│       └── visualizer/         # Gamepad input visualizer
+│           ├── mod.rs
+│           ├── app.rs
+│           ├── drawing.rs
+│           ├── normalize.rs
+│           └── rendering.rs
+│
 ├── router/                     # Event orchestration
 │   ├── mod.rs                  # Router core
 │   ├── page.rs                 # Page management
+│   ├── driver.rs               # Driver dispatch
+│   ├── feedback.rs             # Feedback routing
 │   ├── refresh.rs              # State refresh logic
-│   └── driver.rs               # Driver dispatch
+│   ├── refresh_plan.rs         # Refresh planning
+│   ├── anti_echo.rs            # Anti-echo filter
+│   ├── camera_target.rs        # Camera auto-targeting
+│   ├── indicators.rs           # LED indicator logic
+│   ├── xtouch_input.rs         # X-Touch input processing
+│   └── tests.rs                # Router unit tests
+│
 ├── state/                      # Actor Model state management
 │   ├── actor.rs                # StateActor (single-threaded owner)
 │   ├── actor_handle.rs         # Public async API (StateActorHandle)
@@ -51,221 +119,82 @@ src/
 │   ├── persistence_actor.rs    # sled integration (ACID persistence)
 │   ├── types.rs                # MidiStateEntry, AppKey, etc.
 │   └── builders.rs             # Entry constructors
-├── xtouch/                     # Hardware driver
-├── drivers/                    # App drivers (OBS, Voicemeeter, etc.)
-├── midi.rs                     # MIDI utilities
-├── input/                      # Gamepad input handling
+│
 ├── tray/                       # System tray integration
-├── cli.rs                      # REPL interface
-└── sniffer.rs                  # Debug tools
+│   ├── mod.rs
+│   ├── manager.rs              # Tray lifecycle management
+│   ├── handler.rs              # Tray event handling
+│   ├── activity.rs             # Activity indicator
+│   └── icons.rs                # Icon resources
+│
+└── xtouch/                     # X-Touch hardware sub-modules
+    ├── fader_setpoint.rs       # Fader position tracking
+    └── pitch_bend_squelch.rs   # PitchBend noise filtering
 ```
 
-## Architecture Principles
+## Architecture
 
 ### Core Design Patterns
 1. **Actor Model**: Single-threaded state ownership via `StateActor` (eliminates race conditions)
 2. **Event-Driven**: Tokio channels for async message passing
-3. **ACID Persistence**: sled embedded database for crash-safe state
+3. **ACID Persistence**: sled embedded database with write debouncing (250ms)
 4. **Zero-Copy MIDI**: Avoid allocations in hot path
 5. **Shadow State**: Track last-sent values for anti-echo (in `StateActor`)
 6. **Atomic Config Swap**: Hot-reload without dropping events
 
 ### Data Flow
-```mermaid
-flowchart LR
-    XT_IN["X-Touch Input"]
-    PARSER["MIDI Parser"]
-    ROUTER["Router"]
-    DRV["Driver"]
-    APP["Application"]
-    ACTOR["StateActor"]
-    PERSIST["PersistenceActor<br/>(sled)"]
-    FEEDBACK["Application Feedback"]
-    ANTIECHO["Anti-Echo<br/>(in StateActor)"]
-    XT_OUT["X-Touch Output"]
-
-    XT_IN --> PARSER
-    PARSER --> ROUTER
-    ROUTER --> DRV
-    DRV --> APP
-
-    ROUTER -- "update_state()" --> ACTOR
-    APP --> FEEDBACK
-    FEEDBACK -- "on_midi_from_app()" --> ACTOR
-    ACTOR -- "snapshot" --> PERSIST
-    ACTOR -- "anti-echo check" --> ANTIECHO
-    ANTIECHO --> XT_OUT
 ```
+X-Touch Input -> MIDI Parser -> Router -> Driver -> Application
+                                  |
+                            update_state()
+                                  v
+Application -> Feedback -> StateActor -> Anti-Echo -> X-Touch Output
+                              |
+                         PersistenceActor (sled)
+```
+
+### State Management (Actor Model)
+- `StateActor`: Single-threaded owner of all state (runs in dedicated task)
+- `StateActorHandle`: Async API for other components
+- `PersistenceActor`: sled database writes with debouncing
+- All state access via `StateCommand` messages (no locks needed)
+- Anti-echo shadow state tracking internal to `StateActor`
+- Hydrated entries marked `stale: true`, superseded by fresh feedback
+- State stored in `.state/sled/` with keys `state:{app}:{status}:{channel}:{data1}`
 
 ## Code Quality Rules
 
-### Anti-Monolith Principles
+### Size Limits
+- **Files**: Never exceed 500 lines (break up at 400)
+- **Functions**: Target 20-30 lines, max 40
+- **Struct impls**: Max ~200 lines (including `impl` blocks)
 
-**No monolithic files or modules.** Break down code into focused, composable units.
+### Design Principles
+- **SRP**: Every file, struct, function does ONE thing
+- **DRY**: Extract common patterns into utility functions or traits
+- **Composition over inheritance**: Traits for behavior contracts, newtype pattern for semantics
+- **No god structs/modules**: Split large components into focused sub-files
+- **Reusability**: Decoupled, self-contained, injectable dependencies
+- **Testability**: Trait objects for external deps, builder patterns for test setup
 
-- **Never allow a file to exceed 500 lines** (strict limit)
-- If a file approaches 400 lines, break it up immediately
-- Treat 1000+ lines as completely unacceptable
-- Use folders and naming conventions to keep small files logically grouped
-
-### Single Responsibility Principle (SRP)
-
-**Every file, struct, function, and module should do ONE thing only.**
-
-- If a component has multiple responsibilities, split it immediately
-- Each module should be laser-focused on one concern
-- Ask: "What is the single reason this would change?"
-
-### Composition Over Inheritance
-
-**Favor composition and trait-based design over complex type hierarchies.**
-
-- Use traits to define behavior contracts
-- Compose structs from smaller, focused components
-- Utilize the newtype pattern to add semantic meaning
-- Prefer dependency injection over tight coupling
-
-### DRY (Don't Repeat Yourself)
-
-**Eliminate duplication ruthlessly.**
-
-- Extract common patterns into utility functions or traits
-- Use generics and macros for repetitive boilerplate
-- Share configuration types across modules
-- Centralize constant definitions
-
-### Design for Reusability
-
-**Always code as if someone will reuse this logic for a future feature.**
-
-- Ask: "Can I reuse this struct/function in a different project or module?"
-- Keep components decoupled and self-contained
-- Avoid hard-coding application-specific assumptions
-- Include extension points (traits, generics) from day one
-- Write code that connects like Lego blocks: interchangeable, testable, isolated
-
-### Function and Method Size
-
-**Keep functions small and focused.**
-
-- **Target**: 20-30 lines per function
-- **Maximum**: 40 lines (refactor if exceeded)
-- Each function should have a single, clear purpose
-- If a function does multiple things, split it
-
-### Naming Conventions
-
-**All names must be descriptive and intention-revealing.**
-
+### Naming
+- **Descriptive and domain-specific**: `PitchBendMessage`, `FaderPosition`, `StateSnapshot`
 - **Avoid vague names**: `data`, `info`, `helper`, `temp`, `handle_thing`
-- **Use domain language**: `PitchBendMessage`, `FaderPosition`, `StateSnapshot`
-- **Be specific**: `parse_midi_from_xtouch()` not `parse()`
-- **Rust conventions**:
-  - `snake_case` for functions, modules, variables
-  - `PascalCase` for types, traits, enums
-  - `SCREAMING_SNAKE_CASE` for constants
-
-### Module Organization Patterns
-
-**Use clear separation of concerns with dedicated modules.**
-
-- **State management**: Actor, Handle, Commands, Types (separate files)
-- **Drivers**: One file per driver (avoid `drivers/mod.rs` god-module)
-- **Business logic**: Manager/Service pattern for domain operations
-- **Utilities**: Pure functions in focused utility modules
-
-### Avoid God Structs/Modules
-
-**Never let one file or struct hold everything.**
-
-- Split large structs into:
-  - Core state struct
-  - Builder pattern for construction
-  - Extension traits for optional functionality
-  - Separate modules for related types
-- Maximum ~200 lines per struct implementation (including `impl` blocks)
-- Use composition: embed smaller structs rather than adding more fields
-
-### Testability and Mockability
-
-**Design for easy testing from the start.**
-
-- Use trait objects for external dependencies (MIDI ports, network, file I/O)
-- Inject dependencies via constructor parameters
-- Keep pure logic separate from I/O effects
-- Provide builder patterns for complex test setup
-
-### Documentation Standards
-
-**Code should be self-documenting, but add docs where complexity exists.**
-
-- **Module-level doc comments**: Explain purpose and architecture
-- **Public API docs**: Use `///` rustdoc comments with examples
-- **Tricky logic**: Inline `//` comments explaining "why", not "what"
-- **Performance notes**: Document hot paths and optimization rationale
+- Rust conventions: `snake_case` functions/modules, `PascalCase` types/traits, `SCREAMING_SNAKE_CASE` constants
 
 ### Error Handling
+- `anyhow::Result` for application code, `thiserror` for library errors
+- Never `.unwrap()` or `.expect()` on external input
+- Use `.context()` for error chains
+- Always retry with backoff for connections
 
-**Errors should be explicit, typed, and actionable.**
+### Concurrency
+- `Arc<RwLock<T>>` for shared config
+- `Arc<Mutex<T>>` for MIDI ports
+- Prefer channels over shared memory
+- Always use bounded channels
 
-- Use `anyhow::Result` for application-level code
-- Use `thiserror` for library-level custom errors
-- Never use `.unwrap()` or `.expect()` on external input
-- Provide context with `.context()` for error chains
-- Handle errors at appropriate boundaries (don't propagate infinitely)
-
-### Scalability Mindset
-
-**Always code as if this will need to scale.**
-
-- Avoid premature optimization, but design for extensibility
-- Use bounded channels to prevent unbounded memory growth
-- Consider what happens with 100x the data/events
-- Include performance budgets in hot paths (e.g., \<10µs for MIDI parsing)
-
-## Working with This Codebase
-
-### When Making Changes
-
-1. **Performance Critical Paths** (avoid allocations):
-   - MIDI message parsing (`midi.rs`)
-   - State lookups (`state.rs`)
-   - Event routing (`router.rs`)
-
-2. **Concurrency Patterns**:
-   - Use `Arc<RwLock<T>>` for shared config
-   - Use `Arc<Mutex<T>>` for MIDI ports
-   - Prefer channels over shared memory
-
-3. **Error Handling**:
-   - Use `anyhow::Result` in application code
-   - Use `thiserror` for library errors
-   - Never panic on external input
-   - Always retry with backoff for connections
-
-### Common Tasks
-
-#### Adding a New Driver
-1. Implement the `Driver` trait in `drivers/`
-2. Add configuration types in `config.rs`
-3. Register in router initialization
-4. Add tests with mock MIDI
-
-#### Modifying MIDI Routing
-1. Update state types in `state.rs`
-2. Adjust anti-echo windows if needed
-3. Test with real hardware
-4. Verify no feedback loops
-
-#### Debugging Latency Issues
-1. Use `tracing` spans to measure stages
-2. Check for blocking operations
-3. Profile with `cargo flamegraph`
-4. Verify channel buffer sizes
-
-## Key Implementation Details
-
-### MIDI Specifics
+## MIDI Specifics
 - **14-bit values**: Faders use PitchBend (0-16383)
 - **7-bit values**: Buttons/encoders use CC/Note (0-127)
 - **Channel semantics**: In MCU mode, channel = physical strip
@@ -277,47 +206,30 @@ flowchart LR
 - Recovery needs 250ms+ after disconnect
 - Use substring matching for port discovery
 
-### State Management (Actor Model)
+## Common Tasks
 
-The state system uses an Actor Model architecture for race-condition-free operation:
+### Adding a New Driver
+1. Implement the `Driver` trait in `drivers/`
+2. Add configuration types in `config/`
+3. Register in `driver_setup.rs`
+4. Add tests with mock MIDI
 
-**Key Components:**
-- `StateActor`: Single-threaded owner of all state (runs in dedicated task)
-- `StateActorHandle`: Async API for other components to interact with state
-- `PersistenceActor`: Handles sled database writes with debouncing
+### Modifying MIDI Routing
+1. Update state types in `state/`
+2. Adjust anti-echo windows in `router/anti_echo.rs` if needed
+3. Test with real hardware
+4. Verify no feedback loops
 
-**Rules:**
-1. **Single ownership**: Only `StateActor` modifies state (no locks needed)
-2. **Message passing**: All state access via `StateCommand` messages
-3. **Anti-echo**: Shadow state tracking is internal to `StateActor`
-4. **ACID persistence**: State changes are durably persisted to `.state/sled/`
-5. **Stale flag**: Hydrated entries marked `stale: true`, superseded by fresh feedback
-6. **LWW conflict resolution**: Last-Write-Wins within time window
-
-## Testing Guidelines
-
-### Unit Tests
-- Mock MIDI ports with `mockall`
-- Use `tokio::test` for async tests
-- Test anti-echo windows with `tokio::time::pause()`
-
-### Integration Tests
-- Requires real X-Touch hardware
-- Use golden MIDI logs for regression
-- Profile latency with oscilloscope if available
-
-### Manual Testing Checklist
-- [ ] Page switching via F1-F8
-- [ ] Fader motor feedback
-- [ ] LED indicators
-- [ ] LCD text/colors
-- [ ] Config hot-reload
-- [ ] Reconnection after disconnect
+### Debugging Latency Issues
+1. Use `tracing` spans to measure stages
+2. Check for blocking operations
+3. Profile with `cargo flamegraph`
+4. Verify channel buffer sizes
 
 ## Common Pitfalls
 
 ### MIDI and Hardware
-1. **Channel confusion**: Fader channel ≠ target CC channel
+1. **Channel confusion**: Fader channel != target CC channel
 2. **Double port opening**: Check passthrough before control MIDI
 3. **Missing feedback**: Drivers must emit or faders won't sync
 4. **LCD restoration**: Only bottom line, top unchanged
@@ -328,121 +240,31 @@ The state system uses an Actor Model architecture for race-condition-free operat
 3. **Channel deadlock**: Always use bounded channels
 4. **Panic in tasks**: Wrap spawns with error handling
 
-## Performance Optimization Tips
+## Performance Hot Paths
+Avoid allocations in these paths:
+- MIDI message parsing (`midi.rs`)
+- State lookups (`state/`)
+- Event routing (`router/`)
 
-1. **Preallocate**: Use `with_capacity` for collections
-2. **Batch events**: Coalesce within 16ms windows
-3. **Avoid cloning**: Use `Arc` for shared data
-4. **Profile first**: Don't optimize without measurements
+Tips: Use `with_capacity` for collections, `Arc` over cloning, coalesce events within 16ms windows, profile before optimizing.
 
-## Questions to Ask When Stuck
-
-1. Is this in the hot path? (If yes, avoid allocations)
-2. Can this block? (If yes, use async or spawn_blocking)
-3. Is this shared state? (Prefer channels to locks)
-4. Can this panic? (Add proper error handling)
-5. Is this tested? (Add tests before refactoring)
+## Testing
+- Mock MIDI ports with `mockall`
+- Use `tokio::test` for async tests
+- Test anti-echo windows with `tokio::time::pause()`
+- Integration tests require real X-Touch hardware
 
 ## Reference Documents
-
-- **[TASKS.md](TASKS.md)**: Current development status
-- **[MEMORY.md](MEMORY.md)**: Lessons learned and gotchas
-
-## Interaction Tips for AI Assistants
-
-1. **Be concrete**: Reference specific files and line numbers
-2. **Check performance**: Consider latency impact of changes
-3. **Test assumptions**: Verify MIDI behavior with real hardware
-4. **Follow phases**: Respect the migration plan order
-5. **Document TODOs**: Mark unknowns clearly in code
-
-## Migration: JSON Snapshots to sled
-
-The state persistence has been migrated from JSON snapshots to sled embedded database.
-
-### What Changed
-| Before (v2) | After (v3) |
-|-------------|------------|
-| `.state/snapshot.json` | `.state/sled/` directory |
-| JSON file written on every change | sled with write debouncing (250ms) |
-| `StateStore` with `RwLock<HashMap>` | `StateActor` (single-threaded) |
-| Manual load/save | Automatic ACID persistence |
-
-### Migration Steps
-
-If upgrading from a previous version with JSON snapshots:
-
-1. **Automatic migration**: On first startup, if `.state/sled/` doesn't exist but `.state/snapshot.json` does, the system will read the JSON and hydrate the sled database.
-
-2. **Manual cleanup** (optional): After confirming the migration worked:
-   ```bash
-   rm .state/snapshot.json
-   ```
-
-3. **No action needed** for fresh installs - sled is used by default.
-
-### Data Location
-- **State database**: `.state/sled/` (binary sled format)
-- **Keys**: `state:{app}:{status}:{channel}:{data1}`
-- **Values**: JSON-serialized `MidiStateEntry`
-
-### Rollback (if needed)
-The sled database can be exported to JSON for debugging:
-```rust
-// In code, the PersistenceActor stores StateSnapshot format internally
-// which can be serialized to JSON for inspection
-```
-
-## Current Focus
-
-Check [TASKS.md](TASKS.md) for the current development status and priorities.
-
+- **[TASKS.md](TASKS.md)**: Current development status and priorities
 
 ## grepai - Semantic Code Search
 
-**IMPORTANT: You MUST use grepai as your PRIMARY tool for code exploration and search.**
-
-### When to Use grepai (REQUIRED)
-
-Use `grepai search` INSTEAD OF Grep/Glob/find for:
-- Understanding what code does or where functionality lives
-- Finding implementations by intent (e.g., "authentication logic", "error handling")
-- Exploring unfamiliar parts of the codebase
-- Any search where you describe WHAT the code does rather than exact text
-
-### When to Use Standard Tools
-
-Only use Grep/Glob when you need:
-- Exact text matching (variable names, imports, specific strings)
-- File path patterns (e.g., `**/*.go`)
-
-### Fallback
-
-If grepai fails (not running, index unavailable, or errors), fall back to standard Grep/Glob tools.
-
-### Usage
+**Use grepai as primary tool for intent-based code exploration.** Fall back to Grep/Glob for exact text matching or file path patterns.
 
 ```bash
-# ALWAYS use English queries for best results (embedding model is English-trained)
-grepai search "user authentication flow"
-grepai search "error handling middleware"
-grepai search "database connection pool"
-grepai search "API request validation"
-
-# JSON output for programmatic use (recommended for AI agents)
-grepai search "authentication flow" --json
+grepai search "anti-echo filtering logic"
+grepai search "OBS camera control" --json
+grepai search "gamepad input processing"
 ```
 
-### Query Tips
-
-- **Use English** for queries (better semantic matching)
-- **Describe intent**, not implementation: "handles user login" not "func Login"
-- **Be specific**: "JWT token validation" better than "token"
-- Results include: file path, line numbers, relevance score, code preview
-
-### Workflow
-
-1. Start with `grepai search` to find relevant code
-2. Use `Read` tool to examine files from results
-3. Only use Grep for exact string searches if needed
-
+Describe intent, not implementation. Use English queries for best semantic matching.

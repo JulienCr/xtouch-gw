@@ -20,16 +20,15 @@ xtouch:
 obs:
   host: "127.0.0.1"
   port: 4455
-  password: ""
-
+  password: "aaaaaa"
+  
   # Configuration du contrôle caméra (split views)
-  # default_camera: Camera to switch to when exiting split mode (default: first camera)
   camera_control:
     default_camera: "Main"
     cameras:
       - id: "Main"
         scene: "--- CAM Main"
-        source: "NDI - Cam Main"
+        source: "Flash - Cam Main"
         split_source: "SPLIT CAM Main"
         enable_ptz: false
       - id: "Main2"
@@ -38,11 +37,11 @@ obs:
         split_source: "SPLIT CAM Main 2"
       - id: "Jardin"
         scene: "--- CAM Jardin"
-        source: "NDI - Cam Jardin"
+        source: "Flash - Cam Jardin"
         split_source: "SPLIT CAM Jardin"
       - id: "Cour"
         scene: "--- CAM Cour"
-        source: "NDI - Cam Cour"
+        source: "Flash - Cam Cour"
         split_source: "SPLIT CAM Cour"
     splits:
       left: "--- SPLIT left"
@@ -138,23 +137,17 @@ pages_global:
       app: "obs"
       action: "selectCamera"
       params: ["Jardin"]
+    
+    gamepad1.dpad.down:
+      app: "obs"
+      action: "changeScene"
+      params: ["Doublage"]
 
     # D-Pad : Contrôle des vues split
     gamepad1.dpad.left:
       app: "obs"
-      action: "enterSplit"
+      action: "toggleSplit"
       params: ["left"]
-
-    gamepad1.dpad.right:
-      app: "obs"
-      action: "enterSplit"
-      params: ["right"]
-
-    # START : Retour vue pleine
-    gamepad1.btn.plus:
-      app: "obs"
-      action: "exitSplit"
-      params: []
 
     gamepad1.btn.capture:
       app: "obs"
@@ -218,19 +211,13 @@ pages_global:
     # D-Pad : Contrôle des vues split (état partagé)
     gamepad2.dpad.left:
       app: "obs"
-      action: "enterSplit"
+      action: "toggleSplit"
       params: ["left"]
 
     gamepad2.dpad.right:
       app: "obs"
-      action: "enterSplit"
+      action: "toggleSplit"
       params: ["right"]
-
-    # START : Retour vue pleine (état partagé)
-    gamepad2.btn.start:
-      app: "obs"
-      action: "exitSplit"
-      params: []
 
     gamepad2.btn.rt:
       app: "obs"
@@ -316,6 +303,10 @@ pages_global:
       app: "qlc"
       midi: { type: "cc", channel: 1, cc: 12 }
 
+    record:
+      app: "voicemeeter"
+      midi: {type: "passthrough"}
+
 pages:
   - name: "Voicemeeter+QLC"
     lcd:
@@ -323,12 +314,12 @@ pages:
         - "Mic\nBaba"
         - "Mic\nMath"
         - "Mic\nJu"
-        - "Son\nMac"
-        - "Son\nPC"
-        - "Son\nMASTER"
+        - "Son\nArtlist"
+        - "Son\nYoutube"
         - "Son\nRetours"
+        - "Son\nMASTER"
         - "Lum\nFace"
-      colors: [1,1,1,4,4,7,5,3]
+      colors: [4,0,0,3,1,6,5,3]
     controls:
       fader1:
         app: "voicemeeter"
@@ -363,6 +354,21 @@ pages:
         app: "voicemeeter"
         midi: {type: "passthrough"}
       mute3:
+        app: "voicemeeter"
+        midi: {type: "passthrough"}
+      mute4:
+        app: "voicemeeter"
+        midi: {type: "passthrough"}
+      mute5:  
+        app: "voicemeeter"
+        midi: {type: "passthrough"}  
+      mute6:
+        app: "voicemeeter"
+        midi: {type: "passthrough"}
+      mute7:
+        app: "voicemeeter"
+        midi: {type: "passthrough"}
+      mute8:
         app: "voicemeeter"
         midi: {type: "passthrough"}
   

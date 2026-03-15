@@ -14,6 +14,7 @@ mod feedback;
 mod indicators;
 mod page;
 mod refresh;
+mod refresh_plan;
 mod xtouch_input;
 
 pub use camera_target::CameraTargetState;
@@ -26,7 +27,7 @@ use crate::drivers::Driver;
 use crate::state::persistence_actor::PersistenceActor;
 use crate::state::{PersistenceActorHandle, StateActorHandle, DEFAULT_DEBOUNCE_MS};
 use crate::xtouch::fader_setpoint::{ApplySetpointCmd, FaderSetpoint};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -65,30 +66,30 @@ pub struct Router {
 
 impl Router {
     /// Create a new Router with initial configuration
-    pub fn new(config: AppConfig) -> Self {
+    pub fn new(config: AppConfig) -> Result<Self> {
         Self::with_db_path(config, ".state/sled")
     }
 
     /// Create a new Router with a custom database path
     ///
     /// This is useful for testing to avoid database lock conflicts.
-    pub fn with_db_path(config: AppConfig, db_path: &str) -> Self {
+    pub fn with_db_path(config: AppConfig, db_path: &str) -> Result<Self> {
         let (fader_setpoint, setpoint_rx) = FaderSetpoint::new();
 
         // Spawn persistence actor for debounced state snapshots
-        let persistence_actor = PersistenceActor::spawn(db_path, DEFAULT_DEBOUNCE_MS)
-            .expect("Failed to create persistence actor");
+        let persistence_actor = PersistenceActor::spawn(db_path, DEFAULT_DEBOUNCE_MS)?;
 
         // Spawn state actor with persistence channel
         let state_actor = StateActorHandle::spawn(persistence_actor.cmd_tx());
 
         // Open sled database for camera target state (separate db to avoid lock conflicts)
         let camera_db_path = format!("{}_camera", db_path);
-        let camera_db =
-            sled::open(&camera_db_path).expect("Failed to open sled database for camera targets");
+        let camera_db = sled::open(&camera_db_path).with_context(|| {
+            format!("Failed to open camera sled database at: {}", camera_db_path)
+        })?;
         let camera_targets = Arc::new(CameraTargetState::new(camera_db));
 
-        Self {
+        Ok(Self {
             config: Arc::new(RwLock::new(config)),
             drivers: Arc::new(RwLock::new(HashMap::new())),
             active_page_index: Arc::new(RwLock::new(0)),
@@ -101,7 +102,7 @@ impl Router {
             activity_tracker: None,
             page_epoch: Arc::new(AtomicU64::new(0)),
             camera_targets,
-        }
+        })
     }
 
     /// Set the activity tracker for LED visualization
@@ -126,7 +127,7 @@ impl Router {
     pub(crate) fn now_ms() -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_millis() as u64
     }
 

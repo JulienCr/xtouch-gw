@@ -46,7 +46,7 @@ fn make_test_page(name: &str) -> PageConfig {
 
 /// Create a Router with a unique test database path
 fn make_test_router(config: AppConfig) -> Router {
-    Router::with_db_path(config, &make_test_db_path())
+    Router::with_db_path(config, &make_test_db_path()).expect("Failed to create test router")
 }
 
 #[tokio::test]
@@ -200,7 +200,7 @@ async fn test_driver_shutdown_all() {
 async fn test_driver_hot_reload_config() {
     let initial_config = make_test_config(vec![make_test_page("Page 1"), make_test_page("Page 2")]);
 
-    let router = Router::new(initial_config);
+    let router = Router::new(initial_config).expect("Failed to create router");
 
     // Register a driver
     router
