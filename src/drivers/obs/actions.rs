@@ -245,12 +245,75 @@ impl Driver for ObsDriver {
 
             "TriggerStudioModeTransition" => {
                 info!("OBS Studio Transition requested");
+
+                let view_mode = self.camera_control_state.read().current_view_mode;
+
                 let guard = self.get_connected_client().await?;
                 let client = guard
                     .as_ref()
                     .context("BUG: get_connected_client returned None")?;
 
+                // Read transition duration before triggering
+                let transition_duration_ms = if matches!(
+                    view_mode,
+                    super::camera::ViewMode::SplitLeft | super::camera::ViewMode::SplitRight
+                ) {
+                    client
+                        .transitions()
+                        .current()
+                        .await
+                        .ok()
+                        .and_then(|t| t.duration)
+                        .map(|d| d.whole_milliseconds().max(50) as u64)
+                        .unwrap_or(300)
+                } else {
+                    0
+                };
+
                 client.transitions().trigger().await?;
+                drop(guard);
+
+                // In split mode: after transition completes, re-set the program scene
+                // to the real scene (not the OBS "Duplicate Scene" copy).
+                // This ensures set_split_camera changes are reflected live.
+                if transition_duration_ms > 0 {
+                    let split_scene = {
+                        let config_guard = self.camera_control_config.read();
+                        config_guard.as_ref().map(|config| match view_mode {
+                            super::camera::ViewMode::SplitLeft => config.splits.left.clone(),
+                            super::camera::ViewMode::SplitRight => config.splits.right.clone(),
+                            _ => unreachable!(),
+                        })
+                    };
+
+                    if let Some(scene) = split_scene {
+                        let driver = self.clone_for_task();
+                        tokio::spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_millis(
+                                transition_duration_ms + 100,
+                            ))
+                            .await;
+                            if let Ok(guard) = driver.get_connected_client().await {
+                                if let Some(client) = guard.as_ref() {
+                                    if let Err(e) =
+                                        client.scenes().set_current_program_scene(&scene).await
+                                    {
+                                        tracing::warn!(
+                                            "Failed to re-set program scene after split transition: {}",
+                                            e
+                                        );
+                                    } else {
+                                        info!(
+                                            "OBS: Re-set program to '{}' (breaking scene duplication)",
+                                            scene
+                                        );
+                                    }
+                                }
+                            }
+                        });
+                    }
+                }
+
                 Ok(())
             },
 

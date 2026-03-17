@@ -34,6 +34,17 @@ fn sync_view_mode(
     if let Some(new_mode) = view_mode {
         let mut state = camera_control_state.write();
         let old_mode = state.current_view_mode;
+
+        // Don't auto-downgrade from split to full — only explicit exitSplit/toggleSplit should do that
+        let is_split = matches!(old_mode, ViewMode::SplitLeft | ViewMode::SplitRight);
+        if is_split && new_mode == ViewMode::Full {
+            debug!(
+                "ViewMode: ignoring auto-sync to Full while in {:?} (scene '{}')",
+                old_mode, scene_name
+            );
+            return;
+        }
+
         state.current_view_mode = new_mode;
 
         if old_mode != new_mode {

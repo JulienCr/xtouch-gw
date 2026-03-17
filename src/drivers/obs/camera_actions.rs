@@ -144,14 +144,27 @@ impl ObsDriver {
                 .await?;
             },
             ViewMode::SplitLeft | ViewMode::SplitRight => {
-                let split_scene = split_scene.context("BUG: split_scene missing for split mode")?;
-
-                if let Some(target) = explicit_target {
-                    debug!(
-                        "Ignoring target '{}' in SPLIT mode (split modifies sources, not scenes)",
-                        target
+                if modifier_held || explicit_target == Some("preview") {
+                    // Modifier held in split mode: change preview scene (full mode behavior)
+                    // This lets the user prepare the next shot while split is live
+                    info!(
+                        "OBS: Select camera '{}' (SPLIT+modifier → preview) '{}'",
+                        camera_id, camera_scene
                     );
+                    self.execute_select_camera_full(
+                        camera_id,
+                        &camera_scene,
+                        Some("preview"),
+                        &ptz_ctx,
+                        modifier_held,
+                        ptz_enabled,
+                    )
+                    .await?;
+                    // Don't update last_camera — this is a preview operation, not a split camera change
+                    return Ok(());
                 }
+
+                let split_scene = split_scene.context("BUG: split_scene missing for split mode")?;
 
                 info!(
                     "OBS: Select camera '{}' (SPLIT mode) in '{}'",
