@@ -138,6 +138,20 @@ async fn test_midi_note_navigation_ignores_velocity_zero() {
     assert_eq!(router.get_active_page_name().await, "Page 1"); // Should stay on Page 1
 }
 
+#[tokio::test]
+async fn test_midi_note_navigation_ignores_note_off() {
+    let config = make_test_config(vec![make_test_page("Page 1"), make_test_page("Page 2")]);
+
+    let router = make_test_router(config);
+
+    // Real Note Off (0x80) should also be ignored, not just Note On velocity 0.
+    // This prevents trigger actions from firing twice when X-Touch sends a
+    // true Note Off on button release.
+    let note_off_real = [0x80, 47, 0]; // Note Off, Ch1, note 47
+    router.on_midi_from_xtouch(&note_off_real).await;
+    assert_eq!(router.get_active_page_name().await, "Page 1");
+}
+
 // ===== PHASE 4: Driver Framework Integration Tests =====
 
 #[tokio::test]
