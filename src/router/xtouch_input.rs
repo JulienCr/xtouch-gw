@@ -328,19 +328,16 @@ impl super::Router {
         // Build parameters
         let params = control_config.params.clone().unwrap_or_default();
 
-        // Filter button releases (Note On with velocity 0)
-        // This prevents toggle actions from firing twice (press + release)
+        // Filter button releases: Note Off (0x8) or Note On velocity 0.
+        // The X-Touch may send either form depending on firmware/key; both mean
+        // "button released". Prevents trigger/toggle actions from firing twice.
         let status = raw[0];
         let type_nibble = (status & 0xF0) >> 4;
-        if type_nibble == 0x9 && raw.len() >= 3 {
-            let velocity = raw[2];
-            if velocity == 0 {
-                debug!(
-                    "Ignoring Note Off (velocity 0) for control '{}'",
-                    control_id
-                );
-                return;
-            }
+        let is_note_off = type_nibble == 0x8;
+        let is_note_on_release = type_nibble == 0x9 && raw.len() >= 3 && raw[2] == 0;
+        if is_note_off || is_note_on_release {
+            debug!("Ignoring button release for control '{}'", control_id);
+            return;
         }
 
         // Create execution context with parsed MIDI value

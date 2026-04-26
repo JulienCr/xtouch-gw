@@ -138,6 +138,53 @@ async fn test_midi_note_navigation_ignores_velocity_zero() {
     assert_eq!(router.get_active_page_name().await, "Page 1"); // Should stay on Page 1
 }
 
+#[tokio::test]
+async fn test_midi_note_off_does_not_double_fire_driver_action() {
+    // Regression for the X-Touch double-fire bug: pressing a button mapped to
+    // a driver action used to execute the action twice — once on Note On
+    // (press) and again on Note Off (release). Drive the full
+    // on_midi_from_xtouch -> handle_driver_action_mode path with a real
+    // mapping and assert only the press fires.
+    //
+    // mute1 in MCU mode is note=16 (see docs/xtouch-matching.csv), which
+    // is outside the paging note ranges so it falls through to driver mode.
+    let mut page = make_test_page("Page 1");
+    let mut controls = HashMap::new();
+    controls.insert(
+        "mute1".to_string(),
+        ControlMapping {
+            app: "test_console".to_string(),
+            action: Some("trigger".to_string()),
+            params: None,
+            midi: None,
+            overlay: None,
+            indicator: None,
+        },
+    );
+    page.controls = Some(controls);
+
+    let config = make_test_config(vec![page]);
+    let router = make_test_router(config);
+
+    let driver = Arc::new(ConsoleDriver::new("test_console"));
+    router
+        .register_driver("test_console".to_string(), driver.clone())
+        .await
+        .unwrap();
+
+    // Press: Note On, ch1, note 16, velocity 127 -> action executes once.
+    router.on_midi_from_xtouch(&[0x90, 16, 127]).await;
+    assert_eq!(driver.execution_count().await, 1);
+
+    // Release: real Note Off (0x80) must NOT re-execute the action.
+    router.on_midi_from_xtouch(&[0x80, 16, 0]).await;
+    assert_eq!(driver.execution_count().await, 1);
+
+    // And the legacy "Note On with velocity 0" release form is also ignored.
+    router.on_midi_from_xtouch(&[0x90, 16, 0]).await;
+    assert_eq!(driver.execution_count().await, 1);
+}
+
 // ===== PHASE 4: Driver Framework Integration Tests =====
 
 #[tokio::test]

@@ -32,6 +32,11 @@ impl ConsoleDriver {
             execution_count: Arc::new(RwLock::new(0)),
         }
     }
+
+    /// Number of times `execute` has been called since `init` (for tests/diagnostics).
+    pub async fn execution_count(&self) -> u64 {
+        *self.execution_count.read().await
+    }
 }
 
 #[async_trait]
