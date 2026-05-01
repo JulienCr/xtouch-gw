@@ -2,15 +2,17 @@
 //!
 //! Handles loading, parsing, and hot-reloading of YAML configuration files.
 
+pub mod profiles;
 pub mod watcher;
 
 use anyhow::{Context, Result};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::fs;
 
 /// Root configuration structure
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct AppConfig {
     pub midi: MidiConfig,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -29,7 +31,7 @@ pub struct AppConfig {
 }
 
 /// MIDI port configuration
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct MidiConfig {
     pub input_port: String,
     pub output_port: String,
@@ -38,7 +40,7 @@ pub struct MidiConfig {
 }
 
 /// App-specific MIDI port mapping
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct MidiAppConfig {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -48,7 +50,7 @@ pub struct MidiAppConfig {
 }
 
 /// OBS WebSocket configuration
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct ObsConfig {
     #[serde(default = "default_obs_host")]
     pub host: String,
@@ -61,7 +63,7 @@ pub struct ObsConfig {
 }
 
 /// Camera control configuration for OBS split views
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct CameraControlConfig {
     pub cameras: Vec<CameraConfig>,
     pub splits: SplitConfig,
@@ -71,7 +73,7 @@ pub struct CameraControlConfig {
 }
 
 /// Individual camera configuration
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct CameraConfig {
     pub id: String,
     pub scene: String,
@@ -83,14 +85,14 @@ pub struct CameraConfig {
 }
 
 /// Split scene configuration
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct SplitConfig {
     pub left: String,
     pub right: String,
 }
 
 /// X-Touch specific configuration
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct XTouchConfig {
     #[serde(default = "default_xtouch_mode")]
     pub mode: XTouchMode,
@@ -107,7 +109,7 @@ pub struct XTouchConfig {
 }
 
 /// X-Touch operation mode
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum XTouchMode {
     Mcu,
@@ -115,7 +117,7 @@ pub enum XTouchMode {
 }
 
 /// LCD overlay configuration
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct OverlayConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -126,7 +128,7 @@ pub struct OverlayConfig {
 }
 
 /// Overlay display mode
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum OverlayMode {
     Percent,
@@ -137,7 +139,7 @@ pub enum OverlayMode {
 }
 
 /// CC bit display mode
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema)]
 pub enum CcBits {
     #[serde(rename = "7bit")]
     SevenBit,
@@ -146,7 +148,7 @@ pub enum CcBits {
 }
 
 /// Page navigation configuration
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct PagingConfig {
     #[serde(default = "default_paging_channel")]
     pub channel: u8,
@@ -157,7 +159,7 @@ pub struct PagingConfig {
 }
 
 /// Gamepad configuration
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct GamepadConfig {
     pub enabled: bool,
     #[serde(default = "default_gamepad_provider")]
@@ -175,7 +177,7 @@ pub struct GamepadConfig {
 }
 
 /// Analog stick configuration
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct AnalogConfig {
     #[serde(default = "default_pan_gain")]
     pub pan_gain: f32,
@@ -190,7 +192,7 @@ pub struct AnalogConfig {
 }
 
 /// HID provider configuration (for gilrs device matching)
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct HidProviderConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub product_match: Option<String>,
@@ -199,7 +201,7 @@ pub struct HidProviderConfig {
 }
 
 /// Configuration for a single gamepad slot (multi-gamepad mode)
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct GamepadSlotConfig {
     /// Product name pattern to match (substring, case-insensitive)
     pub product_match: String,
@@ -217,7 +219,7 @@ pub struct GamepadSlotConfig {
 }
 
 /// System tray UI configuration
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct TrayConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -236,7 +238,7 @@ pub struct TrayConfig {
 }
 
 /// Global page defaults
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct GlobalPageDefaults {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub controls: Option<HashMap<String, ControlMapping>>,
@@ -247,7 +249,7 @@ pub struct GlobalPageDefaults {
 }
 
 /// Page configuration
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default, JsonSchema)]
 pub struct PageConfig {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -261,7 +263,7 @@ pub struct PageConfig {
 }
 
 /// LED indicator configuration
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct IndicatorConfig {
     pub signal: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -274,7 +276,7 @@ pub struct IndicatorConfig {
 }
 
 /// Control mapping
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct ControlMapping {
     pub app: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -290,7 +292,7 @@ pub struct ControlMapping {
 }
 
 /// MIDI control specification
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct MidiSpec {
     #[serde(rename = "type")]
     pub midi_type: MidiType,
@@ -303,7 +305,7 @@ pub struct MidiSpec {
 }
 
 /// MIDI message type
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum MidiType {
     Cc,
@@ -313,7 +315,7 @@ pub enum MidiType {
 }
 
 /// LCD configuration
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct LcdConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<LcdLabel>>,
@@ -322,7 +324,7 @@ pub struct LcdConfig {
 }
 
 /// LCD label (string or structured)
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(untagged)]
 pub enum LcdLabel {
     Simple(String),
@@ -335,7 +337,7 @@ pub enum LcdLabel {
 }
 
 /// LCD color (numeric or string)
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(untagged)]
 pub enum LcdColor {
     Numeric(u32),
@@ -367,7 +369,7 @@ impl LcdColor {
 }
 
 /// MIDI passthrough configuration
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct PassthroughConfig {
     pub driver: String,
     pub to_port: String,
@@ -381,7 +383,7 @@ pub struct PassthroughConfig {
 }
 
 /// MIDI filter configuration
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct MidiFilterConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channels: Option<Vec<u8>>,
@@ -394,7 +396,7 @@ pub struct MidiFilterConfig {
 }
 
 /// MIDI transform configuration
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct TransformConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pb_to_note: Option<PbToNoteTransform>,
@@ -403,14 +405,14 @@ pub struct TransformConfig {
 }
 
 /// PitchBend to Note transform
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct PbToNoteTransform {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<u8>,
 }
 
 /// PitchBend to CC transform
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct PbToCcTransform {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_channel: Option<u8>,
@@ -692,4 +694,21 @@ fn default_activity_duration() -> u64 {
 }
 fn default_poll_interval() -> u64 {
     100
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Smoke test: deriving `JsonSchema` across the entire config tree must
+    /// produce a serializable schema. This catches missing derives on nested
+    /// types that would otherwise only fail when `export-schema` is run.
+    #[test]
+    fn app_config_schema_serializes() {
+        let schema = schemars::schema_for!(AppConfig);
+        let json =
+            serde_json::to_string_pretty(&schema).expect("AppConfig schema must serialize to JSON");
+        assert!(json.contains("AppConfig"));
+        assert!(json.contains("MidiConfig"));
+    }
 }

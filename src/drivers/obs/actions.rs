@@ -448,6 +448,10 @@ impl Driver for ObsDriver {
         // Add to callbacks list
         self.status_callbacks.write().push(callback);
     }
+
+    fn action_catalog(&self) -> Vec<crate::api_editor::ActionDescriptor> {
+        super::catalog::obs_catalog()
+    }
 }
 
 #[cfg(test)]

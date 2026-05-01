@@ -29,6 +29,8 @@ pub async fn run_app(
     activity_tracker: Arc<crate::tray::ActivityTracker>,
     tray_command_rx: crossbeam::channel::Receiver<crate::tray::TrayCommand>,
     tray_update_tx: crossbeam::channel::Sender<crate::tray::TrayUpdate>,
+    profile_store: Arc<crate::config::profiles::ProfileStore>,
+    live_tx: crate::event_bus::LiveEventTx,
 ) -> Result<()> {
     debug!("Starting main application loop...");
 
@@ -64,6 +66,13 @@ pub async fn run_app(
 
     xtouch.connect().await?;
     info!("X-Touch connected successfully");
+    // Best-effort: announce X-Touch availability to editor live subscribers.
+    let _ = live_tx.send(crate::event_bus::LiveEvent::Connection {
+        target: "xtouch".into(),
+        status: crate::event_bus::ConnectionStatus::Up,
+        detail: None,
+        ts: crate::event_bus::now_ms(),
+    });
 
     // Initialize LCD and LEDs for the active page
     debug!("Initializing X-Touch display...");
@@ -120,6 +129,60 @@ pub async fn run_app(
         .as_ref()
         .map(|obs_config| Arc::new(ObsDriver::from_config(obs_config)));
 
+    // Wire the live event bus into the OBS driver so connection events
+    // surface on the editor `/api/live` WS.
+    if let Some(d) = obs_driver.as_ref() {
+        d.set_live_tx(live_tx.clone());
+    }
+
+    // Build the editor state. The OBS picker source is the OBS driver itself
+    // (which implements `ObsPickerSource`); driver action catalogs are
+    // snapshotted from each registered driver's `action_catalog()`.
+    use crate::drivers::Driver as _;
+    let mut catalogs: std::collections::HashMap<String, Vec<crate::api_editor::ActionDescriptor>> =
+        std::collections::HashMap::new();
+    for name in router.list_drivers().await {
+        if let Some(drv) = router.get_driver(&name).await {
+            catalogs.insert(name, drv.action_catalog());
+        }
+    }
+    if let Some(obs) = obs_driver.as_ref() {
+        // OBS driver isn't registered with the router until after this point;
+        // ensure its catalog is included here.
+        catalogs
+            .entry(obs.name().to_string())
+            .or_insert_with(|| obs.action_catalog());
+    }
+    let editor_state = Some(build_editor_state(
+        Arc::clone(&profile_store),
+        live_tx.clone(),
+        obs_driver.clone(),
+        catalogs,
+        Some({
+            let fs = router.get_fader_setpoint();
+            std::sync::Arc::new(move |ch: u8| fs.get_desired(ch))
+                as crate::api_editor::FaderSetpointReader
+        }),
+        Some({
+            let r = router.clone();
+            std::sync::Arc::new(move || {
+                let r = r.clone();
+                Box::pin(async move {
+                    let idx = r.get_active_page_index().await;
+                    r.get_active_page().await.map(|p| (idx, p.name))
+                }) as crate::api_editor::PageFuture<Option<(usize, String)>>
+            }) as crate::api_editor::ActivePageReader
+        }),
+        Some({
+            let r = router.clone();
+            std::sync::Arc::new(move |idx: usize| {
+                let r = r.clone();
+                Box::pin(async move { r.set_active_page(&idx.to_string()).await })
+                    as crate::api_editor::PageFuture<anyhow::Result<()>>
+            }) as crate::api_editor::ActivePageSetter
+        }),
+    ));
+
     let api_state = Arc::new(api::ApiState {
         camera_targets: router.get_camera_targets(),
         available_cameras: Arc::new(parking_lot::RwLock::new(helpers::build_camera_infos(
@@ -131,6 +194,7 @@ pub async fn run_app(
         update_tx: tokio::sync::broadcast::channel(16).0,
         current_on_air_camera: Arc::new(parking_lot::RwLock::new(None)),
         obs_driver: obs_driver.clone(),
+        editor: editor_state,
     });
 
     if let Some(obs_driver) = obs_driver {
@@ -242,6 +306,17 @@ pub async fn run_app(
                 }
             }
 
+            // Handle out-of-band display refresh requests (editor API page
+            // change, REPL `page` command, etc.). The X-Touch input arm
+            // already flushes inline after handling its own page navigation.
+            _ = router.display_refresh_notify.notified() => {
+                if router.check_and_clear_display_update().await {
+                    debug!("Out-of-band page refresh: flushing display");
+                    display::flush_pending_midi(&router, &xtouch, "page refresh").await;
+                    display::update_xtouch_display(&router, &xtouch).await;
+                }
+            }
+
             // Handle feedback from applications -> X-Touch
             Some((app_name, feedback_data)) = feedback_rx.recv() => {
                 handle_app_feedback(&router, &xtouch, &activity_tracker, &app_name, &feedback_data).await;
@@ -250,6 +325,10 @@ pub async fn run_app(
             // Handle config reload
             Some(new_config) = config_watcher.next_config() => {
                 handle_config_reload(&router, &xtouch, new_config, &mut gamepad_mapper, &api_state).await;
+                // Best-effort: notify editor live subscribers.
+                let _ = live_tx.send(crate::event_bus::LiveEvent::ConfigReloaded {
+                    ts: crate::event_bus::now_ms(),
+                });
             }
 
             // Periodic state snapshot save (every 5 seconds, debounced by persistence actor)
@@ -284,7 +363,41 @@ pub async fn run_app(
 
     // Cleanup
     handler_task.abort();
+    let _ = live_tx.send(crate::event_bus::LiveEvent::Connection {
+        target: "xtouch".into(),
+        status: crate::event_bus::ConnectionStatus::Down,
+        detail: Some("shutdown".into()),
+        ts: crate::event_bus::now_ms(),
+    });
     shutdown_cleanup(&router, &xtouch).await
+}
+
+/// Build the editor state with live bus, OBS picker source, and action catalogs.
+///
+/// Catalogs are snapshotted at startup so the `/api/drivers/:name/actions`
+/// endpoint can answer without locking the live driver registry.
+fn build_editor_state(
+    profile_store: Arc<crate::config::profiles::ProfileStore>,
+    live_tx: crate::event_bus::LiveEventTx,
+    obs_driver: Option<Arc<ObsDriver>>,
+    catalogs: std::collections::HashMap<String, Vec<crate::api_editor::ActionDescriptor>>,
+    fader_setpoint: Option<crate::api_editor::FaderSetpointReader>,
+    active_page_reader: Option<crate::api_editor::ActivePageReader>,
+    active_page_setter: Option<crate::api_editor::ActivePageSetter>,
+) -> Arc<crate::api_editor::EditorState> {
+    let obs_picker: Option<crate::api_editor::ObsPickerSourceArc> = obs_driver
+        .as_ref()
+        .map(|d| -> crate::api_editor::ObsPickerSourceArc { d.clone() });
+
+    Arc::new(crate::api_editor::EditorState {
+        profiles: profile_store,
+        live_tx: Some(live_tx),
+        obs: obs_picker,
+        drivers: Arc::new(catalogs),
+        fader_setpoint,
+        active_page_reader,
+        active_page_setter,
+    })
 }
 
 /// Handle a tray command. Returns `true` if shutdown was requested.

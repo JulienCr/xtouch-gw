@@ -49,3 +49,12 @@ dist/
 
 *.local
 *.local.*
+
+# Editor (SvelteKit) artifacts
+node_modules/
+editor/.svelte-kit/
+editor/build/
+editor/.vite/
+
+# User profiles
+profiles/

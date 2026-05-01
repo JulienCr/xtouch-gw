@@ -1,11 +1,33 @@
 //! Page navigation and management
 
 use crate::config::PageConfig;
+use crate::router::event_bus::{now_ms, LiveEvent};
 use anyhow::{anyhow, Result};
 use std::collections::HashSet;
 use tracing::info;
 
 impl super::Router {
+    /// Best-effort: broadcast a `PageChanged` live event for editor subscribers
+    /// and wake the main loop so it flushes pending MIDI / LCD updates.
+    pub(crate) async fn emit_page_changed(&self) {
+        let index = *self.active_page_index.read().await;
+        let name = self.get_active_page_name().await;
+        self.emit_live(LiveEvent::PageChanged {
+            index,
+            name,
+            ts: now_ms(),
+        })
+        .await;
+        self.display_refresh_notify.notify_one();
+    }
+}
+
+impl super::Router {
+    /// Get the active page index (0-based).
+    pub async fn get_active_page_index(&self) -> usize {
+        *self.active_page_index.read().await
+    }
+
     /// Get the active page configuration
     pub async fn get_active_page(&self) -> Option<PageConfig> {
         let config = self.config.read().await;
@@ -55,6 +77,7 @@ impl super::Router {
                 info!("Active page: {}", page_name);
                 drop(config); // Release lock before refresh
                 self.refresh_page().await;
+                self.emit_page_changed().await;
                 return Ok(());
             }
             return Err(anyhow!("Page index {} out of range", index));
@@ -92,6 +115,7 @@ impl super::Router {
         drop(config);
 
         self.refresh_page().await;
+        self.emit_page_changed().await;
     }
 
     /// Navigate to the previous page (circular)
@@ -113,6 +137,7 @@ impl super::Router {
         drop(config);
 
         self.refresh_page().await;
+        self.emit_page_changed().await;
     }
 
     /// Get all apps that are active on a given page

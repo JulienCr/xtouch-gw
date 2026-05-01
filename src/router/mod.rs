@@ -10,6 +10,7 @@
 mod anti_echo;
 mod camera_target;
 mod driver;
+pub mod event_bus;
 mod feedback;
 mod indicators;
 mod page;
@@ -18,6 +19,7 @@ mod refresh_plan;
 mod xtouch_input;
 
 pub use camera_target::CameraTargetState;
+pub use event_bus::{LiveEvent, LiveEventTx};
 
 #[cfg(test)]
 mod tests;
@@ -62,6 +64,12 @@ pub struct Router {
     pub(crate) page_epoch: Arc<AtomicU64>,
     /// Dynamic camera target state for Stream Deck integration
     pub(crate) camera_targets: Arc<CameraTargetState>,
+    /// Optional live event broadcaster (best-effort taps for editor WS).
+    pub(crate) live_tx: Arc<tokio::sync::RwLock<Option<LiveEventTx>>>,
+    /// Notified whenever a non-X-Touch caller (REPL, editor API, tray) needs
+    /// the main event loop to flush pending MIDI / display updates. The
+    /// X-Touch input arm does this inline after `on_midi_from_xtouch`.
+    pub display_refresh_notify: Arc<tokio::sync::Notify>,
 }
 
 impl Router {
@@ -102,7 +110,50 @@ impl Router {
             activity_tracker: None,
             page_epoch: Arc::new(AtomicU64::new(0)),
             camera_targets,
+            live_tx: Arc::new(tokio::sync::RwLock::new(None)),
+            display_refresh_notify: Arc::new(tokio::sync::Notify::new()),
         })
+    }
+
+    /// Inject the live event broadcaster after construction.
+    ///
+    /// The `Router` is constructed before the editor / API state, so we wire
+    /// the bus in afterwards. Best-effort: emitters check the option first.
+    pub async fn set_live_tx(&self, tx: LiveEventTx) {
+        *self.live_tx.write().await = Some(tx);
+    }
+
+    /// Best-effort: emit a `LiveEvent` if a sender is wired.
+    ///
+    /// Never fails. Called from the hot path; readers using `try_read` would
+    /// be even cheaper but the lock is uncontended in practice.
+    pub(crate) async fn emit_live(&self, event: LiveEvent) {
+        if let Some(tx) = self.live_tx.read().await.as_ref() {
+            let _ = tx.send(event);
+        }
+    }
+
+    /// Snapshot the current live tx for synchronous-ish use (e.g. event_listener).
+    pub async fn live_tx_snapshot(&self) -> Option<LiveEventTx> {
+        self.live_tx.read().await.clone()
+    }
+
+    /// Emit a `Fader` live event for `channel1` (1-based) with a 14-bit value.
+    /// Used so the editor's virtual surface stays in sync with motor moves
+    /// (page refresh, app feedback) that don't echo MIDI back from the X-Touch.
+    pub(crate) async fn emit_fader_live(&self, channel1: u8, value14: u16) {
+        let control_id = if channel1 == 9 {
+            "fader_master".to_string()
+        } else {
+            format!("fader{channel1}")
+        };
+        self.emit_live(LiveEvent::HwEvent {
+            control_id,
+            kind: crate::event_bus::HwEventKind::Fader,
+            value: (value14 as f32) / 16383.0,
+            ts: crate::event_bus::now_ms(),
+        })
+        .await;
     }
 
     /// Set the activity tracker for LED visualization

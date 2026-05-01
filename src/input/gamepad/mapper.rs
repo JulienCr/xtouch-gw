@@ -126,6 +126,20 @@ impl GamepadMapper {
         // Convert pressed state to numeric value (1.0 = pressed, 0.0 = released)
         let value = if pressed { 1.0 } else { 0.0 };
 
+        // Best-effort: emit live HwEvent for editor WS subscribers.
+        router
+            .emit_live(crate::router::event_bus::LiveEvent::HwEvent {
+                control_id: control_id.to_string(),
+                kind: if pressed {
+                    crate::router::event_bus::HwEventKind::Press
+                } else {
+                    crate::router::event_bus::HwEventKind::Release
+                },
+                value,
+                ts: crate::router::event_bus::now_ms(),
+            })
+            .await;
+
         // Route the control event with the pressed state as value
         match router
             .handle_control(control_id, Some(Value::from(value)), None)
@@ -216,6 +230,16 @@ impl GamepadMapper {
                 "Axis event: {} = {:.3} (raw: {:.3})",
                 control_id, final_value, raw_value
             );
+
+            // Best-effort: emit live HwEvent for editor WS subscribers.
+            router
+                .emit_live(crate::router::event_bus::LiveEvent::HwEvent {
+                    control_id: control_id.to_string(),
+                    kind: crate::router::event_bus::HwEventKind::Axis,
+                    value: final_value,
+                    ts: crate::router::event_bus::now_ms(),
+                })
+                .await;
 
             // Send to router (pass normalized value, driver will handle scaling)
             match router

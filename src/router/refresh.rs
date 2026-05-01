@@ -69,6 +69,11 @@ impl super::Router {
                         entry.value,
                         bytes
                     );
+                    // Mirror the PB send to the editor's live bus so the
+                    // virtual surface tracks page-driven motor moves.
+                    if let (Some(ch), MidiValue::Number(v14)) = (entry.addr.channel, &entry.value) {
+                        self.emit_fader_live(ch, *v14).await;
+                    }
                 }
                 midi_messages.push(bytes);
             }

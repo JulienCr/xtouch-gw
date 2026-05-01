@@ -1,8 +1,49 @@
 //! X-Touch MIDI input handling and routing
 
+use crate::router::event_bus::{HwEventKind, LiveEvent};
 use crate::state::{build_entry_from_raw, AppKey};
 use serde_json::Value;
 use tracing::{debug, trace, warn};
+
+/// Classify an X-Touch MIDI message into a `HwEventKind` and a normalized
+/// `f32` value in `[0.0, 1.0]` (or 14-bit faders -> `pb / 16383.0`).
+fn classify_xtouch_midi(raw: &[u8], control_id: &str) -> Option<(HwEventKind, f32)> {
+    if raw.len() < 2 {
+        return None;
+    }
+    let status = raw[0];
+    let type_nibble = (status & 0xF0) >> 4;
+    match type_nibble {
+        0xE if raw.len() >= 3 => {
+            let lsb = (raw[1] & 0x7F) as u16;
+            let msb = (raw[2] & 0x7F) as u16;
+            let v14 = ((msb << 7) | lsb) as f32;
+            Some((HwEventKind::Fader, v14 / 16383.0))
+        },
+        0x9 if raw.len() >= 3 => {
+            let velocity = raw[2];
+            if velocity == 0 {
+                Some((HwEventKind::Release, 0.0))
+            } else {
+                Some((HwEventKind::Press, velocity as f32 / 127.0))
+            }
+        },
+        0x8 if raw.len() >= 3 => Some((HwEventKind::Release, 0.0)),
+        0xB if raw.len() >= 3 => {
+            let value = raw[2];
+            // Encoder rotation has its own canonical id ("vpot{N}_rotate").
+            // Other CC controls behave like buttons (press / release).
+            if control_id.contains("rotate") || control_id.contains("encoder") {
+                Some((HwEventKind::Rotate, value as f32 / 127.0))
+            } else if value == 0 {
+                Some((HwEventKind::Release, 0.0))
+            } else {
+                Some((HwEventKind::Press, value as f32 / 127.0))
+            }
+        },
+        _ => None,
+    }
+}
 
 impl super::Router {
     /// Process MIDI input from X-Touch hardware
@@ -115,6 +156,17 @@ impl super::Router {
             "X-Touch control triggered: {} (MIDI: {:?})",
             control_id, midi_spec
         );
+
+        // Best-effort: emit a live HwEvent for editor WS subscribers.
+        if let Some((kind, value)) = classify_xtouch_midi(raw, control_id) {
+            self.emit_live(LiveEvent::HwEvent {
+                control_id: control_id.to_string(),
+                kind,
+                value,
+                ts: crate::router::event_bus::now_ms(),
+            })
+            .await;
+        }
 
         // Mark user action for Last-Write-Wins
         self.mark_user_action(raw);

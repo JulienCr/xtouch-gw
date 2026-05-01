@@ -19,6 +19,8 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
 
+use crate::api_editor as editor;
+
 /// Default API port
 pub const DEFAULT_API_PORT: u16 = 8125;
 
@@ -36,6 +38,9 @@ pub struct ApiState {
     pub current_on_air_camera: Arc<parking_lot::RwLock<Option<String>>>,
     /// OBS driver for transform operations
     pub obs_driver: Option<Arc<crate::drivers::ObsDriver>>,
+    /// Optional editor state. When `Some`, the editor data routes and the SPA
+    /// are mounted by `build_router`.
+    pub editor: Option<Arc<editor::EditorState>>,
 }
 
 /// WebSocket message types for camera state updates
@@ -141,7 +146,7 @@ impl IntoResponse for ApiError {
 
 /// Build the API router
 pub fn build_router(state: Arc<ApiState>) -> Router {
-    Router::new()
+    let stream_deck = Router::new()
         .route(
             "/api/gamepad/:slot/camera",
             get(get_camera_target).put(set_camera_target),
@@ -154,7 +159,14 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
         )
         .route("/api/ws/camera-updates", get(camera_updates_ws))
         .route("/api/health", get(health_check))
-        .with_state(state)
+        .with_state(Arc::clone(&state));
+
+    let mut router = stream_deck;
+    if let Some(editor_state) = state.editor.clone() {
+        router = router.merge(editor::routes().with_state(Arc::clone(&editor_state)));
+        router = router.merge(editor::spa_routes().with_state(editor_state));
+    }
+    router
 }
 
 /// GET /api/gamepad/:slot/camera - Get current camera target for a gamepad
@@ -473,8 +485,11 @@ async fn health_check() -> &'static str {
 pub async fn start_server(state: Arc<ApiState>, port: u16) -> Result<()> {
     let router = build_router(state);
 
-    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
-    info!("Starting Stream Deck API server on http://{}", addr);
+    // Loopback-only by default. The Stream Deck app, the editor SPA, and any
+    // local tooling all connect via 127.0.0.1; binding to all interfaces would
+    // expose the API (including profile mutation endpoints) to the LAN.
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    info!("Starting API server on http://{}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await

@@ -9,6 +9,11 @@ repository = "https://github.com/yourusername/xtouch-gw-v3"
 readme = "README.md"
 keywords = ["midi", "xtouch", "obs", "voicemeeter", "qlc"]
 categories = ["multimedia", "hardware-support"]
+default-run = "xtouch-gw"
+
+[lib]
+name = "xtouch_gw"
+path = "src/lib.rs"
 
 [dependencies]
 # Async runtime
@@ -24,6 +29,7 @@ tokio-tungstenite = "0.24"
 obws = { version = "0.11", features = ["events"] }
 
 # Configuration and serialization
+schemars = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
@@ -63,6 +69,8 @@ chrono = "0.4"
 axum = { version = "0.7", features = ["ws"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["fs", "cors"] }
+rust-embed = { version = "8", features = ["compression"] }
+mime_guess = "2"
 
 # Embedded database
 sled = "0.34"
@@ -78,6 +86,7 @@ once_cell = "1.20"  # Lazy statics
 bytes = "1.7"
 hex = "0.4"
 sha1 = "0.10"
+sha2 = "0.10"
 
 # System tray UI
 tray-icon = "0.14"  # Native Windows tray integration

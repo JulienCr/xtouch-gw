@@ -71,6 +71,10 @@ pub struct ObsDriver {
     pub(super) camera_control_state: Arc<parking_lot::RwLock<CameraControlState>>,
     pub(super) camera_control_config:
         Arc<parking_lot::RwLock<Option<crate::config::CameraControlConfig>>>,
+
+    // Optional live event broadcaster (editor `/api/live` WS).
+    // Best-effort: emitters check the option and ignore errors.
+    pub(super) live_tx: Arc<parking_lot::RwLock<Option<crate::event_bus::LiveEventTx>>>,
 }
 
 impl ObsDriver {
@@ -112,7 +116,13 @@ impl ObsDriver {
             // Camera control state
             camera_control_state: Arc::new(parking_lot::RwLock::new(CameraControlState::default())),
             camera_control_config: Arc::new(parking_lot::RwLock::new(None)),
+            live_tx: Arc::new(parking_lot::RwLock::new(None)),
         }
+    }
+
+    /// Inject the live event bus sender (editor `/api/live` WS).
+    pub fn set_live_tx(&self, tx: crate::event_bus::LiveEventTx) {
+        *self.live_tx.write() = Some(tx);
     }
 
     /// Create from config
@@ -187,6 +197,7 @@ impl ObsDriver {
             encoder_tracker: Arc::clone(&self.encoder_tracker),
             camera_control_state: Arc::clone(&self.camera_control_state),
             camera_control_config: Arc::clone(&self.camera_control_config),
+            live_tx: Arc::clone(&self.live_tx),
         }
     }
 }

@@ -105,6 +105,16 @@ pub trait Driver: Send + Sync {
     fn subscribe_connection_status(&self, _callback: crate::tray::StatusCallback) {
         // Default: do nothing (not all drivers track connection status)
     }
+
+    /// Describe the actions this driver supports for the editor UI.
+    ///
+    /// Returns metadata-only `ActionDescriptor`s — the editor uses these to
+    /// render typed forms; runtime dispatch is unaffected.
+    ///
+    /// Default implementation: empty (driver does not declare a catalog).
+    fn action_catalog(&self) -> Vec<crate::api_editor::ActionDescriptor> {
+        Vec::new()
+    }
 }
 
 pub mod console;

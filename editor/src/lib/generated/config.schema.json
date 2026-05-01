@@ -1,0 +1,940 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AppConfig",
+  "description": "Root configuration structure",
+  "type": "object",
+  "required": [
+    "midi",
+    "pages"
+  ],
+  "properties": {
+    "gamepad": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/GamepadConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "midi": {
+      "$ref": "#/definitions/MidiConfig"
+    },
+    "obs": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ObsConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "pages": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/PageConfig"
+      }
+    },
+    "pages_global": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/GlobalPageDefaults"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "paging": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/PagingConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "tray": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TrayConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "xtouch": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/XTouchConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "definitions": {
+    "AnalogConfig": {
+      "description": "Analog stick configuration",
+      "type": "object",
+      "properties": {
+        "deadzone": {
+          "default": 0.019999999552965164,
+          "type": "number",
+          "format": "float"
+        },
+        "gamma": {
+          "default": 1.5,
+          "type": "number",
+          "format": "float"
+        },
+        "invert": {
+          "default": {},
+          "type": "object",
+          "additionalProperties": {
+            "type": "boolean"
+          }
+        },
+        "pan_gain": {
+          "default": 15.0,
+          "type": "number",
+          "format": "float"
+        },
+        "zoom_gain": {
+          "default": 3.0,
+          "type": "number",
+          "format": "float"
+        }
+      }
+    },
+    "CameraConfig": {
+      "description": "Individual camera configuration",
+      "type": "object",
+      "required": [
+        "id",
+        "scene",
+        "source",
+        "split_source"
+      ],
+      "properties": {
+        "enable_ptz": {
+          "description": "Enable PTZ (pan/tilt/zoom) control for this camera. Default: true",
+          "default": true,
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string"
+        },
+        "scene": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "split_source": {
+          "type": "string"
+        }
+      }
+    },
+    "CameraControlConfig": {
+      "description": "Camera control configuration for OBS split views",
+      "type": "object",
+      "required": [
+        "cameras",
+        "splits"
+      ],
+      "properties": {
+        "cameras": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CameraConfig"
+          }
+        },
+        "default_camera": {
+          "description": "Default camera to switch to when exiting split mode. If not set, uses first camera.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "splits": {
+          "$ref": "#/definitions/SplitConfig"
+        }
+      }
+    },
+    "CcBits": {
+      "description": "CC bit display mode",
+      "type": "string",
+      "enum": [
+        "7bit",
+        "8bit"
+      ]
+    },
+    "ControlMapping": {
+      "description": "Control mapping",
+      "type": "object",
+      "required": [
+        "app"
+      ],
+      "properties": {
+        "action": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "app": {
+          "type": "string"
+        },
+        "indicator": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/IndicatorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "midi": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MidiSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "overlay": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/OverlayConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "params": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": true
+        }
+      }
+    },
+    "GamepadConfig": {
+      "description": "Gamepad configuration",
+      "type": "object",
+      "required": [
+        "enabled"
+      ],
+      "properties": {
+        "analog": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AnalogConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "gamepads": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/GamepadSlotConfig"
+          }
+        },
+        "hid": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HidProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "provider": {
+          "default": "hid",
+          "type": "string"
+        }
+      }
+    },
+    "GamepadSlotConfig": {
+      "description": "Configuration for a single gamepad slot (multi-gamepad mode)",
+      "type": "object",
+      "required": [
+        "product_match"
+      ],
+      "properties": {
+        "analog": {
+          "description": "Per-gamepad analog configuration",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AnalogConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "camera_target": {
+          "description": "Camera targeting mode for gamepad controls: - None: static mode (params used as-is) - \"dynamic\": runtime-selectable via Stream Deck API - \"camera_id\": fixed to specific camera from camera_control config",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "product_match": {
+          "description": "Product name pattern to match (substring, case-insensitive)",
+          "type": "string"
+        }
+      }
+    },
+    "GlobalPageDefaults": {
+      "description": "Global page defaults",
+      "type": "object",
+      "properties": {
+        "controls": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "$ref": "#/definitions/ControlMapping"
+          }
+        },
+        "lcd": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LcdConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "passthroughs": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/PassthroughConfig"
+          }
+        }
+      }
+    },
+    "HidProviderConfig": {
+      "description": "HID provider configuration (for gilrs device matching)",
+      "type": "object",
+      "properties": {
+        "mapping_csv": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "product_match": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "IndicatorConfig": {
+      "description": "LED indicator configuration",
+      "type": "object",
+      "required": [
+        "signal"
+      ],
+      "properties": {
+        "equals": true,
+        "in": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": true
+        },
+        "signal": {
+          "type": "string"
+        },
+        "truthy": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    "LcdColor": {
+      "description": "LCD color (numeric or string)",
+      "anyOf": [
+        {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "LcdConfig": {
+      "description": "LCD configuration",
+      "type": "object",
+      "properties": {
+        "colors": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/LcdColor"
+          }
+        },
+        "labels": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/LcdLabel"
+          }
+        }
+      }
+    },
+    "LcdLabel": {
+      "description": "LCD label (string or structured)",
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "lower": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "upper": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "MidiAppConfig": {
+      "description": "App-specific MIDI port mapping",
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "input_port": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "output_port": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "MidiConfig": {
+      "description": "MIDI port configuration",
+      "type": "object",
+      "required": [
+        "input_port",
+        "output_port"
+      ],
+      "properties": {
+        "apps": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/MidiAppConfig"
+          }
+        },
+        "input_port": {
+          "type": "string"
+        },
+        "output_port": {
+          "type": "string"
+        }
+      }
+    },
+    "MidiFilterConfig": {
+      "description": "MIDI filter configuration",
+      "type": "object",
+      "properties": {
+        "channels": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "integer",
+            "format": "uint8",
+            "minimum": 0.0
+          }
+        },
+        "exclude_notes": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "integer",
+            "format": "uint8",
+            "minimum": 0.0
+          }
+        },
+        "include_notes": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "integer",
+            "format": "uint8",
+            "minimum": 0.0
+          }
+        },
+        "types": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "MidiSpec": {
+      "description": "MIDI control specification",
+      "type": "object",
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "cc": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "minimum": 0.0
+        },
+        "channel": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "minimum": 0.0
+        },
+        "note": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "minimum": 0.0
+        },
+        "type": {
+          "$ref": "#/definitions/MidiType"
+        }
+      }
+    },
+    "MidiType": {
+      "description": "MIDI message type",
+      "type": "string",
+      "enum": [
+        "cc",
+        "note",
+        "pb",
+        "passthrough"
+      ]
+    },
+    "ObsConfig": {
+      "description": "OBS WebSocket configuration",
+      "type": "object",
+      "properties": {
+        "camera_control": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CameraControlConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "host": {
+          "default": "localhost",
+          "type": "string"
+        },
+        "password": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "port": {
+          "default": 4455,
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0.0
+        }
+      }
+    },
+    "OverlayConfig": {
+      "description": "LCD overlay configuration",
+      "type": "object",
+      "properties": {
+        "cc_bits": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CcBits"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/OverlayMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "OverlayMode": {
+      "description": "Overlay display mode",
+      "type": "string",
+      "enum": [
+        "percent",
+        "7bit",
+        "8bit"
+      ]
+    },
+    "PageConfig": {
+      "description": "Page configuration",
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "controls": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "$ref": "#/definitions/ControlMapping"
+          }
+        },
+        "lcd": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LcdConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "passthrough": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PassthroughConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "passthroughs": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/PassthroughConfig"
+          }
+        }
+      }
+    },
+    "PagingConfig": {
+      "description": "Page navigation configuration",
+      "type": "object",
+      "properties": {
+        "channel": {
+          "default": 1,
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 0.0
+        },
+        "next_note": {
+          "default": 47,
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 0.0
+        },
+        "prev_note": {
+          "default": 46,
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 0.0
+        }
+      }
+    },
+    "PassthroughConfig": {
+      "description": "MIDI passthrough configuration",
+      "type": "object",
+      "required": [
+        "driver",
+        "from_port",
+        "to_port"
+      ],
+      "properties": {
+        "driver": {
+          "type": "string"
+        },
+        "filter": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MidiFilterConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "from_port": {
+          "type": "string"
+        },
+        "optional": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "to_port": {
+          "type": "string"
+        },
+        "transform": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TransformConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "PbToCcTransform": {
+      "description": "PitchBend to CC transform",
+      "type": "object",
+      "properties": {
+        "base_cc": true,
+        "cc_by_channel": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true
+        },
+        "target_channel": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "minimum": 0.0
+        }
+      }
+    },
+    "PbToNoteTransform": {
+      "description": "PitchBend to Note transform",
+      "type": "object",
+      "properties": {
+        "note": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "minimum": 0.0
+        }
+      }
+    },
+    "SplitConfig": {
+      "description": "Split scene configuration",
+      "type": "object",
+      "required": [
+        "left",
+        "right"
+      ],
+      "properties": {
+        "left": {
+          "type": "string"
+        },
+        "right": {
+          "type": "string"
+        }
+      }
+    },
+    "TransformConfig": {
+      "description": "MIDI transform configuration",
+      "type": "object",
+      "properties": {
+        "pb_to_cc": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PbToCcTransform"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pb_to_note": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PbToNoteTransform"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "TrayConfig": {
+      "description": "System tray UI configuration",
+      "type": "object",
+      "properties": {
+        "activity_led_duration_ms": {
+          "default": 200,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "show_activity_leds": {
+          "default": true,
+          "type": "boolean"
+        },
+        "show_connection_status": {
+          "default": true,
+          "type": "boolean"
+        },
+        "status_poll_interval_ms": {
+          "default": 100,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      }
+    },
+    "XTouchConfig": {
+      "description": "X-Touch specific configuration",
+      "type": "object",
+      "properties": {
+        "mode": {
+          "default": "mcu",
+          "allOf": [
+            {
+              "$ref": "#/definitions/XTouchMode"
+            }
+          ]
+        },
+        "overlay": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/OverlayConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "overlay_per_app": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "$ref": "#/definitions/OverlayConfig"
+          }
+        },
+        "startup_refresh_delay_ms": {
+          "description": "Delay in milliseconds before applying initial page refresh after drivers are registered. This allows drivers time to connect and send fresh feedback before stale snapshot values are applied to the X-Touch. Default: 500ms. BUG-008 FIX: Prevents stale snapshot values from overriding fresh app feedback.",
+          "default": 500,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      }
+    },
+    "XTouchMode": {
+      "description": "X-Touch operation mode",
+      "type": "string",
+      "enum": [
+        "mcu",
+        "ctrl"
+      ]
+    }
+  }
+}

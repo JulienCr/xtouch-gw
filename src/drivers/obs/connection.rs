@@ -67,6 +67,28 @@ impl ObsDriver {
     /// Emit connection status to all subscribers
     pub(super) fn emit_status(&self, status: crate::tray::ConnectionStatus) {
         *self.current_status.write() = status.clone();
+
+        // Best-effort tap into the editor live bus (if wired). Map tray
+        // statuses to the simpler Up/Down used by the editor.
+        if let Some(tx) = self.live_tx.read().clone() {
+            let live_status = match &status {
+                crate::tray::ConnectionStatus::Connected => crate::event_bus::ConnectionStatus::Up,
+                _ => crate::event_bus::ConnectionStatus::Down,
+            };
+            let detail = match &status {
+                crate::tray::ConnectionStatus::Reconnecting { attempt } => {
+                    Some(format!("reconnect attempt #{}", attempt))
+                },
+                _ => None,
+            };
+            let _ = tx.send(crate::event_bus::LiveEvent::Connection {
+                target: "obs".into(),
+                status: live_status,
+                detail,
+                ts: crate::event_bus::now_ms(),
+            });
+        }
+
         for callback in self.status_callbacks.read().iter() {
             callback(status.clone());
         }

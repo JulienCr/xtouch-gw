@@ -8,6 +8,7 @@ use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 mod api;
+mod api_editor;
 mod app;
 mod cli;
 mod config;
@@ -15,6 +16,7 @@ mod control_mapping;
 mod display;
 mod driver_setup;
 mod drivers;
+mod event_bus;
 mod helpers;
 mod input;
 mod midi;
@@ -116,6 +118,23 @@ async fn main() -> Result<()> {
         return Ok(exit);
     }
 
+    // Construct profile store and ensure it's initialized (migrates an existing
+    // config.yaml into profiles/default.yaml on first run).
+    let profile_root = std::path::PathBuf::from("profiles");
+    let watched_path = std::path::PathBuf::from(&config_path);
+    let profile_store = Arc::new(crate::config::profiles::ProfileStore::new(
+        profile_root,
+        watched_path,
+        50,
+    ));
+    if let Err(e) = profile_store.ensure_initialized() {
+        warn!("Failed to initialize profile store: {}", e);
+    }
+    // Build the live event bus (broadcast channel) shared across drivers and
+    // the editor live WS. Buffer holds 256 events; lagging subscribers will
+    // see RecvError::Lagged and resync.
+    let (live_tx, _live_rx_guard) = crate::event_bus::channel(crate::event_bus::DEFAULT_CAPACITY);
+
     // Load configuration with hot-reload watcher
     let (config_watcher, initial_config) = ConfigWatcher::new(config_path.clone()).await?;
     debug!("Configuration loaded successfully with hot-reload enabled");
@@ -160,6 +179,9 @@ async fn main() -> Result<()> {
     // Set up shutdown signal and start the main application
     let shutdown_signal = helpers::shutdown_signal();
 
+    // Wire live event bus into the router so the X-Touch input tap can emit.
+    router.set_live_tx(live_tx.clone()).await;
+
     app::run_app(
         router,
         (*initial_config).clone(),
@@ -168,6 +190,8 @@ async fn main() -> Result<()> {
         activity_tracker,
         tray_command_rx,
         tray_update_tx,
+        profile_store,
+        live_tx,
     )
     .await?;
 

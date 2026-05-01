@@ -64,6 +64,7 @@ impl super::Router {
                 app_name, channel1, value
             );
             self.fader_setpoint.schedule(channel1, value, None);
+            self.emit_fader_live(channel1, value).await;
         }
 
         // Helper to check if a mapping matches the incoming message
@@ -186,6 +187,7 @@ impl super::Router {
                                 app_name, channel1, value14
                             );
                             self.fader_setpoint.schedule(channel1, value14, None);
+                            self.emit_fader_live(channel1, value14).await;
 
                             Some(crate::midi::MidiMessage::PitchBend {
                                 channel,
