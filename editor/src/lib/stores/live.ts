@@ -30,6 +30,7 @@ export const live = writable<LiveState>(initial);
 
 let started = false;
 let captureHandlers: Array<(ev: LiveEvent) => boolean> = [];
+let lastTouchedTimer: ReturnType<typeof setTimeout> | null = null;
 
 export function startLive(): void {
   if (started) return;
@@ -50,19 +51,26 @@ function handleEvent(ev: LiveEvent): void {
   if (variant === 'hw_event' && ev.control_id) {
     const id = ev.control_id;
     const val = typeof ev.value === 'number' ? ev.value : 0;
+    const isAxis = id.includes('.axis.');
     live.update((s) => {
+      const valueChanged = s.values[id] !== val;
+      if (!valueChanged && s.lastTouched?.control_id === id) {
+        return { ...s, lastTouched: { control_id: id, ts: Date.now(), value: val } };
+      }
       const next: LiveState = {
         ...s,
-        lastTouched: { control_id: id, ts: Date.now(), value: val },
-        values: { ...s.values, [id]: val }
+        lastTouched: { control_id: id, ts: Date.now(), value: val }
       };
-      if (id.includes('.axis.')) next.axes = { ...s.axes, [id]: val };
+      if (valueChanged) {
+        next.values = { ...s.values, [id]: val };
+        if (isAxis) next.axes = { ...s.axes, [id]: val };
+      }
       return next;
     });
-    // Decay last-touched after 600ms
-    const myId = id;
-    setTimeout(() => {
-      live.update((s) => (s.lastTouched && s.lastTouched.control_id === myId ? { ...s, lastTouched: null } : s));
+    if (lastTouchedTimer) clearTimeout(lastTouchedTimer);
+    lastTouchedTimer = setTimeout(() => {
+      lastTouchedTimer = null;
+      live.update((s) => (s.lastTouched && s.lastTouched.control_id === id ? { ...s, lastTouched: null } : s));
     }, 600);
   } else if (variant === 'page_changed' && typeof ev.index === 'number') {
     const idx = ev.index;

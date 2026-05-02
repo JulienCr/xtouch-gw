@@ -89,9 +89,6 @@
     jog_wheel: 'jog_wheel'
   };
 
-  // Generic v-pot click yields rotate; we expose press too via overlay.
-  // For now click on vpot ⇒ select vpot{n}_rotate. A user can switch in the inspector.
-
   let host: HTMLDivElement | null = null;
   let svgEl: SVGSVGElement | null = null;
   let loaded = false;

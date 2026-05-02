@@ -67,63 +67,59 @@ impl super::Router {
         let type_nibble = (status & 0xF0) >> 4;
         let channel = (status & 0x0F) + 1;
 
+        // Snapshot all config we need in a single read-lock acquisition.
+        // Fader PitchBend events arrive at hundreds/sec; serializing every
+        // message against config writers via repeated read locks is wasteful.
+        let (paging_channel, prev_note, next_note, pages_len, is_mcu_mode) = {
+            let config = self.config.read().await;
+            let paging = config.paging.as_ref();
+            (
+                paging.map(|p| p.channel).unwrap_or(1),
+                paging.map(|p| p.prev_note).unwrap_or(46),
+                paging.map(|p| p.next_note).unwrap_or(47),
+                config.pages.len(),
+                config
+                    .xtouch
+                    .as_ref()
+                    .map(|x| matches!(x.mode, crate::config::XTouchMode::Mcu))
+                    .unwrap_or(true),
+            )
+        };
+
         // First, check for page navigation (Note On messages only)
         if type_nibble == 0x9 && raw.len() >= 3 {
             let note = raw[1];
             let velocity = raw[2];
 
             // Ignore Note Off (velocity 0)
-            if velocity != 0 {
-                // Get paging configuration
-                let config = self.config.read().await;
-                let paging_channel = config.paging.as_ref().map(|p| p.channel).unwrap_or(1);
-                let prev_note = config.paging.as_ref().map(|p| p.prev_note).unwrap_or(46);
-                let next_note = config.paging.as_ref().map(|p| p.next_note).unwrap_or(47);
-                drop(config);
+            if velocity != 0 && channel == paging_channel {
+                if note == prev_note {
+                    debug!("X-Touch: Previous page (note {})", note);
+                    self.prev_page().await;
+                    return;
+                }
 
-                // Only process navigation on the paging channel
-                if channel == paging_channel {
-                    // Check for prev/next navigation
-                    if note == prev_note {
-                        debug!("X-Touch: Previous page (note {})", note);
-                        self.prev_page().await;
-                        return;
+                if note == next_note {
+                    debug!("X-Touch: Next page (note {})", note);
+                    self.next_page().await;
+                    return;
+                }
+
+                // Check for F-key direct page access (F1-F8 = notes 54-61)
+                if (54..=61).contains(&note) {
+                    let page_index = (note - 54) as usize;
+                    debug!(
+                        "X-Touch: Direct page access F{} (note {})",
+                        page_index + 1,
+                        note
+                    );
+                    if page_index < pages_len {
+                        let _ = self.set_active_page(&page_index.to_string()).await;
                     }
-
-                    if note == next_note {
-                        debug!("X-Touch: Next page (note {})", note);
-                        self.next_page().await;
-                        return;
-                    }
-
-                    // Check for F-key direct page access (F1-F8 = notes 54-61)
-                    if (54..=61).contains(&note) {
-                        let page_index = (note - 54) as usize;
-                        debug!(
-                            "X-Touch: Direct page access F{} (note {})",
-                            page_index + 1,
-                            note
-                        );
-
-                        let config = self.config.read().await;
-                        if page_index < config.pages.len() {
-                            drop(config);
-                            let _ = self.set_active_page(&page_index.to_string()).await;
-                        }
-                        return;
-                    }
+                    return;
                 }
             }
         }
-
-        // Route control events to drivers
-        let config = self.config.read().await;
-        let is_mcu_mode = config
-            .xtouch
-            .as_ref()
-            .map(|x| matches!(x.mode, crate::config::XTouchMode::Mcu))
-            .unwrap_or(true); // Default to MCU mode
-        drop(config);
 
         // Load control mappings
         let mapping_db = match load_default_mappings() {

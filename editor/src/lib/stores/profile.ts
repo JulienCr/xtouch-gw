@@ -110,7 +110,6 @@ export const profileActions = {
     serverValidateTimer = setTimeout(() => runServerValidate(body), 500);
   },
 
-  // Directly mutate parsed config and re-serialize.
   patchParsed(mutator: (cfg: AppConfig) => void): void {
     const cur = get(profile);
     if (!cur.parsed) return;

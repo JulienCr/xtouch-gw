@@ -60,7 +60,6 @@
 
   function changeKind(newKind: MappingKind): void {
     if (newKind === kind) return;
-    // Preserve app, overlay, indicator across kind switches; clear other kind-owned fields.
     const preserved: Mapping = {};
     if (mapping.app !== undefined) preserved.app = mapping.app;
     if (mapping.overlay !== undefined) preserved.overlay = mapping.overlay;
@@ -73,7 +72,6 @@
     } else if (newKind === 'midi-translate') {
       mapping = { ...preserved, midi: { type: 'cc', channel: 1, cc: 0 } };
     } else {
-      // raw: keep everything we have
       mapping = { ...mapping };
     }
     kind = newKind;

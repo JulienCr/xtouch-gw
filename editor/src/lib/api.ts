@@ -66,16 +66,8 @@ const u = (s: string) => encodeURIComponent(s);
 async function getProfileFlex(name: string): Promise<{ meta: ProfileMeta; body: string }> {
   const res = await apiFetch(`/api/profiles/${u(name)}`);
   if (!res.ok) throw new ApiError(res.status, `GET profile failed: ${res.status}`);
-  const ct = res.headers.get('content-type') ?? '';
-  if (ct.includes('application/json')) {
-    const j = (await res.json()) as ProfileMeta & { body?: string; yaml?: string };
-    const body = j.body ?? j.yaml ?? '';
-    const { body: _b, yaml: _y, ...rest } = j as Record<string, unknown>;
-    return { meta: { name, ...(rest as object) } as ProfileMeta, body };
-  }
-  const body = await res.text();
-  const hash = res.headers.get('etag') ?? res.headers.get('x-hash') ?? undefined;
-  return { meta: { name, hash }, body };
+  const j = (await res.json()) as { meta: ProfileMeta; body: string };
+  return { meta: j.meta, body: j.body };
 }
 
 async function saveProfile(name: string, body: string, expectedHash?: string): Promise<ProfileMeta> {
