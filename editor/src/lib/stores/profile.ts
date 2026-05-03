@@ -119,6 +119,22 @@ export const profileActions = {
     profileActions.setBody(newBody);
   },
 
+  /** Set the value at a deep path, creating intermediate objects/arrays as
+   *  needed (numeric segments imply array, string segments imply object). */
+  patchAt(path: (string | number)[], value: unknown): void {
+    profileActions.patchParsed((c) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let cur = c as any;
+      for (let i = 0; i < path.length - 1; i++) {
+        const k = path[i];
+        const next = path[i + 1];
+        if (cur[k] == null) cur[k] = typeof next === 'number' ? [] : {};
+        cur = cur[k];
+      }
+      cur[path[path.length - 1]] = value;
+    });
+  },
+
   async save(): Promise<{ ok: boolean; error?: string }> {
     const cur = get(profile);
     if (!cur.name) return { ok: false, error: 'No profile loaded' };

@@ -24,70 +24,24 @@
   const LCD_BG: string[] = ['#161616', '#7f1d1d', '#14532d', '#713f12', '#1e3a8a', '#581c87', '#155e75', '#1f2937'];
   const LCD_FG: string[] = ['#9ca3af', '#fecaca', '#bbf7d0', '#fef08a', '#bfdbfe', '#f5d0fe', '#a5f3fc', '#f3f4f6'];
 
-  // Master/global section single-instance buttons → canonical names.
-  // We map raw SVG ids to canonical control IDs used in YAML.
-  const SINGLETONS: Record<string, string> = {
-    'button-fader-prev': 'fader_prev',
-    'button-fader-next': 'fader_next',
-    'button-channel-prev': 'channel_prev',
-    'button-channel-next': 'channel_next',
-    'button-prev': 'prev',
-    'button-next': 'next',
-    'button-play': 'play',
-    'button-stop': 'stop',
-    'button-cycle': 'cycle',
-    'button-marker': 'marker',
-    'button-nudge': 'nudge',
-    'button-drop': 'drop',
-    'button-replace': 'replace',
-    'button-click': 'click',
-    'button-shift': 'shift',
-    'button-alt': 'alt',
-    'button-option': 'option',
-    'button-control': 'control',
-    'button-cancel': 'cancel',
-    'button-enter': 'enter',
-    'button-undo': 'undo',
-    'button-save': 'save',
-    'button-track': 'track',
-    'button-send': 'send',
-    'button-pan-surround': 'pan_surround',
-    'button-plug-in': 'plug_in',
-    'button-eq': 'eq',
-    'button-inst': 'inst',
-    'button-aux': 'aux',
-    'button-buses': 'buses',
-    'button-outputs': 'outputs',
-    'button-user': 'user',
-    'button-up': 'up',
-    'button-down': 'down',
-    'button-left': 'left',
-    'button-right': 'right',
-    'button-center': 'center',
-    'button-display': 'display',
+  // Single-instance buttons map raw SVG ids to canonical YAML control ids.
+  // The default rule is `button-foo-bar` → `foo_bar`. A few SVG ids have no
+  // dash but split into two canonical words (or are not `button-` prefixed):
+  // override those explicitly.
+  const SINGLETON_OVERRIDES: Record<string, string> = {
     'button-globalview': 'global_view',
-    'button-group': 'group',
-    'button-inputs': 'inputs',
     'button-audiotracks': 'audio_tracks',
     'button-audioinst': 'audio_inst',
     'button-miditracks': 'midi_tracks',
-    'button-beats': 'beats',
-    'button-latch': 'latch',
-    'button-trim': 'trim',
-    'button-touch': 'touch',
-    'button-read-off': 'read_off',
-    'button-write': 'write',
-    'button-scrub': 'scrub',
-    'button-f1': 'f1',
-    'button-f2': 'f2',
-    'button-f3': 'f3',
-    'button-f4': 'f4',
-    'button-f5': 'f5',
-    'button-f6': 'f6',
-    'button-f7': 'f7',
-    'button-f8': 'f8',
     jog_wheel: 'jog_wheel'
   };
+
+  function singletonIdFor(raw: string): string | null {
+    const override = SINGLETON_OVERRIDES[raw];
+    if (override) return override;
+    if (raw.startsWith('button-')) return raw.slice(7).replace(/-/g, '_');
+    return null;
+  }
 
   let host: HTMLDivElement | null = null;
   let svgEl: SVGSVGElement | null = null;
@@ -136,14 +90,16 @@
         }
         el.setAttribute('data-control', ctrlId);
         el.classList.add('xt-control');
-      } else if (SINGLETONS[raw]) {
-        el.setAttribute('data-control', SINGLETONS[raw]);
-        el.classList.add('xt-control');
+      } else {
+        const single = singletonIdFor(raw);
+        if (single) {
+          el.setAttribute('data-control', single);
+          el.classList.add('xt-control');
+        }
       }
     });
-    // Add fader-strip clickability for the whole strip
-    // Faders: union the track + thumb under data-control = `fader{n}`
-    counters['fader-thumb'] = 0;
+    // Faders: collapse `fader{n}__<part>` data-controls so the whole
+    // track+thumb+graduation strip clicks through to `fader{n}`.
     root.querySelectorAll<SVGElement>('[data-control^="fader"][data-control*="__"]').forEach((el) => {
       const dc = el.getAttribute('data-control')!;
       const m = dc.match(/^(fader[\d_master]+)__/);

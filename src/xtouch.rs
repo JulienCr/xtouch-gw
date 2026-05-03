@@ -78,29 +78,21 @@ impl XTouchDriver {
     /// List available MIDI input ports
     pub fn list_input_ports() -> Result<Vec<String>> {
         let midi_in = MidiInput::new("XTouch-GW-Scanner")?;
-
-        let mut port_names = Vec::new();
-        for port in midi_in.ports() {
-            if let Ok(name) = midi_in.port_name(&port) {
-                port_names.push(name);
-            }
-        }
-
-        Ok(port_names)
+        Ok(midi_in
+            .ports()
+            .into_iter()
+            .filter_map(|p| midi_in.port_name(&p).ok())
+            .collect())
     }
 
     /// List available MIDI output ports
     pub fn list_output_ports() -> Result<Vec<String>> {
         let midi_out = MidiOutput::new("XTouch-GW-Scanner")?;
-
-        let mut port_names = Vec::new();
-        for port in midi_out.ports() {
-            if let Ok(name) = midi_out.port_name(&port) {
-                port_names.push(name);
-            }
-        }
-
-        Ok(port_names)
+        Ok(midi_out
+            .ports()
+            .into_iter()
+            .filter_map(|p| midi_out.port_name(&p).ok())
+            .collect())
     }
 
     /// Find an input port by substring match (Windows-friendly)

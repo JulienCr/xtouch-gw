@@ -1,6 +1,6 @@
 //! X-Touch MIDI input handling and routing
 
-use crate::router::event_bus::{HwEventKind, LiveEvent};
+use crate::event_bus::{HwEventKind, LiveEvent};
 use crate::state::{build_entry_from_raw, AppKey};
 use serde_json::Value;
 use tracing::{debug, trace, warn};
@@ -159,7 +159,7 @@ impl super::Router {
                 control_id: control_id.to_string(),
                 kind,
                 value,
-                ts: crate::router::event_bus::now_ms(),
+                ts: crate::event_bus::now_ms(),
             })
             .await;
         }

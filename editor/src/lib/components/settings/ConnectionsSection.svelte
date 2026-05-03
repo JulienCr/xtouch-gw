@@ -2,6 +2,7 @@
   import { profile, profileActions } from '$lib/stores/profile';
   import { pickers } from '$lib/stores/pickers';
   import PickerField from '../PickerField.svelte';
+  import { inputCls, labelCls, subHeader } from '$lib/styles';
 
   $: cfg = $profile.parsed as Record<string, unknown> | null;
   $: midi = (cfg?.midi as Record<string, unknown> | undefined) ?? {};
@@ -13,37 +14,10 @@
 
   let showPassword = false;
 
-  const inputCls =
-    'w-full bg-white border border-slate-300 text-slate-900 placeholder-slate-400 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-100 dark:placeholder-slate-500 rounded px-2 py-1.5 text-sm';
-  const labelCls = 'block text-xs text-slate-700 dark:text-slate-400 mb-1';
-  const subHeader = 'text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400 font-semibold';
-
-  function setMidi(key: string, val: unknown): void {
-    profileActions.patchParsed((c) => {
-      const m = ((c as Record<string, unknown>).midi as Record<string, unknown>) ?? {};
-      m[key] = val;
-      (c as Record<string, unknown>).midi = m;
-    });
-  }
-
-  function setObs(key: string, val: unknown): void {
-    profileActions.patchParsed((c) => {
-      const o = ((c as Record<string, unknown>).obs as Record<string, unknown>) ?? {};
-      o[key] = val;
-      (c as Record<string, unknown>).obs = o;
-    });
-  }
-
-  function patchApp(idx: number, key: string, val: unknown): void {
-    profileActions.patchParsed((c) => {
-      const m = ((c as Record<string, unknown>).midi as Record<string, unknown>) ?? {};
-      const apps = (m.apps as Array<Record<string, unknown>> | undefined) ?? [];
-      const next = [...apps];
-      next[idx] = { ...(next[idx] ?? {}), [key]: val };
-      m.apps = next;
-      (c as Record<string, unknown>).midi = m;
-    });
-  }
+  const setMidi = (key: string, val: unknown) => profileActions.patchAt(['midi', key], val);
+  const setObs = (key: string, val: unknown) => profileActions.patchAt(['obs', key], val);
+  const patchApp = (idx: number, key: string, val: unknown) =>
+    profileActions.patchAt(['midi', 'apps', idx, key], val);
 
   function addApp(): void {
     profileActions.patchParsed((c) => {
@@ -57,11 +31,9 @@
   function removeApp(idx: number): void {
     profileActions.patchParsed((c) => {
       const m = ((c as Record<string, unknown>).midi as Record<string, unknown>) ?? {};
-      const apps = (m.apps as Array<Record<string, unknown>> | undefined) ?? [];
-      const next = [...apps];
-      next.splice(idx, 1);
-      m.apps = next;
-      (c as Record<string, unknown>).midi = m;
+      const apps = ((m.apps as Array<Record<string, unknown>> | undefined) ?? []).slice();
+      apps.splice(idx, 1);
+      m.apps = apps;
     });
   }
 </script>
@@ -79,41 +51,23 @@
       <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
         <div>
           <span class={labelCls}>Input port</span>
-          {#if midiInputOptions.length}
-            <PickerField
-              value={(midi.input_port as string) ?? ''}
-              options={midiInputOptions}
-              allowFree
-              placeholder="Select input port…"
-              on:change={(e) => setMidi('input_port', e.detail)}
-            />
-          {:else}
-            <input
-              type="text"
-              class={inputCls}
-              value={(midi.input_port as string) ?? ''}
-              on:input={(e) => setMidi('input_port', (e.currentTarget as HTMLInputElement).value)}
-            />
-          {/if}
+          <PickerField
+            value={(midi.input_port as string) ?? ''}
+            options={midiInputOptions}
+            allowFree
+            placeholder="Select input port…"
+            on:change={(e) => setMidi('input_port', e.detail)}
+          />
         </div>
         <div>
           <span class={labelCls}>Output port</span>
-          {#if midiOutputOptions.length}
-            <PickerField
-              value={(midi.output_port as string) ?? ''}
-              options={midiOutputOptions}
-              allowFree
-              placeholder="Select output port…"
-              on:change={(e) => setMidi('output_port', e.detail)}
-            />
-          {:else}
-            <input
-              type="text"
-              class={inputCls}
-              value={(midi.output_port as string) ?? ''}
-              on:input={(e) => setMidi('output_port', (e.currentTarget as HTMLInputElement).value)}
-            />
-          {/if}
+          <PickerField
+            value={(midi.output_port as string) ?? ''}
+            options={midiOutputOptions}
+            allowFree
+            placeholder="Select output port…"
+            on:change={(e) => setMidi('output_port', e.detail)}
+          />
         </div>
       </div>
 
@@ -145,43 +99,23 @@
               </div>
               <div>
                 <span class={labelCls}>Input port</span>
-                {#if midiInputOptions.length}
-                  <PickerField
-                    value={(app.input_port as string) ?? ''}
-                    options={midiInputOptions}
-                    allowFree
-                    placeholder="Select…"
-                    on:change={(e) => patchApp(i, 'input_port', e.detail)}
-                  />
-                {:else}
-                  <input
-                    type="text"
-                    class={inputCls}
-                    value={(app.input_port as string) ?? ''}
-                    on:input={(e) =>
-                      patchApp(i, 'input_port', (e.currentTarget as HTMLInputElement).value)}
-                  />
-                {/if}
+                <PickerField
+                  value={(app.input_port as string) ?? ''}
+                  options={midiInputOptions}
+                  allowFree
+                  placeholder="Select…"
+                  on:change={(e) => patchApp(i, 'input_port', e.detail)}
+                />
               </div>
               <div>
                 <span class={labelCls}>Output port</span>
-                {#if midiOutputOptions.length}
-                  <PickerField
-                    value={(app.output_port as string) ?? ''}
-                    options={midiOutputOptions}
-                    allowFree
-                    placeholder="Select…"
-                    on:change={(e) => patchApp(i, 'output_port', e.detail)}
-                  />
-                {:else}
-                  <input
-                    type="text"
-                    class={inputCls}
-                    value={(app.output_port as string) ?? ''}
-                    on:input={(e) =>
-                      patchApp(i, 'output_port', (e.currentTarget as HTMLInputElement).value)}
-                  />
-                {/if}
+                <PickerField
+                  value={(app.output_port as string) ?? ''}
+                  options={midiOutputOptions}
+                  allowFree
+                  placeholder="Select…"
+                  on:change={(e) => patchApp(i, 'output_port', e.detail)}
+                />
               </div>
             </div>
           </div>

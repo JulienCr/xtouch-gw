@@ -1,5 +1,6 @@
 <script lang="ts">
   import { profile, profileActions } from '$lib/stores/profile';
+  import { inputCls, labelCls, subHeader } from '$lib/styles';
 
   $: cfg = $profile.parsed as Record<string, unknown> | null;
   $: xtouch = (cfg?.xtouch as Record<string, unknown> | undefined) ?? {};
@@ -9,10 +10,6 @@
   $: overlayEntries = Object.entries(overlayPerApp);
   $: gamepads = ((gamepad.gamepads as Array<Record<string, unknown>> | undefined) ?? []);
 
-  const inputCls =
-    'w-full bg-white border border-slate-300 text-slate-900 placeholder-slate-400 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-100 dark:placeholder-slate-500 rounded px-2 py-1.5 text-sm';
-  const labelCls = 'block text-xs text-slate-700 dark:text-slate-400 mb-1';
-  const subHeader = 'text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400 font-semibold';
   const pillBase =
     'px-3 py-1 rounded-full text-xs border transition-colors cursor-pointer select-none';
 
@@ -21,13 +18,16 @@
   const PROVIDERS = ['hid', 'xinput', 'gilrs'] as const;
   const INVERT_KEYS = ['lx', 'ly', 'rx', 'ry', 'zl', 'zr'] as const;
 
-  function setXTouch(key: string, val: unknown): void {
+  const setXTouch = (key: string, val: unknown) => profileActions.patchAt(['xtouch', key], val);
+  const setGamepad = (key: string, val: unknown) =>
+    profileActions.patchAt(['gamepad', key], val);
+  const setOverlayMode = (key: string, mode: string) =>
+    profileActions.patchAt(['xtouch', 'overlay_per_app', key, 'mode'], mode);
+  const removeOverlay = (key: string) =>
     profileActions.patchParsed((c) => {
-      const x = ((c as Record<string, unknown>).xtouch as Record<string, unknown>) ?? {};
-      x[key] = val;
-      (c as Record<string, unknown>).xtouch = x;
+      delete ((c as Record<string, unknown>).xtouch as Record<string, Record<string, unknown>>)
+        ?.overlay_per_app?.[key];
     });
-  }
 
   function setOverlayKey(oldKey: string, newKey: string): void {
     if (!newKey || newKey === oldKey) return;
@@ -35,23 +35,8 @@
       const x = ((c as Record<string, unknown>).xtouch as Record<string, unknown>) ?? {};
       const o = (x.overlay_per_app as Record<string, unknown> | undefined) ?? {};
       const next: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(o)) {
-        next[k === oldKey ? newKey : k] = v;
-      }
+      for (const [k, v] of Object.entries(o)) next[k === oldKey ? newKey : k] = v;
       x.overlay_per_app = next;
-      (c as Record<string, unknown>).xtouch = x;
-    });
-  }
-
-  function setOverlayMode(key: string, mode: string): void {
-    profileActions.patchParsed((c) => {
-      const x = ((c as Record<string, unknown>).xtouch as Record<string, unknown>) ?? {};
-      const o = ((x.overlay_per_app as Record<string, unknown> | undefined) ?? {}) as Record<
-        string,
-        Record<string, unknown>
-      >;
-      o[key] = { ...(o[key] ?? {}), mode };
-      x.overlay_per_app = o;
       (c as Record<string, unknown>).xtouch = x;
     });
   }
@@ -59,10 +44,7 @@
   function addOverlay(): void {
     profileActions.patchParsed((c) => {
       const x = ((c as Record<string, unknown>).xtouch as Record<string, unknown>) ?? {};
-      const o = ((x.overlay_per_app as Record<string, unknown> | undefined) ?? {}) as Record<
-        string,
-        unknown
-      >;
+      const o = ((x.overlay_per_app as Record<string, unknown>) ?? {}) as Record<string, unknown>;
       let n = 1;
       while (o[`app${n}`] !== undefined) n++;
       o[`app${n}`] = { mode: '8bit' };
@@ -71,64 +53,12 @@
     });
   }
 
-  function removeOverlay(key: string): void {
-    profileActions.patchParsed((c) => {
-      const x = ((c as Record<string, unknown>).xtouch as Record<string, unknown>) ?? {};
-      const o = ((x.overlay_per_app as Record<string, unknown> | undefined) ?? {}) as Record<
-        string,
-        unknown
-      >;
-      delete o[key];
-      x.overlay_per_app = o;
-      (c as Record<string, unknown>).xtouch = x;
-    });
-  }
-
-  function setGamepad(key: string, val: unknown): void {
-    profileActions.patchParsed((c) => {
-      const g = ((c as Record<string, unknown>).gamepad as Record<string, unknown>) ?? {};
-      g[key] = val;
-      (c as Record<string, unknown>).gamepad = g;
-    });
-  }
-
-  function patchSlot(idx: number, mutator: (slot: Record<string, unknown>) => void): void {
-    profileActions.patchParsed((c) => {
-      const g = ((c as Record<string, unknown>).gamepad as Record<string, unknown>) ?? {};
-      const list = ((g.gamepads as Array<Record<string, unknown>> | undefined) ?? []).map((s) => ({
-        ...s
-      }));
-      const slot = { ...(list[idx] ?? {}) };
-      mutator(slot);
-      list[idx] = slot;
-      g.gamepads = list;
-      (c as Record<string, unknown>).gamepad = g;
-    });
-  }
-
-  function setSlotField(idx: number, key: string, val: unknown): void {
-    patchSlot(idx, (s) => {
-      s[key] = val;
-    });
-  }
-
-  function setSlotAnalog(idx: number, key: string, val: number): void {
-    patchSlot(idx, (s) => {
-      const a = { ...((s.analog as Record<string, unknown> | undefined) ?? {}) };
-      a[key] = val;
-      s.analog = a;
-    });
-  }
-
-  function setSlotInvert(idx: number, key: string, val: boolean): void {
-    patchSlot(idx, (s) => {
-      const a = { ...((s.analog as Record<string, unknown> | undefined) ?? {}) };
-      const inv = { ...((a.invert as Record<string, boolean> | undefined) ?? {}) };
-      inv[key] = val;
-      a.invert = inv;
-      s.analog = a;
-    });
-  }
+  const setSlotField = (idx: number, key: string, val: unknown) =>
+    profileActions.patchAt(['gamepad', 'gamepads', idx, key], val);
+  const setSlotAnalog = (idx: number, key: string, val: number) =>
+    profileActions.patchAt(['gamepad', 'gamepads', idx, 'analog', key], val);
+  const setSlotInvert = (idx: number, key: string, val: boolean) =>
+    profileActions.patchAt(['gamepad', 'gamepads', idx, 'analog', 'invert', key], val);
 
   function addGamepad(): void {
     profileActions.patchParsed((c) => {
@@ -158,7 +88,6 @@
       const list = ((g.gamepads as Array<Record<string, unknown>> | undefined) ?? []).slice();
       list.splice(idx, 1);
       g.gamepads = list;
-      (c as Record<string, unknown>).gamepad = g;
     });
   }
 

@@ -1,6 +1,8 @@
 <script lang="ts">
   import PickerField from '../PickerField.svelte';
+  import ParamField from './ParamField.svelte';
   import { pickers, pickerActions } from '$lib/stores/pickers';
+  import { inputCls } from '$lib/styles';
   import type { ActionDescriptor, ActionParam } from '$lib/api';
 
   export let mapping: Record<string, unknown> = {};
@@ -58,6 +60,10 @@
     };
   }
 
+  $: paramScenes.forEach((sc, i) => {
+    if (actionParams[i]?.picker === 'obs.source') ensureSources(sc);
+  });
+
   $: sceneOpts = $pickers.obsScenes.map((s) => ({ value: s.name, label: s.name }));
   $: inputOpts = $pickers.obsInputs.map((s) => ({ value: s.name, label: s.name }));
   $: actionOpts = actions.map((a) => ({ value: a.name, label: a.name, meta: a.description }));
@@ -66,101 +72,34 @@
 <div class="space-y-3">
   <div>
     <div class="text-xs text-slate-700 dark:text-slate-400 mb-1">App</div>
-    {#if driverOpts.length}
-      <PickerField value={app} options={driverOpts} placeholder="select app…" allowFree on:change={(e) => (mapping = { ...mapping, app: e.detail })} />
-    {:else}
-      <input
-        class="w-full bg-white border border-slate-300 text-slate-900 placeholder-slate-400 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-100 dark:placeholder-slate-500 rounded px-2 py-1.5"
-        value={app}
-        on:input={(e) => (mapping = { ...mapping, app: (e.currentTarget as HTMLInputElement).value })}
-      />
-    {/if}
+    <PickerField value={app} options={driverOpts} placeholder="select app…" allowFree on:change={(e) => (mapping = { ...mapping, app: e.detail })} />
   </div>
 
   <div>
     <div class="text-xs text-slate-700 dark:text-slate-400 mb-1">Action</div>
-    {#if actionOpts.length}
-      <PickerField value={action ?? ''} options={actionOpts} placeholder="select action…" allowFree on:change={(e) => (mapping = { ...mapping, action: e.detail })} />
-    {:else}
-      <input
-        class="w-full bg-white border border-slate-300 text-slate-900 placeholder-slate-400 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-100 dark:placeholder-slate-500 rounded px-2 py-1.5"
-        value={action ?? ''}
-        on:input={(e) => (mapping = { ...mapping, action: (e.currentTarget as HTMLInputElement).value })}
-      />
-    {/if}
+    <PickerField value={action ?? ''} options={actionOpts} placeholder="select action…" allowFree on:change={(e) => (mapping = { ...mapping, action: e.detail })} />
   </div>
 
   {#if actionParams.length}
     <div class="rounded border border-slate-200 dark:border-slate-800 p-2 space-y-2">
       <div class="text-xs text-slate-700 dark:text-slate-400">Params</div>
       {#each actionParams as p, idx}
-        {@const sc = paramScenes[idx] ?? ''}
-        {#if p.picker === 'obs.scene'}
-          <div>
-            <div class="text-xs text-slate-700 dark:text-slate-400 mb-1">{p.name}</div>
-            <PickerField
-              value={(paramValue(idx) ?? '') as string}
-              options={sceneOpts}
-              allowFree
-              placeholder="scene…"
-              on:change={(e) => setParam(idx, e.detail)}
-            />
-          </div>
-        {:else if p.picker === 'obs.source'}
-          {#await ensureSources(sc)}{/await}
-          <div>
-            <div class="text-xs text-slate-700 dark:text-slate-400 mb-1">{p.name} (in {sc || 'any scene'})</div>
-            <PickerField
-              value={(paramValue(idx) ?? '') as string}
-              options={sourceOptionsByScene[sc] ?? []}
-              allowFree
-              placeholder="source…"
-              on:change={(e) => setParam(idx, e.detail)}
-            />
-          </div>
-        {:else if p.picker === 'obs.input'}
-          <div>
-            <div class="text-xs text-slate-700 dark:text-slate-400 mb-1">{p.name}</div>
-            <PickerField
-              value={(paramValue(idx) ?? '') as string}
-              options={inputOpts}
-              allowFree
-              placeholder="input…"
-              on:change={(e) => setParam(idx, e.detail)}
-            />
-          </div>
-        {:else if p.kind === 'boolean'}
-          <label class="flex items-center gap-2 text-xs">
-            <input type="checkbox" checked={!!paramValue(idx)} on:change={(e) => setParam(idx, (e.currentTarget as HTMLInputElement).checked)} />
-            {p.name}
-          </label>
-        {:else if p.kind === 'number' || p.kind === 'integer'}
-          <div>
-            <div class="text-xs text-slate-700 dark:text-slate-400 mb-1">{p.name}</div>
-            <input
-              type="number"
-              class="w-full bg-white border border-slate-300 text-slate-900 placeholder-slate-400 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-100 dark:placeholder-slate-500 rounded px-2 py-1.5"
-              value={(paramValue(idx) ?? '') as number}
-              on:input={(e) => setParam(idx, Number((e.currentTarget as HTMLInputElement).value))}
-            />
-          </div>
-        {:else}
-          <div>
-            <div class="text-xs text-slate-700 dark:text-slate-400 mb-1">{p.name}</div>
-            <input
-              class="w-full bg-white border border-slate-300 text-slate-900 placeholder-slate-400 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-100 dark:placeholder-slate-500 rounded px-2 py-1.5"
-              value={(paramValue(idx) ?? '') as string}
-              on:input={(e) => setParam(idx, (e.currentTarget as HTMLInputElement).value)}
-            />
-          </div>
-        {/if}
+        <ParamField
+          param={p}
+          value={paramValue(idx)}
+          {sceneOpts}
+          {inputOpts}
+          sourceOpts={sourceOptionsByScene[paramScenes[idx] ?? ''] ?? []}
+          sceneContext={paramScenes[idx] ?? ''}
+          on:change={(e) => setParam(idx, e.detail)}
+        />
       {/each}
     </div>
   {:else if mapping.params}
     <div class="rounded border border-slate-200 dark:border-slate-800 p-2">
       <div class="text-xs text-slate-700 dark:text-slate-400 mb-1">Params (raw JSON)</div>
       <textarea
-        class="w-full font-mono text-xs bg-white border border-slate-300 text-slate-900 dark:bg-slate-900 dark:border-slate-700 dark:text-slate-100 rounded p-2 h-20"
+        class="{inputCls} font-mono text-xs h-20"
         value={JSON.stringify(mapping.params)}
         on:input={(e) => {
           try {

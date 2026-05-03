@@ -2,15 +2,11 @@
   import { profile, profileActions } from '$lib/stores/profile';
   import { configSchema } from '$lib/schema';
   import SchemaField from '../SchemaField.svelte';
+  import { inputCls, labelCls, subHeader } from '$lib/styles';
 
   $: cfg = $profile.parsed as Record<string, unknown> | null;
   $: paging = (cfg?.paging as Record<string, unknown> | undefined) ?? {};
   $: tray = cfg?.tray;
-
-  const inputCls =
-    'w-full bg-white border border-slate-300 text-slate-900 placeholder-slate-400 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-100 dark:placeholder-slate-500 rounded px-2 py-1.5 text-sm';
-  const labelCls = 'block text-xs text-slate-700 dark:text-slate-400 mb-1';
-  const subHeader = 'text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400 font-semibold';
 
   function resolveRef(s: Record<string, unknown>): Record<string, unknown> {
     if (s.$ref && typeof s.$ref === 'string') {

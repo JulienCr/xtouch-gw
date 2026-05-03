@@ -10,7 +10,6 @@
 mod anti_echo;
 mod camera_target;
 mod driver;
-pub mod event_bus;
 mod feedback;
 mod indicators;
 mod page;
@@ -18,8 +17,8 @@ mod refresh;
 mod refresh_plan;
 mod xtouch_input;
 
+pub use crate::event_bus::{LiveEvent, LiveEventTx};
 pub use camera_target::CameraTargetState;
-pub use event_bus::{LiveEvent, LiveEventTx};
 
 #[cfg(test)]
 mod tests;

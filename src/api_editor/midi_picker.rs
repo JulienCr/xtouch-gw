@@ -9,6 +9,8 @@ use midir::{MidiIO, MidiInput, MidiOutput};
 use serde::Serialize;
 use tracing::warn;
 
+const CLIENT_NAME: &str = "XTouch-GW-Editor-PortList";
+
 #[derive(Serialize)]
 pub struct PortsResponse {
     pub inputs: Vec<String>,
@@ -23,7 +25,7 @@ pub struct PortsResponse {
 pub async fn ports() -> Response {
     let mut warning: Option<String> = None;
 
-    let inputs = match MidiInput::new("XTouch-GW-Editor-PortList") {
+    let inputs = match MidiInput::new(CLIENT_NAME) {
         Ok(midi) => collect_port_names(&midi),
         Err(e) => {
             warn!("MIDI input enumeration failed: {}", e);
@@ -32,7 +34,7 @@ pub async fn ports() -> Response {
         },
     };
 
-    let outputs = match MidiOutput::new("XTouch-GW-Editor-PortList") {
+    let outputs = match MidiOutput::new(CLIENT_NAME) {
         Ok(midi) => collect_port_names(&midi),
         Err(e) => {
             warn!("MIDI output enumeration failed: {}", e);

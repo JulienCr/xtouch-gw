@@ -1,7 +1,7 @@
 //! Page navigation and management
 
 use crate::config::PageConfig;
-use crate::router::event_bus::{now_ms, LiveEvent};
+use crate::event_bus::{now_ms, LiveEvent};
 use anyhow::{anyhow, Result};
 use std::collections::HashSet;
 use tracing::info;

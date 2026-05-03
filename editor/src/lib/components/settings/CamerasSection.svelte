@@ -2,6 +2,7 @@
   import { profile, profileActions } from '$lib/stores/profile';
   import { pickers } from '$lib/stores/pickers';
   import PickerField from '../PickerField.svelte';
+  import { inputCls, labelCls } from '$lib/styles';
 
   $: cfg = $profile.parsed as Record<string, unknown> | null;
   $: obs = (cfg?.obs as Record<string, unknown> | undefined) ?? {};
@@ -19,75 +20,36 @@
     meta: typeof i.kind === 'string' ? (i.kind as string) : undefined
   }));
 
-  const inputCls =
-    'w-full bg-white border border-slate-300 text-slate-900 placeholder-slate-400 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-100 dark:placeholder-slate-500 rounded px-2 py-1.5 text-sm';
-  const labelCls = 'block text-xs text-slate-700 dark:text-slate-400 mb-1';
+  const CC_PATH = ['obs', 'camera_control'] as const;
+  const setDefaultCamera = (val: string) =>
+    profileActions.patchAt([...CC_PATH, 'default_camera'], val || null);
+  const patchCamera = (idx: number, key: string, val: unknown) =>
+    profileActions.patchAt([...CC_PATH, 'cameras', idx, key], val);
+  const setSplit = (side: 'left' | 'right', val: string) =>
+    profileActions.patchAt([...CC_PATH, 'splits', side], val);
 
-  function patchCC(mutator: (cc: Record<string, unknown>) => void): void {
+  function patchCameras(mutator: (list: Array<Record<string, unknown>>) => void): void {
     profileActions.patchParsed((c) => {
-      const o = ((c as Record<string, unknown>).obs as Record<string, unknown>) ?? {};
-      const cur = ((o.camera_control as Record<string, unknown> | undefined) ?? {}) as Record<
-        string,
-        unknown
-      >;
-      mutator(cur);
-      o.camera_control = cur;
-      (c as Record<string, unknown>).obs = o;
+      const obs = ((c as Record<string, unknown>).obs as Record<string, unknown>) ?? {};
+      const cc = (obs.camera_control as Record<string, unknown> | undefined) ?? {};
+      const list = ((cc.cameras as Array<Record<string, unknown>> | undefined) ?? []).slice();
+      mutator(list);
+      cc.cameras = list;
+      obs.camera_control = cc;
+      (c as Record<string, unknown>).obs = obs;
     });
   }
 
-  function setDefaultCamera(val: string): void {
-    patchCC((cur) => {
-      cur.default_camera = val || null;
+  const addCamera = () =>
+    patchCameras((list) => {
+      list.push({ id: '', scene: '', source: '', split_source: '', enable_ptz: false });
     });
-  }
-
-  function patchCamera(idx: number, key: string, val: unknown): void {
-    patchCC((cur) => {
-      const list = ((cur.cameras as Array<Record<string, unknown>> | undefined) ?? []).map((c) => ({
-        ...c
-      }));
-      list[idx] = { ...(list[idx] ?? {}), [key]: val };
-      cur.cameras = list;
-    });
-  }
-
-  function addCamera(): void {
-    patchCC((cur) => {
-      const list = (cur.cameras as Array<Record<string, unknown>> | undefined) ?? [];
-      cur.cameras = [
-        ...list,
-        { id: '', scene: '', source: '', split_source: '', enable_ptz: false }
-      ];
-    });
-  }
-
-  function removeCamera(idx: number): void {
-    patchCC((cur) => {
-      const list = ((cur.cameras as Array<Record<string, unknown>> | undefined) ?? []).slice();
-      list.splice(idx, 1);
-      cur.cameras = list;
-    });
-  }
-
+  const removeCamera = (idx: number) => patchCameras((list) => void list.splice(idx, 1));
   function moveCamera(idx: number, delta: number): void {
-    patchCC((cur) => {
-      const list = ((cur.cameras as Array<Record<string, unknown>> | undefined) ?? []).slice();
+    patchCameras((list) => {
       const j = idx + delta;
       if (j < 0 || j >= list.length) return;
       [list[idx], list[j]] = [list[j], list[idx]];
-      cur.cameras = list;
-    });
-  }
-
-  function setSplit(side: 'left' | 'right', val: string): void {
-    patchCC((cur) => {
-      const s = ((cur.splits as Record<string, unknown> | undefined) ?? {}) as Record<
-        string,
-        unknown
-      >;
-      s[side] = val;
-      cur.splits = s;
     });
   }
 </script>

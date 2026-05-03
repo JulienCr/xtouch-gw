@@ -142,12 +142,10 @@ impl ProfileStore {
     pub fn read(&self, name: &str) -> Result<(String, ProfileMeta)> {
         validate_name(name)?;
         let path = self.profile_path(name);
-        if !path.exists() {
-            return Err(ProfileError::NotFound(name.to_string()));
-        }
-        let body = fs::read_to_string(&path)?;
+        let body = read_to_string_or_not_found(&path, name)?;
+        let md = fs::metadata(&path)?;
         let active = self.active().ok();
-        let meta = self.meta_for(name, active.as_deref())?;
+        let meta = build_meta(name, body.as_bytes(), &md, active.as_deref() == Some(name));
         Ok((body, meta))
     }
 
@@ -186,7 +184,13 @@ impl ProfileStore {
         if active.as_deref() == Some(name) {
             self.mirror_to_watched(name)?;
         }
-        self.meta_for(name, active.as_deref())
+        let md = fs::metadata(&path)?;
+        Ok(build_meta(
+            name,
+            body.as_bytes(),
+            &md,
+            active.as_deref() == Some(name),
+        ))
     }
 
     /// Create a new profile. Fails if it already exists.
@@ -205,14 +209,10 @@ impl ProfileStore {
     pub fn duplicate(&self, source: &str, new_name: &str) -> Result<ProfileMeta> {
         validate_name(source)?;
         validate_name(new_name)?;
-        let src = self.profile_path(source);
-        if !src.exists() {
-            return Err(ProfileError::NotFound(source.to_string()));
-        }
         if self.profile_path(new_name).exists() {
             return Err(ProfileError::AlreadyExists(new_name.to_string()));
         }
-        let body = fs::read_to_string(&src)?;
+        let body = read_to_string_or_not_found(&self.profile_path(source), source)?;
         self.create(new_name, &body)
     }
 
@@ -329,13 +329,7 @@ impl ProfileStore {
         validate_name(name)?;
         validate_timestamp(timestamp)?;
         let path = self.history_dir(name).join(format!("{}.yaml", timestamp));
-        if !path.exists() {
-            return Err(ProfileError::NotFound(format!(
-                "{}.history/{}",
-                name, timestamp
-            )));
-        }
-        Ok(fs::read_to_string(&path)?)
+        read_to_string_or_not_found(&path, &format!("{}.history/{}", name, timestamp))
     }
 
     /// Restore a snapshot into the live profile. The current contents are
@@ -387,19 +381,7 @@ impl ProfileStore {
         let path = self.profile_path(name);
         let bytes = fs::read(&path)?;
         let md = fs::metadata(&path)?;
-        let mtime_ms = md
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        Ok(ProfileMeta {
-            name: name.to_string(),
-            mtime_ms,
-            size_bytes: bytes.len() as u64,
-            content_hash: sha256_hex(&bytes),
-            is_active: active == Some(name),
-        })
+        Ok(build_meta(name, &bytes, &md, active == Some(name)))
     }
 
     fn snapshot_bytes(&self, name: &str, bytes: &[u8]) -> Result<()> {
@@ -455,6 +437,32 @@ impl ProfileStore {
 }
 
 // -------------------- free functions --------------------
+
+fn build_meta(name: &str, bytes: &[u8], md: &fs::Metadata, is_active: bool) -> ProfileMeta {
+    let mtime_ms = md
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    ProfileMeta {
+        name: name.to_string(),
+        mtime_ms,
+        size_bytes: bytes.len() as u64,
+        content_hash: sha256_hex(bytes),
+        is_active,
+    }
+}
+
+fn read_to_string_or_not_found(path: &Path, name: &str) -> Result<String> {
+    match fs::read_to_string(path) {
+        Ok(s) => Ok(s),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err(ProfileError::NotFound(name.to_string()))
+        },
+        Err(e) => Err(e.into()),
+    }
+}
 
 fn validate_name(name: &str) -> Result<()> {
     if name.is_empty() || name.len() > NAME_MAX_LEN {

@@ -128,15 +128,15 @@ impl GamepadMapper {
 
         // Best-effort: emit live HwEvent for editor WS subscribers.
         router
-            .emit_live(crate::router::event_bus::LiveEvent::HwEvent {
+            .emit_live(crate::event_bus::LiveEvent::HwEvent {
                 control_id: control_id.to_string(),
                 kind: if pressed {
-                    crate::router::event_bus::HwEventKind::Press
+                    crate::event_bus::HwEventKind::Press
                 } else {
-                    crate::router::event_bus::HwEventKind::Release
+                    crate::event_bus::HwEventKind::Release
                 },
                 value,
-                ts: crate::router::event_bus::now_ms(),
+                ts: crate::event_bus::now_ms(),
             })
             .await;
 
@@ -233,11 +233,11 @@ impl GamepadMapper {
 
             // Best-effort: emit live HwEvent for editor WS subscribers.
             router
-                .emit_live(crate::router::event_bus::LiveEvent::HwEvent {
+                .emit_live(crate::event_bus::LiveEvent::HwEvent {
                     control_id: control_id.to_string(),
-                    kind: crate::router::event_bus::HwEventKind::Axis,
+                    kind: crate::event_bus::HwEventKind::Axis,
                     value: final_value,
-                    ts: crate::router::event_bus::now_ms(),
+                    ts: crate::event_bus::now_ms(),
                 })
                 .await;
 

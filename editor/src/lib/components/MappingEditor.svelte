@@ -29,6 +29,7 @@
   $: pageIdx = $selectedPage;
   $: controlId = $selectedControl ?? '';
   $: scopeKey = pageIdx === -1 ? 'global' : `page:${pageIdx}`;
+  $: lcdMatch = controlId.match(/^lcd(\d+)$/);
 
   $: existing = (() => {
     const cfg = $profile.parsed;
@@ -71,8 +72,6 @@
       mapping = { ...preserved, midi: { type: 'passthrough' } };
     } else if (newKind === 'midi-translate') {
       mapping = { ...preserved, midi: { type: 'cc', channel: 1, cc: 0 } };
-    } else {
-      mapping = { ...mapping };
     }
     kind = newKind;
   }
@@ -139,8 +138,8 @@
 <div class="p-3 space-y-3 text-sm">
   {#if !controlId}
     <div class="text-slate-500 dark:text-slate-400 text-xs">Click a control on the surface or list to edit its mapping.</div>
-  {:else if /^lcd(\d+)$/.test(controlId) && pageIdx >= 0}
-    <LcdStripEditor stripIdx={Number(controlId.match(/^lcd(\d+)$/)?.[1] ?? 1)} />
+  {:else if lcdMatch && pageIdx >= 0}
+    <LcdStripEditor stripIdx={Number(lcdMatch[1])} />
   {:else}
     <div class="flex items-center gap-2">
       <div class="flex-1">
