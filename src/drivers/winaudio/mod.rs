@@ -19,6 +19,8 @@ mod mapping;
 mod master;
 #[cfg(target_os = "windows")]
 mod session;
+#[cfg(target_os = "windows")]
+mod session_events;
 
 use crate::config::WinAudioConfig;
 use crate::drivers::{Driver, ExecutionContext};

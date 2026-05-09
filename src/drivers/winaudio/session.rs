@@ -30,10 +30,14 @@ pub struct SessionInfo {
     pub process_name: String,
     /// Live `ISimpleAudioVolume` interface. Confined to the COM thread.
     pub volume: ISimpleAudioVolume,
+    /// Live session-control interface, kept so we can register
+    /// `IAudioSessionEvents` for live volume-change notifications.
+    /// Confined to the COM thread.
+    pub control: IAudioSessionControl2,
 }
 
 pub struct SessionManager {
-    manager: IAudioSessionManager2,
+    pub manager: IAudioSessionManager2,
 }
 
 impl SessionManager {
@@ -100,6 +104,7 @@ impl SessionManager {
                     pid,
                     process_name,
                     volume,
+                    control: control2,
                 });
             }
         }

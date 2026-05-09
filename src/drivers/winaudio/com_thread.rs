@@ -6,6 +6,7 @@
 
 #![cfg(target_os = "windows")]
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
@@ -14,11 +15,15 @@ use tokio::sync::Mutex;
 use tracing::{debug, error, info, trace, warn};
 
 use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolumeCallback;
+use windows::Win32::Media::Audio::{
+    IAudioSessionControl2, IAudioSessionEvents, IAudioSessionNotification,
+};
 use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
 
 use super::callback::EndpointVolumeCallback;
 use super::master::MasterEndpoint;
 use super::session::{set_session_volume, toggle_session_mute, SessionManager};
+use super::session_events::{NewSessionCallback, SessionEventsCallback};
 
 #[derive(Debug)]
 pub enum AudioCmd {
@@ -88,9 +93,13 @@ impl ComThreadHandle {
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<AudioCmd>(CMD_QUEUE);
         let (event_tx, event_rx) = mpsc::channel::<AudioEvent>(EVENT_QUEUE);
 
+        // Cloned into the COM thread so the new-session COM callback
+        // (registered on `IAudioSessionManager2`) can request a refresh
+        // when an app starts producing audio after init.
+        let cmd_tx_for_loop = cmd_tx.clone();
         let join = std::thread::Builder::new()
             .name("xtouch-gw-winaudio".into())
-            .spawn(move || run_com_loop(&mut cmd_rx, event_tx))?;
+            .spawn(move || run_com_loop(&mut cmd_rx, event_tx, cmd_tx_for_loop))?;
 
         Ok(Self {
             cmd_tx,
@@ -159,7 +168,19 @@ impl ComThreadHandle {
     }
 }
 
-fn run_com_loop(cmd_rx: &mut mpsc::Receiver<AudioCmd>, event_tx: mpsc::Sender<AudioEvent>) {
+/// Per-PID registration: we keep the `IAudioSessionControl2` so we can
+/// unregister at shutdown, and the `IAudioSessionEvents` interface so the
+/// audio engine has a live reference to call back into.
+struct SessionReg {
+    control: IAudioSessionControl2,
+    events: IAudioSessionEvents,
+}
+
+fn run_com_loop(
+    cmd_rx: &mut mpsc::Receiver<AudioCmd>,
+    event_tx: mpsc::Sender<AudioEvent>,
+    cmd_tx: mpsc::Sender<AudioCmd>,
+) {
     // SAFETY: STA is required for IAudioSessionEvents callbacks; this thread
     // owns its apartment and never lets COM objects cross thread boundaries.
     let init = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
@@ -184,9 +205,9 @@ fn run_com_loop(cmd_rx: &mut mpsc::Receiver<AudioCmd>, event_tx: mpsc::Sender<Au
         },
     };
 
-    // Register the volume-change callback. Must keep the COM reference
-    // alive in scope so the audio engine can call back into it; we
-    // unregister before drop.
+    // Register the master volume-change callback. Must keep the COM
+    // reference alive in scope so the audio engine can call back into
+    // it; we unregister before drop.
     let registered = endpoint.as_ref().and_then(|ep| {
         let cb_impl = EndpointVolumeCallback::new(event_tx.clone());
         let cb: IAudioEndpointVolumeCallback = cb_impl.into();
@@ -202,11 +223,39 @@ fn run_com_loop(cmd_rx: &mut mpsc::Receiver<AudioCmd>, event_tx: mpsc::Sender<Au
         }
     });
 
-    // Push initial state so the X-Touch is in sync immediately.
+    // Register the new-session notification so we hear about sessions
+    // that appear after init (e.g. an app starts producing audio).
+    let new_session_reg = session_mgr.as_ref().and_then(|mgr| {
+        let cb_impl = NewSessionCallback::new(cmd_tx.clone());
+        let cb: IAudioSessionNotification = cb_impl.into();
+        match unsafe { mgr.manager.RegisterSessionNotification(&cb) } {
+            Ok(()) => {
+                debug!("RegisterSessionNotification succeeded");
+                Some(cb)
+            },
+            Err(e) => {
+                warn!("RegisterSessionNotification failed: {:?}", e);
+                None
+            },
+        }
+    });
+
+    // Track per-session registrations by PID so we register events
+    // exactly once per session and can unregister on shutdown.
+    let mut session_regs: HashMap<u32, SessionReg> = HashMap::new();
+
+    // Push initial master state so the X-Touch is in sync immediately.
     if let Some(ep) = endpoint.as_ref() {
         if let (Ok(scalar), Ok(mute)) = (ep.get_volume_scalar(), ep.get_mute()) {
             let _ = event_tx.try_send(AudioEvent::MasterVolumeChanged { scalar, mute });
         }
+    }
+
+    // Initial session pass: register events on every active session and
+    // push their current state. This handles apps that already had
+    // audio sessions open when the gateway started.
+    if let Some(mgr) = session_mgr.as_ref() {
+        register_session_events_for_all(mgr, &event_tx, &mut session_regs);
     }
 
     info!("WinAudio COM loop running");
@@ -244,25 +293,7 @@ fn run_com_loop(cmd_rx: &mut mpsc::Receiver<AudioCmd>, event_tx: mpsc::Sender<Au
             },
             AudioCmd::RefreshSessions => {
                 if let Some(mgr) = session_mgr.as_ref() {
-                    match mgr.enumerate() {
-                        Ok(sessions) => {
-                            for s in sessions {
-                                if s.process_name.is_empty() {
-                                    continue;
-                                }
-                                let scalar = unsafe { s.volume.GetMasterVolume().unwrap_or(0.0) };
-                                let mute = unsafe {
-                                    s.volume.GetMute().map(|b| b.as_bool()).unwrap_or(false)
-                                };
-                                let _ = event_tx.try_send(AudioEvent::SessionVolumeSnapshot {
-                                    process_name_lc: s.process_name,
-                                    scalar,
-                                    mute,
-                                });
-                            }
-                        },
-                        Err(e) => warn!("RefreshSessions enumerate failed: {}", e),
-                    }
+                    register_session_events_for_all(mgr, &event_tx, &mut session_regs);
                 }
             },
             AudioCmd::SetSessionScalar {
@@ -348,14 +379,94 @@ fn run_com_loop(cmd_rx: &mut mpsc::Receiver<AudioCmd>, event_tx: mpsc::Sender<Au
         }
     }
 
-    // Unregister the callback before dropping the endpoint.
+    // Unregister per-session events.
+    for (pid, reg) in session_regs.drain() {
+        if let Err(e) = unsafe { reg.control.UnregisterAudioSessionNotification(&reg.events) } {
+            warn!(
+                "UnregisterAudioSessionNotification(pid={}) failed: {:?}",
+                pid, e
+            );
+        }
+    }
+
+    // Unregister the new-session notification.
+    if let (Some(mgr), Some(cb)) = (session_mgr.as_ref(), new_session_reg.as_ref()) {
+        if let Err(e) = unsafe { mgr.manager.UnregisterSessionNotification(cb) } {
+            warn!("UnregisterSessionNotification failed: {:?}", e);
+        }
+    }
+
+    // Unregister the master volume-change callback.
     if let (Some(ep), Some(cb)) = (endpoint.as_ref(), registered.as_ref()) {
         if let Err(e) = unsafe { ep.iface().UnregisterControlChangeNotify(cb) } {
             warn!("UnregisterControlChangeNotify failed: {:?}", e);
         }
     }
     drop(registered);
+    drop(new_session_reg);
     drop(endpoint);
     drop(session_mgr);
     unsafe { CoUninitialize() };
+}
+
+/// Enumerate all sessions, register an `IAudioSessionEvents` callback on
+/// each new one, and push a `SessionVolumeSnapshot` so the consumer sees
+/// every session's current state immediately. Re-running this is safe:
+/// already-registered sessions are skipped (looked up by PID).
+fn register_session_events_for_all(
+    mgr: &SessionManager,
+    event_tx: &mpsc::Sender<AudioEvent>,
+    session_regs: &mut HashMap<u32, SessionReg>,
+) {
+    let sessions = match mgr.enumerate() {
+        Ok(s) => s,
+        Err(e) => {
+            warn!("session enumerate failed: {}", e);
+            return;
+        },
+    };
+
+    for s in sessions {
+        if s.process_name.is_empty() {
+            continue;
+        }
+
+        // Always push the current state — the consumer is idempotent and
+        // this is what catches sessions whose volume changed while we
+        // weren't subscribed (or before our callback was registered).
+        let scalar = unsafe { s.volume.GetMasterVolume().unwrap_or(0.0) };
+        let mute = unsafe { s.volume.GetMute().map(|b| b.as_bool()).unwrap_or(false) };
+        let _ = event_tx.try_send(AudioEvent::SessionVolumeSnapshot {
+            process_name_lc: s.process_name.clone(),
+            scalar,
+            mute,
+        });
+
+        // Skip if we already have an events callback registered for this PID.
+        if session_regs.contains_key(&s.pid) {
+            continue;
+        }
+
+        let cb_impl = SessionEventsCallback::new(event_tx.clone(), s.process_name.clone());
+        let events: IAudioSessionEvents = cb_impl.into();
+        match unsafe { s.control.RegisterAudioSessionNotification(&events) } {
+            Ok(()) => {
+                debug!(
+                    "RegisterAudioSessionNotification(pid={}, {}) succeeded",
+                    s.pid, s.process_name
+                );
+                session_regs.insert(
+                    s.pid,
+                    SessionReg {
+                        control: s.control,
+                        events,
+                    },
+                );
+            },
+            Err(e) => warn!(
+                "RegisterAudioSessionNotification(pid={}, {}) failed: {:?}",
+                s.pid, s.process_name, e
+            ),
+        }
+    }
 }
