@@ -371,9 +371,26 @@ async fn refresh_full_state(
     handle.refresh_sessions();
 }
 
-/// MIDI channel (0-based) the master fader lives on, in MCU mode.
-/// Channel 9 (1-based) is the master strip, encoded as 0x08 internally.
-const MASTER_FADER_CHANNEL_0BASED: u8 = 8;
+/// MCU note number for `mute<N>` button on strip `N` (1..=8). The
+/// X-Touch maps mute1→16, mute2→17, …, mute8→23. See
+/// `docs/xtouch-matching.csv`.
+const MUTE_NOTE_BASE: u8 = 15;
+
+/// Resolve the configured master-fader strip (`1..=9`) to a 0-based MIDI
+/// channel: regular strips 1..=8 → channels 0..=7, master strip 9 → 8.
+fn master_fader_channel0(master_fader: u8) -> u8 {
+    master_fader.saturating_sub(1).min(8)
+}
+
+/// Resolve which mute button (Note number on channel 0) carries the
+/// master-mute LED. Mirrors `master_fader_channel0`: regular strips
+/// 1..=8 → mute notes 16..=23. The dedicated master strip (9) has no
+/// dedicated mute button on the X-Touch surface, so we fall back to
+/// `mute8` in that case.
+fn master_mute_note(master_fader: u8) -> u8 {
+    let strip = master_fader.clamp(1, 8);
+    MUTE_NOTE_BASE + strip
+}
 
 /// Convert a raw 14-bit PitchBend value from the router into a `[0.0, 1.0]`
 /// scalar. The router forwards `ctx.value` verbatim as the integer 14-bit
@@ -430,13 +447,11 @@ async fn run_event_consumer(
     debug!("WinAudio event consumer task started");
     while let Some(event) = event_rx.recv().await {
         match event {
-            com_thread::AudioEvent::MasterVolumeChanged { scalar, mute: _ } => {
-                let raw = pitchbend_bytes(MASTER_FADER_CHANNEL_0BASED, scalar);
-                if feedback_tx
-                    .send((DRIVER_NAME.to_string(), raw))
-                    .await
-                    .is_err()
-                {
+            com_thread::AudioEvent::MasterVolumeChanged { scalar, mute } => {
+                let master_fader = config.read().await.master_fader;
+                let channel0 = master_fader_channel0(master_fader);
+                let mute_note = master_mute_note(master_fader);
+                if !emit_volume_and_mute(&feedback_tx, channel0, scalar, mute_note, mute).await {
                     debug!("WinAudio feedback channel closed, exiting consumer");
                     break;
                 }
@@ -444,7 +459,7 @@ async fn run_event_consumer(
             com_thread::AudioEvent::SessionVolumeSnapshot {
                 process_name_lc,
                 scalar,
-                mute: _,
+                mute,
             } => {
                 // Resolve the fader slot this session currently occupies.
                 let cfg = config.read().await;
@@ -462,21 +477,68 @@ async fn run_event_consumer(
                     );
                     continue;
                 };
-                let channel0 = binding.fader.saturating_sub(1);
+                let fader = binding.fader;
                 drop(disc);
                 drop(cfg);
 
-                let raw = pitchbend_bytes(channel0, scalar);
-                if feedback_tx
-                    .send((DRIVER_NAME.to_string(), raw))
-                    .await
-                    .is_err()
-                {
+                // session<N> on strip N → fader channel N-1, mute Note N+15.
+                let channel0 = fader.saturating_sub(1);
+                let mute_note = MUTE_NOTE_BASE + fader.clamp(1, 8);
+                if !emit_volume_and_mute(&feedback_tx, channel0, scalar, mute_note, mute).await {
                     break;
                 }
             },
         }
     }
+}
+
+/// Emit a paired PitchBend (volume) + Note On/Off (mute LED) feedback
+/// for a single strip. Returns `false` if the feedback channel is
+/// closed, so the caller can exit its loop.
+#[cfg(target_os = "windows")]
+async fn emit_volume_and_mute(
+    feedback_tx: &mpsc::Sender<(String, Vec<u8>)>,
+    channel0: u8,
+    scalar: f32,
+    mute_note: u8,
+    mute: bool,
+) -> bool {
+    let pb = pitchbend_bytes(channel0, scalar);
+    if feedback_tx
+        .send((DRIVER_NAME.to_string(), pb))
+        .await
+        .is_err()
+    {
+        return false;
+    }
+    let note = mute_note_bytes(mute_note, mute);
+    if feedback_tx
+        .send((DRIVER_NAME.to_string(), note))
+        .await
+        .is_err()
+    {
+        return false;
+    }
+    true
+}
+
+/// MCU mute-LED convention: Note On (velocity 0x7F) = lit (muted), Note
+/// Off = unlit. Buttons live on MIDI channel 0.
+fn mute_note_bytes(note: u8, muted: bool) -> Vec<u8> {
+    let msg = if muted {
+        crate::midi::MidiMessage::NoteOn {
+            channel: 0,
+            note,
+            velocity: 0x7F,
+        }
+    } else {
+        crate::midi::MidiMessage::NoteOff {
+            channel: 0,
+            note,
+            velocity: 0,
+        }
+    };
+    msg.to_bytes()
 }
 
 fn pitchbend_bytes(channel0: u8, scalar: f32) -> Vec<u8> {

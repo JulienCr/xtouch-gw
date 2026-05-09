@@ -28,17 +28,26 @@ pub struct SlotBinding {
     pub display_name: String,
 }
 
+/// Hard cap on the FIFO discovery list. Only 8 fader slots exist; the
+/// extra headroom keeps a few "next in line" entries around so a session
+/// that briefly closes and re-opens reclaims its slot. Beyond this, the
+/// oldest entries are evicted to bound memory across long-running sessions
+/// where many short-lived audio sources come and go.
+const DISCOVERY_CAP: usize = 32;
+
 #[derive(Debug, Default, Clone)]
 pub struct DiscoveryState {
     /// Lowercase process names in first-seen order. Once added, names
     /// stay in the list — keeps fader assignments stable across
-    /// re-enumerations.
+    /// re-enumerations. Bounded by `DISCOVERY_CAP`; oldest entries are
+    /// evicted to make room for new arrivals.
     pub discovered_order: Vec<String>,
 }
 
 impl DiscoveryState {
     /// Push any newly seen process names (lowercase) to the end of the
     /// stable discovery order, skipping duplicates and pinned names.
+    /// Evicts the oldest entries when the list exceeds `DISCOVERY_CAP`.
     pub fn observe(&mut self, names_lc: &[String], pinned_lc: &HashSet<String>) {
         for name in names_lc {
             if pinned_lc.contains(name) {
@@ -47,6 +56,10 @@ impl DiscoveryState {
             if !self.discovered_order.iter().any(|s| s == name) {
                 self.discovered_order.push(name.clone());
             }
+        }
+        if self.discovered_order.len() > DISCOVERY_CAP {
+            let drop_count = self.discovered_order.len() - DISCOVERY_CAP;
+            self.discovered_order.drain(0..drop_count);
         }
     }
 }
@@ -188,6 +201,19 @@ mod tests {
         assert_eq!(by_slot[&2].process_name.as_deref(), Some("spotify.exe"));
         assert_eq!(by_slot[&5].process_name.as_deref(), Some("discord.exe"));
         assert_eq!(by_slot[&1].process_name.as_deref(), Some("firefox.exe"));
+    }
+
+    #[test]
+    fn discovery_caps_at_max_size() {
+        let mut s = DiscoveryState::default();
+        let pinned = HashSet::new();
+        // Push 50 unique names; expect only the last DISCOVERY_CAP (=32) to remain.
+        let names: Vec<String> = (0..50).map(|i| format!("app{i}.exe")).collect();
+        s.observe(&names, &pinned);
+        assert_eq!(s.discovered_order.len(), DISCOVERY_CAP);
+        // Oldest entries (app0..app17) should be evicted; app18..app49 retained.
+        assert_eq!(s.discovered_order.first().unwrap(), "app18.exe");
+        assert_eq!(s.discovered_order.last().unwrap(), "app49.exe");
     }
 
     #[test]

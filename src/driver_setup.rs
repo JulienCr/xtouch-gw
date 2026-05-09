@@ -171,6 +171,7 @@ pub async fn register_winaudio_driver(
         .clone()
         .unwrap_or_else(|| crate::config::WinAudioConfig {
             pinned_apps: Vec::new(),
+            master_fader: 8,
         });
 
     let driver = Arc::new(WinAudioDriver::new(winaudio_cfg));

@@ -230,8 +230,8 @@ fn run_com_loop(cmd_rx: &mut mpsc::Receiver<AudioCmd>, event_tx: mpsc::Sender<Au
                         warn!("set_mute failed: {}", e);
                     } else {
                         let scalar = ep.get_volume_scalar().unwrap_or(0.0);
-                        let _ =
-                            event_tx.send(AudioEvent::MasterVolumeChanged { scalar, mute: !cur });
+                        let _ = event_tx
+                            .try_send(AudioEvent::MasterVolumeChanged { scalar, mute: !cur });
                     }
                 }
             },
