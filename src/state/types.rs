@@ -123,6 +123,7 @@ pub enum AppKey {
     Voicemeeter,
     Qlc,
     Obs,
+    WinAudio,
     #[serde(rename = "midi-bridge")]
     MidiBridge,
 }
@@ -134,6 +135,7 @@ impl AppKey {
             AppKey::Voicemeeter,
             AppKey::Qlc,
             AppKey::Obs,
+            AppKey::WinAudio,
             AppKey::MidiBridge,
         ]
     }
@@ -144,6 +146,7 @@ impl AppKey {
             "voicemeeter" => Some(AppKey::Voicemeeter),
             "qlc" => Some(AppKey::Qlc),
             "obs" => Some(AppKey::Obs),
+            "winaudio" => Some(AppKey::WinAudio),
             "midi-bridge" => Some(AppKey::MidiBridge),
             _ => None,
         }
@@ -155,6 +158,7 @@ impl AppKey {
             AppKey::Voicemeeter => "voicemeeter",
             AppKey::Qlc => "qlc",
             AppKey::Obs => "obs",
+            AppKey::WinAudio => "winaudio",
             AppKey::MidiBridge => "midi-bridge",
         }
     }
