@@ -12,6 +12,7 @@ use crate::config::AppConfig;
 use crate::control_mapping::ControlMappingDB;
 use crate::drivers::midibridge::MidiBridgeDriver;
 use crate::drivers::obs::ObsDriver;
+use crate::drivers::winaudio::WinAudioDriver;
 use crate::drivers::Driver;
 use crate::router::Router;
 use crate::xtouch::XTouchDriver;
@@ -127,6 +128,62 @@ pub async fn register_obs_driver(
         Ok(_) => info!("Registered OBS driver"),
         Err(e) => warn!(
             "Failed to register OBS driver (will continue without it): {}",
+            e
+        ),
+    }
+}
+
+/// Register the Windows audio driver if `winaudio` is configured or any
+/// page references the `winaudio` app.
+///
+/// The driver itself is cross-platform (no-op on non-Windows); registration
+/// is unconditional once the config opts in, so YAML routing succeeds on
+/// any platform.
+///
+/// `feedback_tx` is cloned inside the driver and used by its COM thread
+/// consumer to inject volume-change feedback as if it came from a regular
+/// MIDI app — this routes through the existing anti-echo / fader-setpoint
+/// pipeline and keeps the X-Touch motorized fader in sync.
+pub async fn register_winaudio_driver(
+    config: &AppConfig,
+    router: &Arc<Router>,
+    feedback_tx: &mpsc::Sender<(String, Vec<u8>)>,
+) {
+    let referenced = config.pages.iter().any(|p| {
+        p.controls
+            .as_ref()
+            .map(|m| m.values().any(|c| c.app == "winaudio"))
+            .unwrap_or(false)
+    }) || config
+        .pages_global
+        .as_ref()
+        .and_then(|g| g.controls.as_ref())
+        .map(|m| m.values().any(|c| c.app == "winaudio"))
+        .unwrap_or(false);
+
+    if !referenced && config.winaudio.is_none() {
+        debug!("WinAudio driver not configured and unreferenced — skipping registration");
+        return;
+    }
+
+    let winaudio_cfg = config
+        .winaudio
+        .clone()
+        .unwrap_or_else(|| crate::config::WinAudioConfig {
+            pinned_apps: Vec::new(),
+        });
+
+    let driver = Arc::new(WinAudioDriver::new(winaudio_cfg));
+    driver.set_router(router.clone()).await;
+    driver.set_feedback_sender(feedback_tx.clone()).await;
+
+    match router
+        .register_driver(crate::drivers::winaudio::DRIVER_NAME.to_string(), driver)
+        .await
+    {
+        Ok(_) => info!("Registered WinAudio driver"),
+        Err(e) => warn!(
+            "Failed to register WinAudio driver (will continue without it): {}",
             e
         ),
     }

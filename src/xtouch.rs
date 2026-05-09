@@ -398,59 +398,10 @@ impl XTouchDriver {
             bail!("Invalid LCD strip index: {} (must be 0-7)", strip_index);
         }
 
-        // Convert text to 7-byte ASCII arrays
-        let upper_bytes = Self::ascii7(upper, 7);
-        let lower_bytes = Self::ascii7(lower, 7);
-
-        // SysEx header for X-Touch LCD
-        let header = vec![0x00, 0x00, 0x66, 0x14, 0x12];
-
-        // Position for upper line (0x00 + strip * 7)
-        let pos_top = strip_index * 7;
-
-        // Position for lower line (0x38 + strip * 7)
-        let pos_bot = 0x38 + strip_index * 7;
-
-        // Send upper line
-        let mut upper_data = header.clone();
-        upper_data.push(pos_top);
-        upper_data.extend_from_slice(&upper_bytes);
-        self.send(&MidiMessage::SysEx { data: upper_data }).await?;
-
-        // Send lower line
-        let mut lower_data = header;
-        lower_data.push(pos_bot);
-        lower_data.extend_from_slice(&lower_bytes);
-        self.send(&MidiMessage::SysEx { data: lower_data }).await?;
-
+        let (upper_msg, lower_msg) = build_lcd_strip_sysex(strip_index, upper, lower);
+        self.send_raw(&upper_msg).await?;
+        self.send_raw(&lower_msg).await?;
         Ok(())
-    }
-
-    /// Convert text to 7-bit ASCII array with specific length
-    fn ascii7(text: &str, length: usize) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(length);
-
-        for (i, ch) in text.chars().enumerate() {
-            if i >= length {
-                break;
-            }
-
-            // Only printable ASCII (0x20-0x7E), otherwise space
-            let code = ch as u32;
-            let byte = if (0x20..=0x7E).contains(&code) {
-                code as u8
-            } else {
-                0x20 // Space
-            };
-            bytes.push(byte);
-        }
-
-        // Pad with spaces to reach desired length
-        while bytes.len() < length {
-            bytes.push(0x20);
-        }
-
-        bytes
     }
 
     /// Send only lower line LCD text (for value overlay)
@@ -459,7 +410,7 @@ impl XTouchDriver {
             bail!("Invalid LCD strip index: {} (must be 0-7)", strip_index);
         }
 
-        let lower_bytes = Self::ascii7(lower, 7);
+        let lower_bytes = ascii7(lower, 7);
 
         let header = vec![0x00, 0x00, 0x66, 0x14, 0x12];
         let pos_bot = 0x38 + strip_index * 7;
@@ -671,6 +622,58 @@ impl XTouchDriver {
         debug!("X-Touch hardware reset complete");
         Ok(())
     }
+}
+
+/// Convert text to a fixed-length 7-bit ASCII byte slice (printable only,
+/// non-printable replaced with 0x20, padded with spaces).
+pub(crate) fn ascii7(text: &str, length: usize) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(length);
+    for (i, ch) in text.chars().enumerate() {
+        if i >= length {
+            break;
+        }
+        let code = ch as u32;
+        let byte = if (0x20..=0x7E).contains(&code) {
+            code as u8
+        } else {
+            0x20
+        };
+        bytes.push(byte);
+    }
+    while bytes.len() < length {
+        bytes.push(0x20);
+    }
+    bytes
+}
+
+/// Build the two SysEx messages required to update one LCD strip
+/// (upper line + lower line) on an X-Touch.
+///
+/// `strip_index` must be 0..=7. Returns `(upper_sysex, lower_sysex)` as
+/// raw MIDI byte sequences ready for `xtouch.send_raw()` or queueing
+/// into the router's pending-MIDI buffer.
+pub fn build_lcd_strip_sysex(strip_index: u8, upper: &str, lower: &str) -> (Vec<u8>, Vec<u8>) {
+    debug_assert!(strip_index <= 7);
+    let upper_bytes = ascii7(upper, 7);
+    let lower_bytes = ascii7(lower, 7);
+
+    let pos_top = strip_index * 7;
+    let pos_bot = 0x38 + strip_index * 7;
+
+    // SysEx framing: F0 00 00 66 14 12 <pos> <7 bytes ASCII> F7
+    let mut upper_msg = Vec::with_capacity(15);
+    upper_msg.extend_from_slice(&[0xF0, 0x00, 0x00, 0x66, 0x14, 0x12]);
+    upper_msg.push(pos_top);
+    upper_msg.extend_from_slice(&upper_bytes);
+    upper_msg.push(0xF7);
+
+    let mut lower_msg = Vec::with_capacity(15);
+    lower_msg.extend_from_slice(&[0xF0, 0x00, 0x00, 0x66, 0x14, 0x12]);
+    lower_msg.push(pos_bot);
+    lower_msg.extend_from_slice(&lower_bytes);
+    lower_msg.push(0xF7);
+
+    (upper_msg, lower_msg)
 }
 
 /// Port discovery utilities

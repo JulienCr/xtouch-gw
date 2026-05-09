@@ -307,8 +307,31 @@ pages_global:
       app: "voicemeeter"
       midi: {type: "passthrough"}
 
+# --- Profil son fallback ----------------------------------------------------
+# Lorsque Voicemeeter n'est pas lancé, la page tagguée
+# `auto_when_voicemeeter_absent: true` devient automatiquement active, et
+# les pages tagguées `requires_voicemeeter: true` sont skippées dans la
+# navigation prev/next. Quand VM revient, basculement auto vers la 1ère
+# page `requires_voicemeeter`.
+voicemeeter_detection:
+  enabled: true
+  poll_interval_ms: 5000
+  # process_names: omis = défauts (voicemeeter.exe, voicemeeter8x64.exe,
+  # voicemeeterpro.exe, voicemeeterbanana.exe, voicemeeterpotato.exe)
+
+# Apps audio Windows pinnées sur des faders fixes. Les autres faders se
+# remplissent en FIFO depuis les sessions audio actives au démarrage.
+# Le binding fader↔action est défini dans la page (`controls:` ci-dessous);
+# le driver le résout dynamiquement via `control_mapping.csv`.
+winaudio:
+  pinned_apps:
+    - { fader: 1, process_name: "Discord.exe",  display_name: "Discord" }
+    - { fader: 2, process_name: "Spotify.exe",  display_name: "Spotify" }
+    - { fader: 3, process_name: "firefox.exe",  display_name: "Firefox" }
+
 pages:
   - name: "Voicemeeter+QLC"
+    requires_voicemeeter: true
     lcd:
       labels:
         - "Mic\nBaba"
@@ -371,7 +394,35 @@ pages:
       mute8:
         app: "voicemeeter"
         midi: {type: "passthrough"}
-  
+
+  - name: "Windows Audio"
+    auto_when_voicemeeter_absent: true
+    lcd:
+      labels: ["Discord", "Spotify", "Firefox", "App 4", "App 5", "App 6", "App 7", "App 8"]
+      colors: [3, 2, 1, 7, 7, 7, 7, 7]
+    controls:
+      # Master volume / mute live exclusively on the dedicated master
+      # strip (fader_master) and the flip button — no channel-strip
+      # control is wired to them.
+      fader1: { app: "winaudio", action: "session_volume", params: ["pinned:1"] }
+      fader2: { app: "winaudio", action: "session_volume", params: ["pinned:2"] }
+      fader3: { app: "winaudio", action: "session_volume", params: ["pinned:3"] }
+      fader4: { app: "winaudio", action: "session_volume", params: ["discovered:0"] }
+      fader5: { app: "winaudio", action: "session_volume", params: ["discovered:1"] }
+      fader6: { app: "winaudio", action: "session_volume", params: ["discovered:2"] }
+      fader7: { app: "winaudio", action: "session_volume", params: ["discovered:3"] }
+      fader8: { app: "winaudio", action: "session_volume", params: ["discovered:4"] }
+      fader_master: { app: "winaudio", action: "master_volume" }
+      mute1:  { app: "winaudio", action: "session_mute",   params: ["pinned:1"] }
+      mute2:  { app: "winaudio", action: "session_mute",   params: ["pinned:2"] }
+      mute3:  { app: "winaudio", action: "session_mute",   params: ["pinned:3"] }
+      mute4:  { app: "winaudio", action: "session_mute",   params: ["discovered:0"] }
+      mute5:  { app: "winaudio", action: "session_mute",   params: ["discovered:1"] }
+      mute6:  { app: "winaudio", action: "session_mute",   params: ["discovered:2"] }
+      mute7:  { app: "winaudio", action: "session_mute",   params: ["discovered:3"] }
+      mute8:  { app: "winaudio", action: "session_mute",   params: ["discovered:4"] }
+      flip:   { app: "winaudio", action: "master_mute" }
+
   - name: "Lighting"
     lcd:
       labels:

@@ -115,7 +115,6 @@ pub async fn run_app(
 
     // Register MIDI bridge drivers and OBS driver
     driver_setup::register_midi_bridge_drivers(&config, &router, &feedback_tx, &tray_handler).await;
-    drop(feedback_tx); // Close when all drivers are shut down
 
     // Load control database for LED indicator mapping
     let control_db = driver_setup::load_control_database().await;
@@ -207,6 +206,16 @@ pub async fn run_app(
             &tray_handler,
         )
         .await;
+    }
+
+    // Register the Windows audio fallback driver (no-op on non-Windows).
+    driver_setup::register_winaudio_driver(&config, &router, &feedback_tx).await;
+
+    drop(feedback_tx); // Original sender dropped; clones live inside drivers.
+
+    // Voicemeeter presence detector → page availability + auto-switch.
+    if let Some(vm_cfg) = config.voicemeeter_detection.as_ref().filter(|c| c.enabled) {
+        spawn_voicemeeter_detector(&router, vm_cfg);
     }
 
     debug!("All drivers registered and initialized");
@@ -455,6 +464,36 @@ async fn shutdown_cleanup(router: &Arc<Router>, xtouch: &Arc<XTouchDriver>) -> R
     }
 
     Ok(())
+}
+
+/// Build the Voicemeeter detector and wire it into the router.
+fn spawn_voicemeeter_detector(
+    router: &Arc<Router>,
+    cfg: &crate::config::VoicemeeterDetectionConfig,
+) {
+    use crate::router::voicemeeter_detector::{ProcessScanner, VmDetector};
+    use std::time::Duration;
+
+    #[cfg(target_os = "windows")]
+    let scanner: Arc<dyn ProcessScanner> =
+        Arc::new(crate::router::voicemeeter_detector::Win32ProcessScanner);
+    #[cfg(not(target_os = "windows"))]
+    let scanner: Arc<dyn ProcessScanner> =
+        Arc::new(crate::router::voicemeeter_detector::NoopProcessScanner);
+
+    // Detector drops at end of scope; tokio detaches its `JoinHandle` on
+    // drop, and the watch sender lives inside the spawned task, so the
+    // watcher subscription below keeps publishing until app shutdown.
+    let detector = VmDetector::spawn(
+        scanner,
+        cfg.process_names.clone(),
+        Duration::from_millis(cfg.poll_interval_ms),
+    );
+    router.spawn_voicemeeter_watcher(detector.subscribe());
+    info!(
+        "Voicemeeter detector running (poll {} ms, processes: {:?})",
+        cfg.poll_interval_ms, cfg.process_names
+    );
 }
 
 /// Handle feedback from an application, forwarding to X-Touch when appropriate.
