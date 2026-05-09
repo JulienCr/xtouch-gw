@@ -66,16 +66,27 @@ pub enum AudioEvent {
     },
 }
 
+/// Bounded capacity for the command queue. Faders generate ~30 PB/s; 64
+/// is plenty of headroom while keeping memory bounded if the COM thread
+/// stalls. Senders use `try_send` and drop on full — losing a stale
+/// fader sample is preferred over unbounded growth.
+const CMD_QUEUE: usize = 64;
+/// Bounded capacity for the event queue. The OS audio engine fires
+/// `OnNotify` per channel-change; 256 covers a burst from a sweeping
+/// system mixer without growing the queue indefinitely if the consumer
+/// stalls (e.g. router lock contention).
+const EVENT_QUEUE: usize = 256;
+
 pub struct ComThreadHandle {
-    cmd_tx: mpsc::UnboundedSender<AudioCmd>,
-    event_rx: Arc<Mutex<Option<mpsc::UnboundedReceiver<AudioEvent>>>>,
+    cmd_tx: mpsc::Sender<AudioCmd>,
+    event_rx: Arc<Mutex<Option<mpsc::Receiver<AudioEvent>>>>,
     join: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl ComThreadHandle {
     pub fn spawn() -> anyhow::Result<Self> {
-        let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<AudioCmd>();
-        let (event_tx, event_rx) = mpsc::unbounded_channel::<AudioEvent>();
+        let (cmd_tx, mut cmd_rx) = mpsc::channel::<AudioCmd>(CMD_QUEUE);
+        let (event_tx, event_rx) = mpsc::channel::<AudioEvent>(EVENT_QUEUE);
 
         let join = std::thread::Builder::new()
             .name("xtouch-gw-winaudio".into())
@@ -89,23 +100,23 @@ impl ComThreadHandle {
     }
 
     pub fn set_master_scalar(&self, scalar: f32) {
-        let _ = self.cmd_tx.send(AudioCmd::SetMasterScalar(scalar));
+        let _ = self.cmd_tx.try_send(AudioCmd::SetMasterScalar(scalar));
     }
 
     pub fn toggle_master_mute(&self) {
-        let _ = self.cmd_tx.send(AudioCmd::ToggleMasterMute);
+        let _ = self.cmd_tx.try_send(AudioCmd::ToggleMasterMute);
     }
 
     pub fn refresh_master(&self) {
-        let _ = self.cmd_tx.send(AudioCmd::RefreshMaster);
+        let _ = self.cmd_tx.try_send(AudioCmd::RefreshMaster);
     }
 
     pub fn refresh_sessions(&self) {
-        let _ = self.cmd_tx.send(AudioCmd::RefreshSessions);
+        let _ = self.cmd_tx.try_send(AudioCmd::RefreshSessions);
     }
 
     pub fn set_session_scalar(&self, process_name_lc: String, scalar: f32) {
-        let _ = self.cmd_tx.send(AudioCmd::SetSessionScalar {
+        let _ = self.cmd_tx.try_send(AudioCmd::SetSessionScalar {
             process_name_lc,
             scalar,
         });
@@ -114,7 +125,7 @@ impl ComThreadHandle {
     pub fn toggle_session_mute(&self, process_name_lc: String) {
         let _ = self
             .cmd_tx
-            .send(AudioCmd::ToggleSessionMute { process_name_lc });
+            .try_send(AudioCmd::ToggleSessionMute { process_name_lc });
     }
 
     pub async fn enumerate_sessions(&self) -> Vec<String> {
@@ -122,6 +133,7 @@ impl ComThreadHandle {
         if self
             .cmd_tx
             .send(AudioCmd::EnumerateSessions { reply })
+            .await
             .is_err()
         {
             return Vec::new();
@@ -130,12 +142,12 @@ impl ComThreadHandle {
     }
 
     /// Take the event receiver (one-shot — only one consumer is supported).
-    pub async fn take_event_rx(&self) -> Option<mpsc::UnboundedReceiver<AudioEvent>> {
+    pub async fn take_event_rx(&self) -> Option<mpsc::Receiver<AudioEvent>> {
         self.event_rx.lock().await.take()
     }
 
     pub async fn shutdown(self) {
-        let _ = self.cmd_tx.send(AudioCmd::Shutdown);
+        let _ = self.cmd_tx.send(AudioCmd::Shutdown).await;
         if let Some(join) = self.join.lock().await.take() {
             let _ = tokio::task::spawn_blocking(move || {
                 if let Err(e) = join.join() {
@@ -147,10 +159,7 @@ impl ComThreadHandle {
     }
 }
 
-fn run_com_loop(
-    cmd_rx: &mut mpsc::UnboundedReceiver<AudioCmd>,
-    event_tx: mpsc::UnboundedSender<AudioEvent>,
-) {
+fn run_com_loop(cmd_rx: &mut mpsc::Receiver<AudioCmd>, event_tx: mpsc::Sender<AudioEvent>) {
     // SAFETY: STA is required for IAudioSessionEvents callbacks; this thread
     // owns its apartment and never lets COM objects cross thread boundaries.
     let init = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
@@ -196,7 +205,7 @@ fn run_com_loop(
     // Push initial state so the X-Touch is in sync immediately.
     if let Some(ep) = endpoint.as_ref() {
         if let (Ok(scalar), Ok(mute)) = (ep.get_volume_scalar(), ep.get_mute()) {
-            let _ = event_tx.send(AudioEvent::MasterVolumeChanged { scalar, mute });
+            let _ = event_tx.try_send(AudioEvent::MasterVolumeChanged { scalar, mute });
         }
     }
 
@@ -210,7 +219,7 @@ fn run_com_loop(
                         warn!("set_volume_scalar({}) failed: {}", scalar, e);
                     } else {
                         let mute = ep.get_mute().unwrap_or(false);
-                        let _ = event_tx.send(AudioEvent::MasterVolumeChanged { scalar, mute });
+                        let _ = event_tx.try_send(AudioEvent::MasterVolumeChanged { scalar, mute });
                     }
                 }
             },
@@ -229,7 +238,7 @@ fn run_com_loop(
             AudioCmd::RefreshMaster => {
                 if let Some(ep) = endpoint.as_ref() {
                     if let (Ok(scalar), Ok(mute)) = (ep.get_volume_scalar(), ep.get_mute()) {
-                        let _ = event_tx.send(AudioEvent::MasterVolumeChanged { scalar, mute });
+                        let _ = event_tx.try_send(AudioEvent::MasterVolumeChanged { scalar, mute });
                     }
                 }
             },
@@ -245,7 +254,7 @@ fn run_com_loop(
                                 let mute = unsafe {
                                     s.volume.GetMute().map(|b| b.as_bool()).unwrap_or(false)
                                 };
-                                let _ = event_tx.send(AudioEvent::SessionVolumeSnapshot {
+                                let _ = event_tx.try_send(AudioEvent::SessionVolumeSnapshot {
                                     process_name_lc: s.process_name,
                                     scalar,
                                     mute,

@@ -10,7 +10,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use tracing::{debug, trace, warn};
+use tracing::{debug, trace};
 use windows::core::Interface;
 use windows::Win32::Foundation::{CloseHandle, BOOL, HANDLE};
 use windows::Win32::Media::Audio::{
@@ -156,9 +156,4 @@ pub fn toggle_session_mute(session: &SessionInfo) -> Result<()> {
         );
     }
     Ok(())
-}
-
-#[allow(dead_code)]
-fn warn_skipped(reason: &str) {
-    warn!("session enumeration skipped: {}", reason);
 }

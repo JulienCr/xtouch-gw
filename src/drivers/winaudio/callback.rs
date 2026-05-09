@@ -2,9 +2,9 @@
 //!
 //! Implements `IAudioEndpointVolumeCallback` so external volume changes
 //! (Win+Vol+/-, hardware buttons, the Windows mixer) flow back into the
-//! gateway and drive the motorized fader / mute LED. The callback runs
-//! on the COM (STA) thread; the only work it does is post a lightweight
-//! `AudioEvent` onto the unbounded mpsc channel.
+//! gateway and drive the motorized fader / mute LED. Runs on the OS
+//! audio thread, so it must be non-blocking — `try_send` and drop on
+//! full.
 
 #![cfg(target_os = "windows")]
 
@@ -19,11 +19,11 @@ use super::com_thread::AudioEvent;
 
 #[implement(windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolumeCallback)]
 pub struct EndpointVolumeCallback {
-    tx: mpsc::UnboundedSender<AudioEvent>,
+    tx: mpsc::Sender<AudioEvent>,
 }
 
 impl EndpointVolumeCallback {
-    pub fn new(tx: mpsc::UnboundedSender<AudioEvent>) -> Self {
+    pub fn new(tx: mpsc::Sender<AudioEvent>) -> Self {
         Self { tx }
     }
 }
@@ -38,7 +38,7 @@ impl IAudioEndpointVolumeCallback_Impl for EndpointVolumeCallback {
         trace!("OnNotify: scalar={:.3} mute={}", scalar, mute);
         let _ = self
             .tx
-            .send(AudioEvent::MasterVolumeChanged { scalar, mute });
+            .try_send(AudioEvent::MasterVolumeChanged { scalar, mute });
         Ok(())
     }
 }

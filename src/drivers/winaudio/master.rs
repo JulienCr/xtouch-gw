@@ -8,7 +8,6 @@
 #![cfg(target_os = "windows")]
 
 use anyhow::{Context, Result};
-use windows::core::Interface;
 use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
 use windows::Win32::Media::Audio::{eConsole, eRender, IMMDeviceEnumerator, MMDeviceEnumerator};
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
@@ -70,15 +69,3 @@ impl MasterEndpoint {
         &self.iface
     }
 }
-
-// Note: `IAudioEndpointVolume` is `!Send` / `!Sync` by default; this struct
-// must remain confined to the COM thread. The compiler enforces this — we
-// do not add explicit Send/Sync impls.
-#[allow(dead_code)]
-const _ASSERT_NOT_SEND: fn() = || {
-    fn require_not_send<T: ?Sized>(_: &T)
-    where
-        T: Interface,
-    {
-    }
-};

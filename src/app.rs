@@ -481,17 +481,15 @@ fn spawn_voicemeeter_detector(
     let scanner: Arc<dyn ProcessScanner> =
         Arc::new(crate::router::voicemeeter_detector::NoopProcessScanner);
 
+    // Detector drops at end of scope; tokio detaches its `JoinHandle` on
+    // drop, and the watch sender lives inside the spawned task, so the
+    // watcher subscription below keeps publishing until app shutdown.
     let detector = VmDetector::spawn(
         scanner,
         cfg.process_names.clone(),
         Duration::from_millis(cfg.poll_interval_ms),
     );
-    let rx = detector.subscribe();
-    router.spawn_voicemeeter_watcher(rx);
-    // Keep the detector alive for the lifetime of the process by
-    // leaking it; the only resource it owns is a watch channel + a
-    // tokio task which exits on app shutdown anyway.
-    Box::leak(Box::new(detector));
+    router.spawn_voicemeeter_watcher(detector.subscribe());
     info!(
         "Voicemeeter detector running (poll {} ms, processes: {:?})",
         cfg.poll_interval_ms, cfg.process_names

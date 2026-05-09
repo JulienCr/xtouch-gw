@@ -20,6 +20,12 @@ pub struct PageFlags {
     pub auto_when_voicemeeter_absent: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum Direction {
+    Forward,
+    Backward,
+}
+
 impl PageAvailability {
     pub fn new(flags: Vec<PageFlags>) -> Self {
         Self {
@@ -54,37 +60,24 @@ impl PageAvailability {
     }
 
     pub fn next_available(&self, current: usize) -> Option<usize> {
-        if self.flags.is_empty() {
-            return None;
-        }
-        let n = self.flags.len();
-        for offset in 1..=n {
-            let idx = (current + offset) % n;
-            if idx == current {
-                continue;
-            }
-            if self.is_available(idx) {
-                return Some(idx);
-            }
-        }
-        None
+        self.find_available(current, Direction::Forward)
     }
 
     pub fn prev_available(&self, current: usize) -> Option<usize> {
-        if self.flags.is_empty() {
+        self.find_available(current, Direction::Backward)
+    }
+
+    fn find_available(&self, current: usize, dir: Direction) -> Option<usize> {
+        let n = self.flags.len();
+        if n == 0 {
             return None;
         }
-        let n = self.flags.len();
-        for offset in 1..=n {
-            let idx = (current + n - (offset % n)) % n;
-            if idx == current {
-                continue;
-            }
-            if self.is_available(idx) {
-                return Some(idx);
-            }
-        }
-        None
+        (1..=n)
+            .map(|offset| match dir {
+                Direction::Forward => (current + offset) % n,
+                Direction::Backward => (current + n - (offset % n)) % n,
+            })
+            .find(|&idx| idx != current && self.is_available(idx))
     }
 
     /// Compute the page index to switch to when the VM state transitions.

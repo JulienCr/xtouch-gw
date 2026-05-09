@@ -221,26 +221,21 @@ impl Router {
                 };
                 prev = Some(new_state);
 
-                if let Some(target_idx) = target {
-                    if target_idx == current_index {
-                        continue;
-                    }
-                    let target_str = target_idx.to_string();
-                    if let Err(e) = router.set_active_page(&target_str).await {
-                        tracing::warn!("VM auto-switch to page {} failed: {}", target_idx, e);
-                    } else {
-                        tracing::info!(
-                            "VM state {:?} -> auto-switched to page index {}",
-                            new_state,
-                            target_idx
-                        );
-                    }
+                let Some(target_idx) = target else {
+                    continue;
+                };
+                if target_idx == current_index {
+                    continue;
+                }
+                let target_str = target_idx.to_string();
+                if let Err(e) = router.set_active_page(&target_str).await {
+                    tracing::warn!("VM auto-switch to page {} failed: {}", target_idx, e);
                 } else {
-                    // No auto-switch needed, but we still want to refresh
-                    // the page since locked pages may now be available
-                    // (or vice versa) — the LED indicators / control
-                    // mappings on the current page don't change, only
-                    // navigation does, so this is a no-op for now.
+                    tracing::info!(
+                        "VM state {:?} -> auto-switched to page index {}",
+                        new_state,
+                        target_idx
+                    );
                 }
             }
         });

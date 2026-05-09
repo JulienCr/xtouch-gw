@@ -35,7 +35,11 @@ impl VmDetector {
         poll_interval: Duration,
     ) -> Self {
         let (state_tx, state_rx) = watch::channel(None);
-        let names_lc: Vec<String> = process_names.iter().map(|s| s.to_lowercase()).collect();
+        let names_lc: Arc<[String]> = process_names
+            .iter()
+            .map(|s| s.to_lowercase())
+            .collect::<Vec<_>>()
+            .into();
 
         let task = tokio::spawn(async move {
             let mut interval = tokio::time::interval(poll_interval);

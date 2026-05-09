@@ -25,6 +25,7 @@ use crate::drivers::{Driver, ExecutionContext};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, info, warn};
@@ -35,19 +36,15 @@ pub use actions::{parse_session_target, SessionTarget};
 pub const DRIVER_NAME: &str = "winaudio";
 
 pub struct WinAudioDriver {
-    /// Pinned-app + (later) discovered-session configuration cloned from AppConfig.
     config: Arc<RwLock<WinAudioConfig>>,
-    /// Set by `init`, cleared by `shutdown`.
-    initialized: Arc<RwLock<bool>>,
-    /// Optional Router handle for emitting LCD updates and reading state.
+    initialized: AtomicBool,
     /// Wired post-construction via [`WinAudioDriver::set_router`].
     router: Arc<RwLock<Option<Arc<crate::router::Router>>>>,
-    /// Optional feedback channel; wired post-construction. The COM event
-    /// consumer task uses this to inject synthetic feedback messages
-    /// (`("winaudio", raw_midi)`) into the unified router feedback path.
+    /// Wired post-construction. The COM event consumer task uses this to
+    /// inject synthetic `("winaudio", raw_midi)` feedback into the unified
+    /// router feedback path.
     feedback_tx: Arc<RwLock<Option<mpsc::Sender<(String, Vec<u8>)>>>>,
-    /// Stable discovery order of non-pinned process names. Updated whenever
-    /// we re-enumerate; never reorders existing entries.
+    /// Stable FIFO of non-pinned process names; never reorders existing entries.
     discovery: Arc<RwLock<mapping::DiscoveryState>>,
     #[cfg(target_os = "windows")]
     com: Arc<RwLock<Option<com_thread::ComThreadHandle>>>,
@@ -57,7 +54,7 @@ impl WinAudioDriver {
     pub fn new(config: WinAudioConfig) -> Self {
         Self {
             config: Arc::new(RwLock::new(config)),
-            initialized: Arc::new(RwLock::new(false)),
+            initialized: AtomicBool::new(false),
             router: Arc::new(RwLock::new(None)),
             feedback_tx: Arc::new(RwLock::new(None)),
             discovery: Arc::new(RwLock::new(mapping::DiscoveryState::default())),
@@ -139,12 +136,12 @@ impl Driver for WinAudioDriver {
                 },
             }
         }
-        *self.initialized.write().await = true;
+        self.initialized.store(true, Ordering::Release);
         Ok(())
     }
 
     async fn execute(&self, action: &str, params: Vec<Value>, ctx: ExecutionContext) -> Result<()> {
-        if !*self.initialized.read().await {
+        if !self.initialized.load(Ordering::Acquire) {
             warn!(
                 "WinAudio driver not initialized, dropping action '{}'",
                 action
@@ -188,7 +185,7 @@ impl Driver for WinAudioDriver {
     }
 
     async fn shutdown(&self) -> Result<()> {
-        *self.initialized.write().await = false;
+        self.initialized.store(false, Ordering::Release);
         #[cfg(target_os = "windows")]
         {
             if let Some(handle) = self.com.write().await.take() {
@@ -249,7 +246,6 @@ impl WinAudioDriver {
                 com.set_session_scalar(process_name_lc, scalar);
             }
         }
-        let _ = scalar; // silence unused warning on non-windows
         Ok(())
     }
 
@@ -379,15 +375,11 @@ async fn refresh_full_state(
 /// Channel 9 (1-based) is the master strip, encoded as 0x08 internally.
 const MASTER_FADER_CHANNEL_0BASED: u8 = 8;
 
-/// Convert a raw fader value from the router into a `[0.0, 1.0]` scalar.
-///
-/// X-Touch fader controls produce 14-bit PitchBend (0..=16383), forwarded
-/// verbatim through `ctx.value`. A value <= 1.0 is assumed to already be
-/// normalized (e.g. from a future CC mapping wired through a transform).
-/// Anything larger is rescaled by dividing by 16383.
+/// Convert a raw 14-bit PitchBend value from the router into a `[0.0, 1.0]`
+/// scalar. The router forwards `ctx.value` verbatim as the integer 14-bit
+/// reading.
 fn normalize_fader_value(v: f64) -> f32 {
-    let scaled = if v > 1.0 { v / 16383.0 } else { v };
-    scaled.clamp(0.0, 1.0) as f32
+    ((v / 16383.0) as f32).clamp(0.0, 1.0)
 }
 
 #[cfg(test)]
@@ -411,11 +403,6 @@ mod normalize_tests {
     }
 
     #[test]
-    fn already_normalized_passes_through() {
-        assert!((normalize_fader_value(0.5) - 0.5).abs() < 1e-6);
-    }
-
-    #[test]
     fn out_of_range_clamped() {
         assert_eq!(normalize_fader_value(99999.0), 1.0);
         assert_eq!(normalize_fader_value(-5.0), 0.0);
@@ -435,7 +422,7 @@ mod normalize_tests {
 /// current pinned/discovered mapping.
 #[cfg(target_os = "windows")]
 async fn run_event_consumer(
-    mut event_rx: mpsc::UnboundedReceiver<com_thread::AudioEvent>,
+    mut event_rx: mpsc::Receiver<com_thread::AudioEvent>,
     feedback_tx: mpsc::Sender<(String, Vec<u8>)>,
     config: Arc<RwLock<WinAudioConfig>>,
     discovery: Arc<RwLock<mapping::DiscoveryState>>,
@@ -444,7 +431,7 @@ async fn run_event_consumer(
     while let Some(event) = event_rx.recv().await {
         match event {
             com_thread::AudioEvent::MasterVolumeChanged { scalar, mute: _ } => {
-                let raw = build_pitchbend_raw(MASTER_FADER_CHANNEL_0BASED, scalar);
+                let raw = pitchbend_bytes(MASTER_FADER_CHANNEL_0BASED, scalar);
                 if feedback_tx
                     .send((DRIVER_NAME.to_string(), raw))
                     .await
@@ -479,7 +466,7 @@ async fn run_event_consumer(
                 drop(disc);
                 drop(cfg);
 
-                let raw = build_pitchbend_raw(channel0, scalar);
+                let raw = pitchbend_bytes(channel0, scalar);
                 if feedback_tx
                     .send((DRIVER_NAME.to_string(), raw))
                     .await
@@ -492,11 +479,10 @@ async fn run_event_consumer(
     }
 }
 
-/// Build a raw 3-byte PitchBend message for `channel0` (0-based MIDI channel).
-fn build_pitchbend_raw(channel0: u8, scalar: f32) -> Vec<u8> {
-    use crate::midi::convert::denormalize_to_14bit;
-    let value14 = denormalize_to_14bit(scalar.clamp(0.0, 1.0) as f64);
-    let lsb = (value14 & 0x7F) as u8;
-    let msb = ((value14 >> 7) & 0x7F) as u8;
-    vec![0xE0 | (channel0 & 0x0F), lsb, msb]
+fn pitchbend_bytes(channel0: u8, scalar: f32) -> Vec<u8> {
+    crate::midi::MidiMessage::PitchBend {
+        channel: channel0 & 0x0F,
+        value: crate::midi::convert::denormalize_to_14bit(scalar.clamp(0.0, 1.0) as f64),
+    }
+    .to_bytes()
 }
