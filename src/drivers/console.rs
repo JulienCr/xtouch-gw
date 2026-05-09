@@ -158,6 +158,8 @@ mod tests {
             paging: None,
             gamepad: None,
             pages_global: None,
+            voicemeeter_detection: None,
+            winaudio: None,
             pages: vec![],
             tray: None,
         };

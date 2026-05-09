@@ -29,6 +29,8 @@ fn make_test_config(pages: Vec<PageConfig>) -> AppConfig {
         paging: None,
         gamepad: None,
         pages_global: None,
+        voicemeeter_detection: None,
+        winaudio: None,
         pages,
         tray: None,
     }
@@ -37,10 +39,7 @@ fn make_test_config(pages: Vec<PageConfig>) -> AppConfig {
 fn make_test_page(name: &str) -> PageConfig {
     PageConfig {
         name: name.to_string(),
-        controls: None,
-        lcd: None,
-        passthrough: None,
-        passthroughs: None,
+        ..PageConfig::default()
     }
 }
 
