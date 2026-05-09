@@ -426,9 +426,18 @@ mod normalize_tests {
 /// same way it handles OBS / Voicemeeter feedback — no special-casing
 /// in the router.
 ///
-/// `config` and `discovery` are read on every session event to resolve
+/// `config` and `discovery` are read on each flush tick to resolve
 /// process names to fader slots, so the consumer always reflects the
 /// current pinned/discovered mapping.
+///
+/// **Coalescing:** the OS audio engine fires `OnSimpleVolumeChanged`
+/// once per intermediate value while the user drags the Windows mixer
+/// slider. Sending each one as a discrete fader command makes the
+/// motorized fader chase every step instead of jumping to the final
+/// position. We buffer the latest `(scalar, mute)` per channel and
+/// flush at `FLUSH_INTERVAL_MS`, which lets the motor settle on the
+/// final value while keeping perceived latency well under the
+/// 50 ms feel threshold.
 #[cfg(target_os = "windows")]
 async fn run_event_consumer(
     mut event_rx: mpsc::Receiver<com_thread::AudioEvent>,
@@ -436,52 +445,122 @@ async fn run_event_consumer(
     config: Arc<RwLock<WinAudioConfig>>,
     discovery: Arc<RwLock<mapping::DiscoveryState>>,
 ) {
+    use std::collections::HashMap;
+    use tokio::time::{interval, Duration, MissedTickBehavior};
+
+    /// Max emit rate per channel (~20 Hz). The X-Touch motorized fader
+    /// physically can't follow updates faster than this without lagging.
+    const FLUSH_INTERVAL_MS: u64 = 50;
+
     debug!("WinAudio event consumer task started");
-    while let Some(event) = event_rx.recv().await {
-        match event {
-            com_thread::AudioEvent::MasterVolumeChanged { scalar, mute } => {
-                let cfg = config.read().await;
-                let channel0 = master_fader_channel0(cfg.master_fader);
-                let mute_note = cfg.master_mute_note;
-                drop(cfg);
-                if !emit_volume_and_mute(&feedback_tx, channel0, scalar, mute_note, mute).await {
-                    debug!("WinAudio feedback channel closed, exiting consumer");
+
+    // Per-channel buffer of the latest pending feedback. Keyed by the
+    // 0-based MIDI channel of the fader; sub-channel state is the
+    // (scalar, mute_note, mute_bool) triple we'd otherwise have sent.
+    // Inserting overwrites the previous pending value — that's the
+    // coalesce.
+    let mut pending: HashMap<u8, PendingFeedback> = HashMap::new();
+
+    let mut ticker = interval(Duration::from_millis(FLUSH_INTERVAL_MS));
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+    loop {
+        tokio::select! {
+            biased;
+            event = event_rx.recv() => {
+                let Some(event) = event else {
+                    debug!("WinAudio event consumer: source closed");
                     break;
-                }
-            },
-            com_thread::AudioEvent::SessionVolumeSnapshot {
-                process_name_lc,
-                scalar,
-                mute,
-            } => {
-                // Resolve the fader slot this session currently occupies.
-                let cfg = config.read().await;
-                let disc = discovery.read().await;
-                let slots = mapping::compute_slots(&cfg.pinned_apps, &disc);
-                let Some(binding) = slots
-                    .iter()
-                    .find(|b| b.process_name.as_deref() == Some(process_name_lc.as_str()))
-                else {
-                    drop(disc);
-                    drop(cfg);
-                    debug!(
-                        "session snapshot for '{}' has no fader slot, ignored",
-                        process_name_lc
-                    );
-                    continue;
                 };
-                let fader = binding.fader;
+                buffer_event(&mut pending, event, &config, &discovery).await;
+            }
+            _ = ticker.tick() => {
+                if pending.is_empty() {
+                    continue;
+                }
+                for (channel0, p) in pending.drain() {
+                    if !emit_volume_and_mute(
+                        &feedback_tx, channel0, p.scalar, p.mute_note, p.mute,
+                    )
+                    .await
+                    {
+                        debug!("WinAudio feedback channel closed, exiting consumer");
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+struct PendingFeedback {
+    scalar: f32,
+    mute_note: u8,
+    mute: bool,
+}
+
+/// Resolve an `AudioEvent` to a `(channel0, payload)` and stash it in
+/// the coalesce buffer. Out-of-mapping events (snapshots for sessions
+/// that don't have a fader slot) are dropped silently.
+#[cfg(target_os = "windows")]
+async fn buffer_event(
+    pending: &mut std::collections::HashMap<u8, PendingFeedback>,
+    event: com_thread::AudioEvent,
+    config: &Arc<RwLock<WinAudioConfig>>,
+    discovery: &Arc<RwLock<mapping::DiscoveryState>>,
+) {
+    match event {
+        com_thread::AudioEvent::MasterVolumeChanged { scalar, mute } => {
+            let cfg = config.read().await;
+            let channel0 = master_fader_channel0(cfg.master_fader);
+            let mute_note = cfg.master_mute_note;
+            drop(cfg);
+            pending.insert(
+                channel0,
+                PendingFeedback {
+                    scalar,
+                    mute_note,
+                    mute,
+                },
+            );
+        },
+        com_thread::AudioEvent::SessionVolumeSnapshot {
+            process_name_lc,
+            scalar,
+            mute,
+        } => {
+            let cfg = config.read().await;
+            let disc = discovery.read().await;
+            let slots = mapping::compute_slots(&cfg.pinned_apps, &disc);
+            let Some(binding) = slots
+                .iter()
+                .find(|b| b.process_name.as_deref() == Some(process_name_lc.as_str()))
+            else {
                 drop(disc);
                 drop(cfg);
+                debug!(
+                    "session snapshot for '{}' has no fader slot, ignored",
+                    process_name_lc
+                );
+                return;
+            };
+            let fader = binding.fader;
+            drop(disc);
+            drop(cfg);
 
-                // session<N> on strip N → fader channel N-1, mute Note N+15.
-                let channel0 = fader.saturating_sub(1);
-                let mute_note = MUTE_NOTE_BASE + fader.clamp(1, 8);
-                if !emit_volume_and_mute(&feedback_tx, channel0, scalar, mute_note, mute).await {
-                    break;
-                }
-            },
-        }
+            // session<N> on strip N → fader channel N-1, mute Note N+15.
+            let channel0 = fader.saturating_sub(1);
+            let mute_note = MUTE_NOTE_BASE + fader.clamp(1, 8);
+            pending.insert(
+                channel0,
+                PendingFeedback {
+                    scalar,
+                    mute_note,
+                    mute,
+                },
+            );
+        },
     }
 }
 
