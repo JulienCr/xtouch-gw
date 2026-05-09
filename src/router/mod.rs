@@ -13,8 +13,10 @@ mod driver;
 mod feedback;
 mod indicators;
 mod page;
+mod page_availability;
 mod refresh;
 mod refresh_plan;
+pub mod voicemeeter_detector;
 mod xtouch_input;
 
 pub use crate::event_bus::{LiveEvent, LiveEventTx};
@@ -69,6 +71,9 @@ pub struct Router {
     /// the main event loop to flush pending MIDI / display updates. The
     /// X-Touch input arm does this inline after `on_midi_from_xtouch`.
     pub display_refresh_notify: Arc<tokio::sync::Notify>,
+    /// Per-page availability filter, driven by Voicemeeter presence.
+    /// Always `Some` after construction; rebuilt on config reload.
+    pub(crate) page_availability: Arc<RwLock<page_availability::PageAvailability>>,
 }
 
 impl Router {
@@ -96,6 +101,17 @@ impl Router {
         })?;
         let camera_targets = Arc::new(CameraTargetState::new(camera_db));
 
+        let page_availability = page_availability::PageAvailability::new(
+            config
+                .pages
+                .iter()
+                .map(|p| page_availability::PageFlags {
+                    requires_voicemeeter: p.requires_voicemeeter,
+                    auto_when_voicemeeter_absent: p.auto_when_voicemeeter_absent,
+                })
+                .collect(),
+        );
+
         Ok(Self {
             config: Arc::new(RwLock::new(config)),
             drivers: Arc::new(RwLock::new(HashMap::new())),
@@ -111,6 +127,7 @@ impl Router {
             camera_targets,
             live_tx: Arc::new(tokio::sync::RwLock::new(None)),
             display_refresh_notify: Arc::new(tokio::sync::Notify::new()),
+            page_availability: Arc::new(RwLock::new(page_availability)),
         })
     }
 
@@ -171,6 +188,87 @@ impl Router {
     /// Take pending MIDI messages (consumes them, leaving empty Vec)
     pub async fn take_pending_midi(&self) -> Vec<Vec<u8>> {
         std::mem::take(&mut *self.pending_midi_messages.lock().await)
+    }
+
+    /// Subscribe to a Voicemeeter detector and drive page availability +
+    /// auto-switch in response to VM state transitions.
+    ///
+    /// Spawns a background task that lives for as long as the detector
+    /// publishes events. Safe to call once at startup.
+    pub fn spawn_voicemeeter_watcher(
+        self: &Arc<Self>,
+        mut state_rx: tokio::sync::watch::Receiver<Option<voicemeeter_detector::VmState>>,
+    ) {
+        let router = self.clone();
+        tokio::spawn(async move {
+            // Track the previous state so we can decide on auto-switch
+            // direction. `None` until the detector publishes its first
+            // state.
+            let mut prev: Option<voicemeeter_detector::VmState> = None;
+            loop {
+                if state_rx.changed().await.is_err() {
+                    break;
+                }
+                let new = *state_rx.borrow();
+                let Some(new_state) = new else {
+                    continue;
+                };
+                let current_index = *router.active_page_index.read().await;
+                let target = {
+                    let mut availability = router.page_availability.write().await;
+                    availability.set_vm_state(Some(new_state));
+                    availability.auto_switch_target(current_index, prev, new_state)
+                };
+                prev = Some(new_state);
+
+                if let Some(target_idx) = target {
+                    if target_idx == current_index {
+                        continue;
+                    }
+                    let target_str = target_idx.to_string();
+                    if let Err(e) = router.set_active_page(&target_str).await {
+                        tracing::warn!("VM auto-switch to page {} failed: {}", target_idx, e);
+                    } else {
+                        tracing::info!(
+                            "VM state {:?} -> auto-switched to page index {}",
+                            new_state,
+                            target_idx
+                        );
+                    }
+                } else {
+                    // No auto-switch needed, but we still want to refresh
+                    // the page since locked pages may now be available
+                    // (or vice versa) — the LED indicators / control
+                    // mappings on the current page don't change, only
+                    // navigation does, so this is a no-op for now.
+                }
+            }
+        });
+    }
+
+    /// Push a dynamic LCD label update for one X-Touch strip.
+    ///
+    /// `channel` is 1-based (1..=8). `upper` and `lower` are the two LCD
+    /// lines (truncated/padded to 7 ASCII chars by the SysEx builder).
+    ///
+    /// The two SysEx messages produced are appended to `pending_midi_messages`
+    /// and `display_refresh_notify` is signalled so the main loop flushes
+    /// them to the X-Touch on its next pass.
+    pub async fn push_lcd_label(&self, channel: u8, upper: &str, lower: &str) {
+        if !(1..=8).contains(&channel) {
+            tracing::warn!("push_lcd_label: invalid channel {} (1..=8)", channel);
+            return;
+        }
+        let strip_index = channel - 1;
+        let (upper_msg, lower_msg) =
+            crate::xtouch::build_lcd_strip_sysex(strip_index, upper, lower);
+
+        let mut buf = self.pending_midi_messages.lock().await;
+        buf.push(upper_msg);
+        buf.push(lower_msg);
+        drop(buf);
+
+        self.display_refresh_notify.notify_one();
     }
 
     /// Get current timestamp in milliseconds
@@ -271,6 +369,23 @@ impl Router {
 
         // Update config
         *self.config.write().await = new_config;
+
+        // Rebuild page availability filter from the new page metadata.
+        {
+            let config = self.config.read().await;
+            let new_flags: Vec<page_availability::PageFlags> = config
+                .pages
+                .iter()
+                .map(|p| page_availability::PageFlags {
+                    requires_voicemeeter: p.requires_voicemeeter,
+                    auto_when_voicemeeter_absent: p.auto_when_voicemeeter_absent,
+                })
+                .collect();
+            let mut availability = self.page_availability.write().await;
+            let prev_state = availability.current_vm_state();
+            *availability = page_availability::PageAvailability::new(new_flags);
+            availability.set_vm_state(prev_state);
+        }
 
         // Ensure active page index is still valid
         let config = self.config.read().await;

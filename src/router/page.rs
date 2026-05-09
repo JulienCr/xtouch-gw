@@ -100,40 +100,51 @@ impl super::Router {
         Err(anyhow!("Page '{}' not found", name_or_index))
     }
 
-    /// Navigate to the next page (circular)
+    /// Navigate to the next available page.
+    ///
+    /// Pages tagged `requires_voicemeeter: true` are skipped while VM is
+    /// absent. If no other available page exists, the call is a no-op.
     pub async fn next_page(&self) {
         let config = self.config.read().await;
         if config.pages.is_empty() {
             return;
         }
 
+        let availability = self.page_availability.read().await;
         let mut index = self.active_page_index.write().await;
-        *index = (*index + 1) % config.pages.len();
+        let Some(target) = availability.next_available(*index) else {
+            tracing::debug!("next_page: no other available page (VM absent locking nav)");
+            return;
+        };
+        *index = target;
         let page_name = config.pages[*index].name.clone();
         info!("Next page → {}", page_name);
         drop(index);
+        drop(availability);
         drop(config);
 
         self.refresh_page().await;
         self.emit_page_changed().await;
     }
 
-    /// Navigate to the previous page (circular)
+    /// Navigate to the previous available page (skips locked pages).
     pub async fn prev_page(&self) {
         let config = self.config.read().await;
         if config.pages.is_empty() {
             return;
         }
 
+        let availability = self.page_availability.read().await;
         let mut index = self.active_page_index.write().await;
-        *index = if *index == 0 {
-            config.pages.len() - 1
-        } else {
-            *index - 1
+        let Some(target) = availability.prev_available(*index) else {
+            tracing::debug!("prev_page: no other available page (VM absent locking nav)");
+            return;
         };
+        *index = target;
         let page_name = config.pages[*index].name.clone();
         info!("Previous page → {}", page_name);
         drop(index);
+        drop(availability);
         drop(config);
 
         self.refresh_page().await;
