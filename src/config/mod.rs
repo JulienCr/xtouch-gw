@@ -70,30 +70,6 @@ pub struct WinAudioConfig {
     /// Apps pinned to specific fader slots. Faders 1..=8.
     #[serde(default)]
     pub pinned_apps: Vec<PinnedApp>,
-    /// Strip carrying `master_volume` feedback. `1..=8` targets one of
-    /// the regular channel strips; `9` targets the dedicated master
-    /// strip on the X-Touch's right side. Must match whatever YAML
-    /// control (`fader1`..`fader8` / `fader_master`) the page binds to
-    /// `master_volume`. Defaults to `8` to match the shipped Windows
-    /// Audio layout (LCD slot 8 labelled MASTER).
-    #[serde(default = "default_master_fader")]
-    pub master_fader: u8,
-    /// MCU note number of the button bound to `master_mute` — drives
-    /// the corresponding LED. The X-Touch master strip has no dedicated
-    /// mute button, so this defaults to `50` (the `flip` button) which
-    /// is convenient and unambiguous; pages can map `master_mute` to
-    /// any note (e.g. `23` for `mute8`) and override this field to
-    /// match. See `docs/xtouch-matching.csv` for the note table.
-    #[serde(default = "default_master_mute_note")]
-    pub master_mute_note: u8,
-}
-
-fn default_master_fader() -> u8 {
-    8
-}
-
-fn default_master_mute_note() -> u8 {
-    50
 }
 
 /// A pinned audio session: a process name fixed on a specific fader slot.
@@ -641,20 +617,8 @@ impl AppConfig {
             );
         }
 
-        // Validate winaudio master_fader slot range (1..=9) and pinned_apps.
+        // Validate winaudio pinned_apps slot range and uniqueness.
         if let Some(winaudio) = &self.winaudio {
-            if !(1..=9).contains(&winaudio.master_fader) {
-                anyhow::bail!(
-                    "winaudio.master_fader must be in 1..=9 (got {}); 1..=8 = channel strips, 9 = dedicated master strip",
-                    winaudio.master_fader
-                );
-            }
-            if winaudio.master_mute_note > 127 {
-                anyhow::bail!(
-                    "winaudio.master_mute_note must be a 7-bit MIDI note (0..=127), got {}",
-                    winaudio.master_mute_note
-                );
-            }
             let mut seen = std::collections::HashSet::new();
             for pin in &winaudio.pinned_apps {
                 if !(1..=8).contains(&pin.fader) {

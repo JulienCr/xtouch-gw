@@ -118,6 +118,33 @@ pub fn pinned_target(pinned: &[PinnedApp], fader: u8) -> Option<String> {
         .map(|p| p.process_name.to_lowercase())
 }
 
+/// Reverse of [`pinned_target`] / [`discovered_target`]: given a session's
+/// process name, return the YAML target string (`"pinned:N"` or
+/// `"discovered:N"`) that pages bind to. Returns `None` if the session
+/// is neither pinned nor in the discovery FIFO.
+pub fn target_for_process(
+    pinned: &[PinnedApp],
+    discovery: &DiscoveryState,
+    process_name_lc: &str,
+) -> Option<String> {
+    if let Some(pin) = pinned
+        .iter()
+        .find(|p| p.process_name.to_lowercase() == process_name_lc)
+    {
+        return Some(format!("pinned:{}", pin.fader));
+    }
+    let pinned_lc: HashSet<String> = pinned
+        .iter()
+        .map(|p| p.process_name.to_lowercase())
+        .collect();
+    discovery
+        .discovered_order
+        .iter()
+        .filter(|n| !pinned_lc.contains(*n))
+        .position(|n| n == process_name_lc)
+        .map(|idx| format!("discovered:{}", idx))
+}
+
 /// Resolve a `discovered:N` slot to its current process name (according
 /// to `discovery`), skipping pinned names.
 pub fn discovered_target(
@@ -214,6 +241,31 @@ mod tests {
         // Oldest entries (app0..app17) should be evicted; app18..app49 retained.
         assert_eq!(s.discovered_order.first().unwrap(), "app18.exe");
         assert_eq!(s.discovered_order.last().unwrap(), "app49.exe");
+    }
+
+    #[test]
+    fn target_for_process_resolves_pinned_and_discovered() {
+        let pinned = vec![pin(1, "Discord.exe"), pin(3, "Spotify.exe")];
+        let discovery = DiscoveryState {
+            discovered_order: vec!["firefox.exe".into(), "msedge.exe".into()],
+        };
+        assert_eq!(
+            target_for_process(&pinned, &discovery, "discord.exe"),
+            Some("pinned:1".into())
+        );
+        assert_eq!(
+            target_for_process(&pinned, &discovery, "spotify.exe"),
+            Some("pinned:3".into())
+        );
+        assert_eq!(
+            target_for_process(&pinned, &discovery, "firefox.exe"),
+            Some("discovered:0".into())
+        );
+        assert_eq!(
+            target_for_process(&pinned, &discovery, "msedge.exe"),
+            Some("discovered:1".into())
+        );
+        assert_eq!(target_for_process(&pinned, &discovery, "unknown.exe"), None);
     }
 
     #[test]

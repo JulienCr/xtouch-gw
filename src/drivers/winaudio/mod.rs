@@ -98,6 +98,7 @@ impl Driver for WinAudioDriver {
                                 feedback,
                                 self.config.clone(),
                                 self.discovery.clone(),
+                                self.router.clone(),
                             ));
                         } else {
                             warn!(
@@ -373,17 +374,6 @@ async fn refresh_full_state(
     handle.refresh_sessions();
 }
 
-/// MCU note number for `mute<N>` button on strip `N` (1..=8). The
-/// X-Touch maps mute1→16, mute2→17, …, mute8→23. See
-/// `docs/xtouch-matching.csv`.
-const MUTE_NOTE_BASE: u8 = 15;
-
-/// Resolve the configured master-fader strip (`1..=9`) to a 0-based MIDI
-/// channel: regular strips 1..=8 → channels 0..=7, master strip 9 → 8.
-fn master_fader_channel0(master_fader: u8) -> u8 {
-    master_fader.saturating_sub(1).min(8)
-}
-
 /// Convert a raw 14-bit PitchBend value from the router into a `[0.0, 1.0]`
 /// scalar. The router forwards `ctx.value` verbatim as the integer 14-bit
 /// reading.
@@ -418,32 +408,49 @@ mod normalize_tests {
     }
 }
 
+/// Logical winaudio action key used to dedup events in the coalesce
+/// buffer. Each tuple maps to at most one fader/LED on the active page;
+/// any matching action+target rebinding in YAML is honored without code
+/// changes.
+#[cfg(target_os = "windows")]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+enum FeedbackKey {
+    Master,
+    /// Session slot target string, e.g. `"pinned:1"` or `"discovered:0"`.
+    Session(String),
+}
+
+#[cfg(target_os = "windows")]
+struct PendingFeedback {
+    scalar: f32,
+    mute: bool,
+}
+
 /// Pump `AudioEvent`s emitted by the COM thread into the router's
 /// unified feedback channel as synthetic `"winaudio"` MIDI messages.
 ///
-/// This lets the existing feedback pipeline (anti-echo, fader_setpoint,
-/// state actor, page-aware filtering) handle Windows audio updates the
-/// same way it handles OBS / Voicemeeter feedback — no special-casing
-/// in the router.
-///
-/// `config` and `discovery` are read on each flush tick to resolve
-/// process names to fader slots, so the consumer always reflects the
-/// current pinned/discovered mapping.
+/// **Mapping resolution:** the consumer reads the active page YAML and
+/// the canonical `control_mapping.csv` to resolve which X-Touch control
+/// (and therefore which MIDI channel/note) carries each `winaudio`
+/// action. There is no hardcoded fader/note assumption in the driver —
+/// pages can rebind master/session controls freely and the feedback
+/// follows.
 ///
 /// **Coalescing:** the OS audio engine fires `OnSimpleVolumeChanged`
 /// once per intermediate value while the user drags the Windows mixer
 /// slider. Sending each one as a discrete fader command makes the
 /// motorized fader chase every step instead of jumping to the final
-/// position. We buffer the latest `(scalar, mute)` per channel and
-/// flush at `FLUSH_INTERVAL_MS`, which lets the motor settle on the
-/// final value while keeping perceived latency well under the
-/// 50 ms feel threshold.
+/// position. We buffer the latest `(scalar, mute)` per logical action
+/// and flush at `FLUSH_INTERVAL_MS`, which lets the motor settle on the
+/// final value while keeping perceived latency well under the 50 ms
+/// feel threshold.
 #[cfg(target_os = "windows")]
 async fn run_event_consumer(
     mut event_rx: mpsc::Receiver<com_thread::AudioEvent>,
     feedback_tx: mpsc::Sender<(String, Vec<u8>)>,
     config: Arc<RwLock<WinAudioConfig>>,
     discovery: Arc<RwLock<mapping::DiscoveryState>>,
+    router: Arc<RwLock<Option<Arc<crate::router::Router>>>>,
 ) {
     use std::collections::HashMap;
     use tokio::time::{interval, Duration, MissedTickBehavior};
@@ -454,12 +461,7 @@ async fn run_event_consumer(
 
     debug!("WinAudio event consumer task started");
 
-    // Per-channel buffer of the latest pending feedback. Keyed by the
-    // 0-based MIDI channel of the fader; sub-channel state is the
-    // (scalar, mute_note, mute_bool) triple we'd otherwise have sent.
-    // Inserting overwrites the previous pending value — that's the
-    // coalesce.
-    let mut pending: HashMap<u8, PendingFeedback> = HashMap::new();
+    let mut pending: HashMap<FeedbackKey, PendingFeedback> = HashMap::new();
 
     let mut ticker = interval(Duration::from_millis(FLUSH_INTERVAL_MS));
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -478,52 +480,29 @@ async fn run_event_consumer(
                 if pending.is_empty() {
                     continue;
                 }
-                for (channel0, p) in pending.drain() {
-                    if !emit_volume_and_mute(
-                        &feedback_tx, channel0, p.scalar, p.mute_note, p.mute,
-                    )
-                    .await
-                    {
-                        debug!("WinAudio feedback channel closed, exiting consumer");
-                        return;
-                    }
+                let drained: Vec<(FeedbackKey, PendingFeedback)> = pending.drain().collect();
+                if !flush_pending(&drained, &feedback_tx, &router).await {
+                    debug!("WinAudio feedback channel closed, exiting consumer");
+                    return;
                 }
             }
         }
     }
 }
 
-#[cfg(target_os = "windows")]
-struct PendingFeedback {
-    scalar: f32,
-    mute_note: u8,
-    mute: bool,
-}
-
-/// Resolve an `AudioEvent` to a `(channel0, payload)` and stash it in
-/// the coalesce buffer. Out-of-mapping events (snapshots for sessions
-/// that don't have a fader slot) are dropped silently.
+/// Stash an event into the coalesce buffer. Sessions are keyed by their
+/// resolved YAML target (`pinned:N` / `discovered:N`); unresolvable
+/// sessions are dropped silently.
 #[cfg(target_os = "windows")]
 async fn buffer_event(
-    pending: &mut std::collections::HashMap<u8, PendingFeedback>,
+    pending: &mut std::collections::HashMap<FeedbackKey, PendingFeedback>,
     event: com_thread::AudioEvent,
     config: &Arc<RwLock<WinAudioConfig>>,
     discovery: &Arc<RwLock<mapping::DiscoveryState>>,
 ) {
     match event {
         com_thread::AudioEvent::MasterVolumeChanged { scalar, mute } => {
-            let cfg = config.read().await;
-            let channel0 = master_fader_channel0(cfg.master_fader);
-            let mute_note = cfg.master_mute_note;
-            drop(cfg);
-            pending.insert(
-                channel0,
-                PendingFeedback {
-                    scalar,
-                    mute_note,
-                    mute,
-                },
-            );
+            pending.insert(FeedbackKey::Master, PendingFeedback { scalar, mute });
         },
         com_thread::AudioEvent::SessionVolumeSnapshot {
             process_name_lc,
@@ -532,66 +511,174 @@ async fn buffer_event(
         } => {
             let cfg = config.read().await;
             let disc = discovery.read().await;
-            let slots = mapping::compute_slots(&cfg.pinned_apps, &disc);
-            let Some(binding) = slots
-                .iter()
-                .find(|b| b.process_name.as_deref() == Some(process_name_lc.as_str()))
-            else {
-                drop(disc);
-                drop(cfg);
+            let target = mapping::target_for_process(&cfg.pinned_apps, &disc, &process_name_lc);
+            drop(disc);
+            drop(cfg);
+            let Some(target) = target else {
                 debug!(
                     "session snapshot for '{}' has no fader slot, ignored",
                     process_name_lc
                 );
                 return;
             };
-            let fader = binding.fader;
-            drop(disc);
-            drop(cfg);
-
-            // session<N> on strip N → fader channel N-1, mute Note N+15.
-            let channel0 = fader.saturating_sub(1);
-            let mute_note = MUTE_NOTE_BASE + fader.clamp(1, 8);
             pending.insert(
-                channel0,
-                PendingFeedback {
-                    scalar,
-                    mute_note,
-                    mute,
-                },
+                FeedbackKey::Session(target),
+                PendingFeedback { scalar, mute },
             );
         },
     }
 }
 
-/// Emit a paired PitchBend (volume) + Note On/Off (mute LED) feedback
-/// for a single strip. Returns `false` if the feedback channel is
-/// closed, so the caller can exit its loop.
+/// Resolve every pending event to MIDI bytes (via active page +
+/// `control_mapping.csv`) and emit them. Returns `false` if the
+/// feedback channel is closed.
 #[cfg(target_os = "windows")]
-async fn emit_volume_and_mute(
+async fn flush_pending(
+    drained: &[(FeedbackKey, PendingFeedback)],
     feedback_tx: &mpsc::Sender<(String, Vec<u8>)>,
-    channel0: u8,
-    scalar: f32,
-    mute_note: u8,
-    mute: bool,
+    router: &Arc<RwLock<Option<Arc<crate::router::Router>>>>,
 ) -> bool {
-    let pb = pitchbend_bytes(channel0, scalar);
-    if feedback_tx
-        .send((DRIVER_NAME.to_string(), pb))
-        .await
-        .is_err()
-    {
-        return false;
-    }
-    let note = mute_note_bytes(mute_note, mute);
-    if feedback_tx
-        .send((DRIVER_NAME.to_string(), note))
-        .await
-        .is_err()
-    {
-        return false;
+    let Some(router_arc) = router.read().await.clone() else {
+        debug!(
+            "WinAudio flush: no router wired, dropping {} event(s)",
+            drained.len()
+        );
+        return true;
+    };
+    let Some(page) = router_arc.get_active_page().await else {
+        return true;
+    };
+    let mcu_mode = is_mcu_mode(&router_arc).await;
+
+    let Ok(db) = crate::control_mapping::load_default_mappings() else {
+        warn!("WinAudio flush: control_mapping DB unavailable");
+        return true;
+    };
+
+    for (key, p) in drained {
+        let (volume_action, mute_action, target) = match key {
+            FeedbackKey::Master => ("master_volume", "master_mute", None),
+            FeedbackKey::Session(t) => ("session_volume", "session_mute", Some(t.as_str())),
+        };
+
+        // Volume → PitchBend or CC.
+        if let Some(spec) = resolve_action_spec(&page, volume_action, target, db, mcu_mode) {
+            let bytes = bytes_for_volume(&spec, p.scalar);
+            if !try_send(feedback_tx, bytes).await {
+                return false;
+            }
+        }
+
+        // Mute → Note (LED).
+        if let Some(spec) = resolve_action_spec(&page, mute_action, target, db, mcu_mode) {
+            let bytes = bytes_for_mute(&spec, p.mute);
+            if !try_send(feedback_tx, bytes).await {
+                return false;
+            }
+        }
     }
     true
+}
+
+#[cfg(target_os = "windows")]
+async fn is_mcu_mode(router: &Arc<crate::router::Router>) -> bool {
+    let cfg = router.config.read().await;
+    cfg.xtouch
+        .as_ref()
+        .map(|x| matches!(x.mode, crate::config::XTouchMode::Mcu))
+        .unwrap_or(true)
+}
+
+/// Find the page control bound to `(action, target)` and resolve it to
+/// a hardware MIDI spec via `control_mapping.csv`. Page controls are
+/// checked first, then global controls.
+#[cfg(target_os = "windows")]
+fn resolve_action_spec(
+    page: &crate::config::PageConfig,
+    action: &str,
+    target: Option<&str>,
+    db: &crate::control_mapping::ControlMappingDB,
+    mcu_mode: bool,
+) -> Option<crate::control_mapping::MidiSpec> {
+    let control_id = find_winaudio_control_id(page, action, target)?;
+    db.get_midi_spec(&control_id, mcu_mode)
+}
+
+#[cfg(target_os = "windows")]
+fn find_winaudio_control_id(
+    page: &crate::config::PageConfig,
+    action: &str,
+    target: Option<&str>,
+) -> Option<String> {
+    let controls = page.controls.as_ref()?;
+    controls
+        .iter()
+        .find(|(_, m)| {
+            m.app == DRIVER_NAME
+                && m.action.as_deref() == Some(action)
+                && match target {
+                    None => true,
+                    Some(want) => {
+                        m.params
+                            .as_ref()
+                            .and_then(|p| p.first())
+                            .and_then(|v| v.as_str())
+                            == Some(want)
+                    },
+                }
+        })
+        .map(|(id, _)| id.clone())
+}
+
+#[cfg(target_os = "windows")]
+fn bytes_for_volume(spec: &crate::control_mapping::MidiSpec, scalar: f32) -> Vec<u8> {
+    use crate::control_mapping::MidiSpec;
+    use crate::midi::{convert, MidiMessage};
+    let scalar = scalar.clamp(0.0, 1.0) as f64;
+    match *spec {
+        MidiSpec::PitchBend { channel } => MidiMessage::PitchBend {
+            channel: channel & 0x0F,
+            value: convert::denormalize_to_14bit(scalar),
+        }
+        .to_bytes(),
+        MidiSpec::ControlChange { cc } => MidiMessage::ControlChange {
+            channel: 0,
+            cc,
+            value: convert::denormalize_to_7bit(scalar),
+        }
+        .to_bytes(),
+        MidiSpec::Note { note } => mute_note_bytes(note, scalar > 0.0),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn bytes_for_mute(spec: &crate::control_mapping::MidiSpec, muted: bool) -> Vec<u8> {
+    use crate::control_mapping::MidiSpec;
+    match *spec {
+        MidiSpec::Note { note } => mute_note_bytes(note, muted),
+        // Some surfaces wire mute to a CC indicator instead of a note.
+        MidiSpec::ControlChange { cc } => crate::midi::MidiMessage::ControlChange {
+            channel: 0,
+            cc,
+            value: if muted { 127 } else { 0 },
+        }
+        .to_bytes(),
+        // PitchBend doesn't make sense for mute LEDs, but emit something
+        // sane rather than panicking.
+        MidiSpec::PitchBend { channel } => crate::midi::MidiMessage::PitchBend {
+            channel: channel & 0x0F,
+            value: if muted { 16383 } else { 0 },
+        }
+        .to_bytes(),
+    }
+}
+
+#[cfg(target_os = "windows")]
+async fn try_send(feedback_tx: &mpsc::Sender<(String, Vec<u8>)>, raw: Vec<u8>) -> bool {
+    feedback_tx
+        .send((DRIVER_NAME.to_string(), raw))
+        .await
+        .is_ok()
 }
 
 /// X-Touch button-LED convention: always `NoteOn`, with velocity 127 to
@@ -603,14 +690,6 @@ fn mute_note_bytes(note: u8, muted: bool) -> Vec<u8> {
         channel: 0,
         note,
         velocity: if muted { 127 } else { 0 },
-    }
-    .to_bytes()
-}
-
-fn pitchbend_bytes(channel0: u8, scalar: f32) -> Vec<u8> {
-    crate::midi::MidiMessage::PitchBend {
-        channel: channel0 & 0x0F,
-        value: crate::midi::convert::denormalize_to_14bit(scalar.clamp(0.0, 1.0) as f64),
     }
     .to_bytes()
 }
