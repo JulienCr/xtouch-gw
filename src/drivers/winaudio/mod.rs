@@ -382,16 +382,6 @@ fn master_fader_channel0(master_fader: u8) -> u8 {
     master_fader.saturating_sub(1).min(8)
 }
 
-/// Resolve which mute button (Note number on channel 0) carries the
-/// master-mute LED. Mirrors `master_fader_channel0`: regular strips
-/// 1..=8 → mute notes 16..=23. The dedicated master strip (9) has no
-/// dedicated mute button on the X-Touch surface, so we fall back to
-/// `mute8` in that case.
-fn master_mute_note(master_fader: u8) -> u8 {
-    let strip = master_fader.clamp(1, 8);
-    MUTE_NOTE_BASE + strip
-}
-
 /// Convert a raw 14-bit PitchBend value from the router into a `[0.0, 1.0]`
 /// scalar. The router forwards `ctx.value` verbatim as the integer 14-bit
 /// reading.
@@ -448,9 +438,10 @@ async fn run_event_consumer(
     while let Some(event) = event_rx.recv().await {
         match event {
             com_thread::AudioEvent::MasterVolumeChanged { scalar, mute } => {
-                let master_fader = config.read().await.master_fader;
-                let channel0 = master_fader_channel0(master_fader);
-                let mute_note = master_mute_note(master_fader);
+                let cfg = config.read().await;
+                let channel0 = master_fader_channel0(cfg.master_fader);
+                let mute_note = cfg.master_mute_note;
+                drop(cfg);
                 if !emit_volume_and_mute(&feedback_tx, channel0, scalar, mute_note, mute).await {
                     debug!("WinAudio feedback channel closed, exiting consumer");
                     break;
@@ -522,23 +513,17 @@ async fn emit_volume_and_mute(
     true
 }
 
-/// MCU mute-LED convention: Note On (velocity 0x7F) = lit (muted), Note
-/// Off = unlit. Buttons live on MIDI channel 0.
+/// X-Touch button-LED convention: always `NoteOn`, with velocity 127 to
+/// light and velocity 0 to extinguish. The hardware treats `NoteOff` as
+/// a button-release event, not an LED-off — see `xtouch.rs::set_button_led`
+/// for the canonical comment.
 fn mute_note_bytes(note: u8, muted: bool) -> Vec<u8> {
-    let msg = if muted {
-        crate::midi::MidiMessage::NoteOn {
-            channel: 0,
-            note,
-            velocity: 0x7F,
-        }
-    } else {
-        crate::midi::MidiMessage::NoteOff {
-            channel: 0,
-            note,
-            velocity: 0,
-        }
-    };
-    msg.to_bytes()
+    crate::midi::MidiMessage::NoteOn {
+        channel: 0,
+        note,
+        velocity: if muted { 127 } else { 0 },
+    }
+    .to_bytes()
 }
 
 fn pitchbend_bytes(channel0: u8, scalar: f32) -> Vec<u8> {

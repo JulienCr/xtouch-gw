@@ -293,14 +293,33 @@ fn run_com_loop(cmd_rx: &mut mpsc::Receiver<AudioCmd>, event_tx: mpsc::Sender<Au
                 }
             },
             AudioCmd::ToggleSessionMute { process_name_lc } => {
+                // Sessions have no callback equivalent to
+                // `IAudioEndpointVolumeCallback`, so the mute LED would
+                // never refresh unless we push a snapshot here ourselves.
                 if let Some(mgr) = session_mgr.as_ref() {
                     match mgr.enumerate() {
                         Ok(sessions) => {
                             if let Some(s) =
                                 super::mapping::find_session(&sessions, &process_name_lc)
                             {
-                                if let Err(e) = toggle_session_mute(s) {
-                                    warn!("ToggleSessionMute({}) failed: {}", process_name_lc, e);
+                                match toggle_session_mute(s) {
+                                    Ok(()) => {
+                                        let scalar =
+                                            unsafe { s.volume.GetMasterVolume().unwrap_or(0.0) };
+                                        let mute = unsafe {
+                                            s.volume.GetMute().map(|b| b.as_bool()).unwrap_or(false)
+                                        };
+                                        let _ =
+                                            event_tx.try_send(AudioEvent::SessionVolumeSnapshot {
+                                                process_name_lc: process_name_lc.clone(),
+                                                scalar,
+                                                mute,
+                                            });
+                                    },
+                                    Err(e) => warn!(
+                                        "ToggleSessionMute({}) failed: {}",
+                                        process_name_lc, e
+                                    ),
                                 }
                             }
                         },

@@ -414,7 +414,7 @@ pages:
       mute5:  { app: "winaudio", action: "session_mute",   params: ["discovered:1"] }
       mute6:  { app: "winaudio", action: "session_mute",   params: ["discovered:2"] }
       mute7:  { app: "winaudio", action: "session_mute",   params: ["discovered:3"] }
-      mute8:  { app: "winaudio", action: "master_mute" }
+      flip:   { app: "winaudio", action: "master_mute" }
 
   - name: "Lighting"
     lcd:
