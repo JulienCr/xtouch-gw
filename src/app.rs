@@ -196,9 +196,9 @@ pub async fn run_app(
         editor: editor_state,
     });
 
-    if let Some(obs_driver) = obs_driver {
+    if let Some(obs_driver) = obs_driver.as_ref() {
         driver_setup::register_obs_driver(
-            &obs_driver,
+            obs_driver,
             &router,
             &control_db,
             &led_tx,
@@ -208,16 +208,15 @@ pub async fn run_app(
         .await;
     }
 
-    // Register the Windows audio fallback driver (no-op on non-Windows).
+    // Register the Windows audio driver (no-op on non-Windows, gated on config).
     driver_setup::register_winaudio_driver(&config, &router, &feedback_tx).await;
 
-    drop(feedback_tx); // Original sender dropped; clones live inside drivers.
+    // Register the Windows media transport driver (play/pause/next/previous).
+    driver_setup::register_winmedia_driver(&config, &router, &feedback_tx).await;
 
-    // Voicemeeter presence detector → page availability + auto-switch.
-    if let Some(vm_cfg) = config.voicemeeter_detection.as_ref().filter(|c| c.enabled) {
-        spawn_voicemeeter_detector(&router, vm_cfg);
-    }
-
+    // Keep `feedback_tx` alive for late driver registration on profile
+    // switches (see `handle_config_reload`). The receiver `feedback_rx` is
+    // owned by the main loop; the channel stays open until shutdown.
     debug!("All drivers registered and initialized");
 
     // Spawn Stream Deck API server task
@@ -252,6 +251,9 @@ pub async fn run_app(
     };
 
     info!("Ready to process MIDI events!");
+
+    // Populate the tray's profile submenu now that everything is up.
+    publish_profiles_list(&tray_update_tx, &profile_store);
 
     // Spawn stdin reader on a blocking thread (stdin is synchronous)
     let (stdin_tx, mut stdin_rx) = mpsc::unbounded_channel::<String>();
@@ -333,7 +335,25 @@ pub async fn run_app(
 
             // Handle config reload
             Some(new_config) = config_watcher.next_config() => {
-                handle_config_reload(&router, &xtouch, new_config, &mut gamepad_mapper, &api_state).await;
+                let deps = ReloadDeps {
+                    feedback_tx: &feedback_tx,
+                    tray_handler: &tray_handler,
+                    obs_driver: obs_driver.as_ref(),
+                    control_db: &control_db,
+                    led_tx: &led_tx,
+                };
+                handle_config_reload(
+                    &router,
+                    &xtouch,
+                    new_config,
+                    &mut gamepad_mapper,
+                    &api_state,
+                    &deps,
+                ).await;
+                // Keep the tray's profile checkmark in sync — covers both
+                // tray-initiated switches and external ones (web editor,
+                // direct profile file edit, etc.).
+                publish_profiles_list(&tray_update_tx, &profile_store);
                 // Best-effort: notify editor live subscribers.
                 let _ = live_tx.send(crate::event_bus::LiveEvent::ConfigReloaded {
                     ts: crate::event_bus::now_ms(),
@@ -349,7 +369,7 @@ pub async fn run_app(
 
             // Handle tray commands
             Some(cmd) = tray_cmd_rx.recv() => {
-                if handle_tray_command(&router, cmd).await {
+                if handle_tray_command(&router, &profile_store, cmd).await {
                     break;
                 }
             }
@@ -410,7 +430,11 @@ fn build_editor_state(
 }
 
 /// Handle a tray command. Returns `true` if shutdown was requested.
-async fn handle_tray_command(router: &Arc<Router>, cmd: crate::tray::TrayCommand) -> bool {
+async fn handle_tray_command(
+    router: &Arc<Router>,
+    profile_store: &Arc<crate::config::profiles::ProfileStore>,
+    cmd: crate::tray::TrayCommand,
+) -> bool {
     debug!("Tray command received: {:?}", cmd);
     match cmd {
         crate::tray::TrayCommand::ConnectObs => {
@@ -435,11 +459,81 @@ async fn handle_tray_command(router: &Arc<Router>, cmd: crate::tray::TrayCommand
             }
             false
         },
+        crate::tray::TrayCommand::SwitchProfile(name) => {
+            info!("Switching to profile '{}' from tray", name);
+            // The mirror to watched config.yaml triggers the ConfigWatcher,
+            // which feeds `handle_config_reload` on the next loop iteration —
+            // that's where drivers re-sync and the tray menu's checkmark gets
+            // refreshed, so we don't republish here.
+            if let Err(e) = profile_store.set_active(&name) {
+                warn!("Failed to activate profile '{}': {}", name, e);
+            }
+            false
+        },
         crate::tray::TrayCommand::Shutdown => {
             info!("Shutdown requested from tray");
             true
         },
     }
+}
+
+/// Collect every app name referenced by control mappings in `config`.
+/// Used during profile switches to decide which registered drivers are
+/// still needed and which can be unregistered.
+fn referenced_apps(config: &AppConfig) -> std::collections::HashSet<String> {
+    let mut apps = std::collections::HashSet::new();
+    for page in &config.pages {
+        if let Some(controls) = &page.controls {
+            for mapping in controls.values() {
+                apps.insert(mapping.app.clone());
+            }
+        }
+    }
+    if let Some(global) = &config.pages_global {
+        if let Some(controls) = &global.controls {
+            for mapping in controls.values() {
+                apps.insert(mapping.app.clone());
+            }
+        }
+    }
+    apps
+}
+
+/// Unregister any driver the new config no longer references. Stops
+/// background work (OBS reconnection loop, MIDI bridge readers, WinAudio
+/// COM thread) so dropped profiles don't keep polling.
+async fn prune_unused_drivers(router: &Arc<Router>, new_config: &AppConfig) {
+    let needed = referenced_apps(new_config);
+    let registered = router.list_drivers().await;
+    for name in registered {
+        if needed.contains(&name) {
+            continue;
+        }
+        info!(
+            "Unregistering driver '{}' (no longer referenced by active profile)",
+            name
+        );
+        if let Err(e) = router.unregister_driver(&name).await {
+            warn!("Failed to unregister driver '{}': {}", name, e);
+        }
+    }
+}
+
+/// Publish the current profiles list + active profile to the tray UI.
+/// Best-effort: silently drops if the tray channel is full or disconnected.
+fn publish_profiles_list(
+    tray_update_tx: &crossbeam::channel::Sender<crate::tray::TrayUpdate>,
+    profile_store: &crate::config::profiles::ProfileStore,
+) {
+    let profiles = match profile_store.list() {
+        Ok(metas) => metas.into_iter().map(|m| m.name).collect(),
+        Err(e) => {
+            warn!("Failed to list profiles for tray: {}", e);
+            Vec::new()
+        },
+    };
+    let active = profile_store.active().ok();
+    let _ = tray_update_tx.try_send(crate::tray::TrayUpdate::ProfilesList { profiles, active });
 }
 
 /// Perform shutdown cleanup: stop drivers, save state, reset hardware.
@@ -464,36 +558,6 @@ async fn shutdown_cleanup(router: &Arc<Router>, xtouch: &Arc<XTouchDriver>) -> R
     }
 
     Ok(())
-}
-
-/// Build the Voicemeeter detector and wire it into the router.
-fn spawn_voicemeeter_detector(
-    router: &Arc<Router>,
-    cfg: &crate::config::VoicemeeterDetectionConfig,
-) {
-    use crate::router::voicemeeter_detector::{ProcessScanner, VmDetector};
-    use std::time::Duration;
-
-    #[cfg(target_os = "windows")]
-    let scanner: Arc<dyn ProcessScanner> =
-        Arc::new(crate::router::voicemeeter_detector::Win32ProcessScanner);
-    #[cfg(not(target_os = "windows"))]
-    let scanner: Arc<dyn ProcessScanner> =
-        Arc::new(crate::router::voicemeeter_detector::NoopProcessScanner);
-
-    // Detector drops at end of scope; tokio detaches its `JoinHandle` on
-    // drop, and the watch sender lives inside the spawned task, so the
-    // watcher subscription below keeps publishing until app shutdown.
-    let detector = VmDetector::spawn(
-        scanner,
-        cfg.process_names.clone(),
-        Duration::from_millis(cfg.poll_interval_ms),
-    );
-    router.spawn_voicemeeter_watcher(detector.subscribe());
-    info!(
-        "Voicemeeter detector running (poll {} ms, processes: {:?})",
-        cfg.poll_interval_ms, cfg.process_names
-    );
 }
 
 /// Handle feedback from an application, forwarding to X-Touch when appropriate.
@@ -571,6 +635,18 @@ async fn handle_app_feedback(
     }
 }
 
+/// Bundle of references handed to `handle_config_reload` so it can
+/// register or re-register drivers introduced by a profile swap.
+struct ReloadDeps<'a> {
+    feedback_tx: &'a mpsc::Sender<(String, Vec<u8>)>,
+    tray_handler: &'a Arc<crate::tray::TrayMessageHandler>,
+    /// `None` when the initial profile had no `obs:` block. In that case
+    /// we cannot late-register OBS on a profile switch; restart required.
+    obs_driver: Option<&'a Arc<ObsDriver>>,
+    control_db: &'a Arc<crate::control_mapping::ControlMappingDB>,
+    led_tx: &'a mpsc::Sender<Vec<u8>>,
+}
+
 /// Handle configuration file reload, updating display, gamepad, and API state.
 async fn handle_config_reload(
     router: &Arc<Router>,
@@ -578,11 +654,49 @@ async fn handle_config_reload(
     new_config: AppConfig,
     gamepad_mapper: &mut Option<input::gamepad::GamepadMapper>,
     api_state: &Arc<api::ApiState>,
+    deps: &ReloadDeps<'_>,
 ) {
     info!("Configuration file changed, reloading...");
 
     // Extract gamepad config before moving new_config into update_config
     let new_gamepad_config = new_config.gamepad.clone();
+
+    // Profile switches can introduce drivers absent from the previous
+    // profile (e.g. winaudio when going twitch → basic). Register the
+    // missing ones BEFORE update_config runs its post-swap refresh so
+    // pages referencing the new drivers find them on the very first
+    // dispatch. Already-registered drivers are skipped (idempotent).
+    driver_setup::register_midi_bridge_drivers(
+        &new_config,
+        router,
+        deps.feedback_tx,
+        deps.tray_handler,
+    )
+    .await;
+    driver_setup::register_winaudio_driver(&new_config, router, deps.feedback_tx).await;
+    driver_setup::register_winmedia_driver(&new_config, router, deps.feedback_tx).await;
+    if let Some(obs_driver) = deps.obs_driver {
+        // Re-register OBS only when the new profile actually uses it.
+        // OBS init() re-arms its shutdown flag, so the same Arc survives
+        // unregister/register cycles cleanly.
+        if referenced_apps(&new_config).contains(crate::state::AppKey::Obs.as_str()) {
+            driver_setup::register_obs_driver(
+                obs_driver,
+                router,
+                deps.control_db,
+                deps.led_tx,
+                api_state,
+                deps.tray_handler,
+            )
+            .await;
+        }
+    }
+
+    // Drop drivers the new profile no longer references so their
+    // background tasks (OBS reconnect loop, COM thread, MIDI readers)
+    // stop. Done BEFORE update_config so the post-swap refresh_page
+    // doesn't try to dispatch to drivers about to be torn down.
+    prune_unused_drivers(router, &new_config).await;
 
     match router.update_config(new_config).await {
         Ok(()) => {

@@ -134,6 +134,12 @@ impl Driver for ObsDriver {
     async fn init(&self, ctx: ExecutionContext) -> Result<()> {
         info!("Initializing OBS WebSocket driver");
 
+        // Re-arm shutdown flag in case this driver instance was previously
+        // unregistered (e.g. profile switch away from a profile using OBS).
+        // Without this reset, the background reconnection task spawned below
+        // would observe a stale `true` and exit immediately.
+        *self.shutdown_flag.lock() = false;
+
         // Store activity tracker if available
         if let Some(tracker) = ctx.activity_tracker {
             *self.activity_tracker.write() = Some(tracker);

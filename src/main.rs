@@ -2,7 +2,7 @@
 //!
 //! Gateway to control Voicemeeter, QLC+, and OBS from Behringer X-Touch MIDI controller.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
@@ -40,6 +40,10 @@ struct Args {
     /// Path to configuration file (overrides auto-detection)
     #[arg(short, long)]
     config: Option<String>,
+
+    /// Profile name to load on startup (skips the interactive selector)
+    #[arg(short, long)]
+    profile: Option<String>,
 
     /// Log level (error, warn, info, debug, trace)
     #[arg(short, long, env = "LOG_LEVEL", default_value = "info")]
@@ -130,6 +134,14 @@ async fn main() -> Result<()> {
     if let Err(e) = profile_store.ensure_initialized() {
         warn!("Failed to initialize profile store: {}", e);
     }
+
+    // Pick the profile to use this session and mirror it into the watched
+    // config.yaml before the watcher reads it.
+    let chosen_profile = select_profile(&profile_store, args.profile.as_deref())?;
+    profile_store
+        .set_active(&chosen_profile)
+        .with_context(|| format!("Failed to activate profile '{}'", chosen_profile))?;
+    info!("Active profile: {}", chosen_profile);
     // Build the live event bus (broadcast channel) shared across drivers and
     // the editor live WS. Buffer holds 256 events; lagging subscribers will
     // see RecvError::Lagged and resync.
@@ -208,6 +220,66 @@ async fn main() -> Result<()> {
 
     info!("XTouch GW shutdown complete");
     Ok(())
+}
+
+/// Pick a profile to load this session.
+///
+/// If `requested` is supplied, validates that the profile exists and returns
+/// its name. Otherwise displays an interactive console menu (arrow keys +
+/// Enter) listing all profiles found in the store, with the previously-active
+/// profile pre-selected for fast confirmation.
+///
+/// Falls back to `requested` from `_active.txt` when stdin is not a TTY (e.g.
+/// when running under a pipe / nohup) — in that case, an explicit `--profile`
+/// flag is required.
+fn select_profile(
+    store: &crate::config::profiles::ProfileStore,
+    requested: Option<&str>,
+) -> Result<String> {
+    let metas = store.list().context("Failed to list profiles")?;
+    if metas.is_empty() {
+        anyhow::bail!(
+            "No profiles found in `profiles/`. Create one (e.g. `profiles/default.yaml`) and retry."
+        );
+    }
+    let names: Vec<String> = metas.iter().map(|m| m.name.clone()).collect();
+
+    if let Some(name) = requested {
+        if names.iter().any(|n| n == name) {
+            return Ok(name.to_string());
+        }
+        anyhow::bail!(
+            "Profile '{}' not found. Available profiles: {}",
+            name,
+            names.join(", ")
+        );
+    }
+
+    let active = store.active().ok();
+    let default_idx = active
+        .as_deref()
+        .and_then(|a| names.iter().position(|n| n == a))
+        .unwrap_or(0);
+
+    use dialoguer::{theme::ColorfulTheme, Select};
+    let prompt = format!(
+        "Select profile (Enter to confirm{}):",
+        active
+            .as_deref()
+            .map(|a| format!(", default: {}", a))
+            .unwrap_or_default()
+    );
+    let selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt(prompt)
+        .items(&names)
+        .default(default_idx)
+        .interact_opt()
+        .context("Failed to read profile selection from stdin (no TTY? pass --profile)")?;
+
+    match selection {
+        Some(idx) => Ok(names[idx].clone()),
+        None => anyhow::bail!("Profile selection aborted"),
+    }
 }
 
 /// Handle CLI-only modes that exit immediately (sniffer, list-ports, etc.).

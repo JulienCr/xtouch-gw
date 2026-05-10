@@ -70,6 +70,25 @@ impl super::Router {
         drivers.keys().cloned().collect()
     }
 
+    /// Remove a driver from the dispatch map and shut it down.
+    ///
+    /// Used during profile switches to drop drivers the new config no
+    /// longer references (e.g. OBS when switching to a profile with no
+    /// `obs:` block) so background work like the OBS reconnection loop
+    /// stops. Returns the unregistered driver `Arc` so callers can drop
+    /// it explicitly if needed; ignored otherwise.
+    pub async fn unregister_driver(&self, name: &str) -> Result<Option<Arc<dyn Driver>>> {
+        let removed = self.drivers.write().await.remove(name);
+        let Some(driver) = removed else {
+            return Ok(None);
+        };
+        debug!("Unregistering driver '{}'...", name);
+        if let Err(e) = driver.shutdown().await {
+            warn!("Driver '{}' shutdown failed during unregister: {}", name, e);
+        }
+        Ok(Some(driver))
+    }
+
     /// Shutdown all registered drivers
     pub async fn shutdown_all_drivers(&self) -> Result<()> {
         debug!("Shutting down all drivers...");

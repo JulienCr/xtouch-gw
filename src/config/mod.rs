@@ -27,41 +27,10 @@ pub struct AppConfig {
     pub tray: Option<TrayConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pages_global: Option<GlobalPageDefaults>,
-    /// Voicemeeter process detector — when configured, pages with
-    /// `requires_voicemeeter: true` are skipped while VM is absent and
-    /// the page tagged `auto_when_voicemeeter_absent: true` becomes
-    /// the active fallback.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub voicemeeter_detection: Option<VoicemeeterDetectionConfig>,
     /// Windows audio (master + per-app session) configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub winaudio: Option<WinAudioConfig>,
     pub pages: Vec<PageConfig>,
-}
-
-/// Voicemeeter presence detection configuration.
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
-pub struct VoicemeeterDetectionConfig {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    #[serde(default = "default_voicemeeter_process_names")]
-    pub process_names: Vec<String>,
-    #[serde(default = "default_voicemeeter_poll_interval_ms")]
-    pub poll_interval_ms: u64,
-}
-
-fn default_voicemeeter_process_names() -> Vec<String> {
-    vec![
-        "voicemeeter.exe".to_string(),
-        "voicemeeter8x64.exe".to_string(),
-        "voicemeeterpro.exe".to_string(),
-        "voicemeeterbanana.exe".to_string(),
-        "voicemeeterpotato.exe".to_string(),
-    ]
-}
-
-fn default_voicemeeter_poll_interval_ms() -> u64 {
-    5000
 }
 
 /// Windows audio driver configuration.
@@ -314,14 +283,6 @@ pub struct PageConfig {
     pub passthrough: Option<PassthroughConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub passthroughs: Option<Vec<PassthroughConfig>>,
-    /// When true, this page is skipped in prev/next navigation while
-    /// Voicemeeter is not detected.
-    #[serde(default)]
-    pub requires_voicemeeter: bool,
-    /// When true, this page becomes the auto-active fallback while
-    /// Voicemeeter is not detected. Only one page may have this flag set.
-    #[serde(default)]
-    pub auto_when_voicemeeter_absent: bool,
 }
 
 /// LED indicator configuration
@@ -602,21 +563,6 @@ impl AppConfig {
             }
         }
 
-        // Voicemeeter fallback: at most one page may carry the
-        // `auto_when_voicemeeter_absent` flag.
-        let auto_pages: Vec<&str> = self
-            .pages
-            .iter()
-            .filter(|p| p.auto_when_voicemeeter_absent)
-            .map(|p| p.name.as_str())
-            .collect();
-        if auto_pages.len() > 1 {
-            anyhow::bail!(
-                "Multiple pages marked auto_when_voicemeeter_absent: {:?} (only one is allowed)",
-                auto_pages
-            );
-        }
-
         // Validate winaudio pinned_apps slot range and uniqueness.
         if let Some(winaudio) = &self.winaudio {
             let mut seen = std::collections::HashSet::new();
@@ -658,8 +604,8 @@ impl AppConfig {
         }
 
         // Validate app name references a configured app
-        // (obs and winaudio are non-MIDI apps that don't need a port entry).
-        const NON_MIDI_APPS: &[&str] = &["obs", "winaudio"];
+        // (obs, winaudio, winmedia are non-MIDI apps that don't need a port entry).
+        const NON_MIDI_APPS: &[&str] = &["obs", "winaudio", "winmedia"];
         if !NON_MIDI_APPS.contains(&mapping.app.as_str()) && !midi_app_names.contains(&mapping.app)
         {
             anyhow::bail!(
@@ -827,30 +773,7 @@ mod tests {
         let parsed: AppConfig = serde_yaml::from_str(&yaml).expect("YAML parse failed");
         parsed.validate().expect("config validation failed");
 
-        let vm = parsed
-            .voicemeeter_detection
-            .as_ref()
-            .expect("voicemeeter_detection block expected in example");
-        assert!(vm.enabled);
-        assert_eq!(vm.poll_interval_ms, 5000);
-
         let win = parsed.winaudio.as_ref().expect("winaudio block expected");
         assert_eq!(win.pinned_apps.len(), 3);
-
-        let auto_pages: Vec<&str> = parsed
-            .pages
-            .iter()
-            .filter(|p| p.auto_when_voicemeeter_absent)
-            .map(|p| p.name.as_str())
-            .collect();
-        assert_eq!(auto_pages, ["Windows Audio"]);
-
-        let req_pages: Vec<&str> = parsed
-            .pages
-            .iter()
-            .filter(|p| p.requires_voicemeeter)
-            .map(|p| p.name.as_str())
-            .collect();
-        assert_eq!(req_pages, ["Voicemeeter+QLC"]);
     }
 }

@@ -121,9 +121,11 @@ pub mod console;
 pub mod midibridge;
 pub mod obs;
 pub mod winaudio;
+pub mod winmedia;
 
 // Re-export commonly used drivers
 pub use console::ConsoleDriver;
 pub use midibridge::MidiBridgeDriver;
 pub use obs::ObsDriver;
 pub use winaudio::WinAudioDriver;
+pub use winmedia::WinMediaDriver;

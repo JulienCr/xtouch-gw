@@ -29,7 +29,6 @@ fn make_test_config(pages: Vec<PageConfig>) -> AppConfig {
         paging: None,
         gamepad: None,
         pages_global: None,
-        voicemeeter_detection: None,
         winaudio: None,
         pages,
         tray: None,

@@ -13,12 +13,17 @@ use crate::control_mapping::ControlMappingDB;
 use crate::drivers::midibridge::MidiBridgeDriver;
 use crate::drivers::obs::ObsDriver;
 use crate::drivers::winaudio::WinAudioDriver;
+use crate::drivers::winmedia::WinMediaDriver;
 use crate::drivers::Driver;
 use crate::router::Router;
 use crate::xtouch::XTouchDriver;
 use crate::{api, control_mapping, obs_indicators};
 
 /// Register all MIDI bridge drivers from config.
+///
+/// Idempotent: skips drivers already registered with the router (e.g. on
+/// profile reload). Lets us re-call after each config swap to pick up apps
+/// introduced by the new profile without re-initializing existing ones.
 pub async fn register_midi_bridge_drivers(
     config: &AppConfig,
     router: &Arc<Router>,
@@ -30,6 +35,14 @@ pub async fn register_midi_bridge_drivers(
     };
 
     for app_config in apps {
+        if router.get_driver(&app_config.name).await.is_some() {
+            debug!(
+                "MIDI bridge driver '{}' already registered — skipping",
+                app_config.name
+            );
+            continue;
+        }
+
         let driver = Arc::new(MidiBridgeDriver::new(
             app_config.output_port.clone().unwrap_or_default(),
             app_config.input_port.clone().unwrap_or_default(),
@@ -96,6 +109,10 @@ pub async fn load_control_database() -> Arc<ControlMappingDB> {
 }
 
 /// Register the OBS driver with indicator callback and tray status.
+///
+/// Idempotent: if the OBS driver is already in the router (e.g. on profile
+/// reload), this is a no-op. The driver's `init()` re-arms its shutdown
+/// flag so re-registration after a previous unregister works correctly.
 pub async fn register_obs_driver(
     obs_driver: &Arc<ObsDriver>,
     router: &Arc<Router>,
@@ -104,6 +121,15 @@ pub async fn register_obs_driver(
     api_state: &Arc<api::ApiState>,
     tray_handler: &Arc<crate::tray::TrayMessageHandler>,
 ) {
+    if router
+        .get_driver(crate::state::AppKey::Obs.as_str())
+        .await
+        .is_some()
+    {
+        debug!("OBS driver already registered — skipping");
+        return;
+    }
+
     let indicator_callback = obs_indicators::build_indicator_callback(
         router.clone(),
         control_db.clone(),
@@ -166,6 +192,15 @@ pub async fn register_winaudio_driver(
         return;
     }
 
+    if router
+        .get_driver(crate::drivers::winaudio::DRIVER_NAME)
+        .await
+        .is_some()
+    {
+        debug!("WinAudio driver already registered — skipping");
+        return;
+    }
+
     let winaudio_cfg = config
         .winaudio
         .clone()
@@ -184,6 +219,68 @@ pub async fn register_winaudio_driver(
         Ok(_) => info!("Registered WinAudio driver"),
         Err(e) => warn!(
             "Failed to register WinAudio driver (will continue without it): {}",
+            e
+        ),
+    }
+}
+
+/// Register the WinMedia driver if any control mapping references it.
+///
+/// Idempotent: skips if already in the router or no page references
+/// `app: "winmedia"`. The driver itself is cross-platform (no-op on
+/// non-Windows) so YAML routing and editor UX work uniformly across
+/// hosts.
+///
+/// Wires `feedback_tx` and the router up-front so the SMTC poller can
+/// emit play-LED feedback through the unified router pipeline.
+pub async fn register_winmedia_driver(
+    config: &AppConfig,
+    router: &Arc<Router>,
+    feedback_tx: &mpsc::Sender<(String, Vec<u8>)>,
+) {
+    let referenced = config.pages.iter().any(|p| {
+        p.controls
+            .as_ref()
+            .map(|m| {
+                m.values()
+                    .any(|c| c.app == crate::drivers::winmedia::DRIVER_NAME)
+            })
+            .unwrap_or(false)
+    }) || config
+        .pages_global
+        .as_ref()
+        .and_then(|g| g.controls.as_ref())
+        .map(|m| {
+            m.values()
+                .any(|c| c.app == crate::drivers::winmedia::DRIVER_NAME)
+        })
+        .unwrap_or(false);
+
+    if !referenced {
+        debug!("WinMedia driver unreferenced — skipping registration");
+        return;
+    }
+
+    if router
+        .get_driver(crate::drivers::winmedia::DRIVER_NAME)
+        .await
+        .is_some()
+    {
+        debug!("WinMedia driver already registered — skipping");
+        return;
+    }
+
+    let driver = Arc::new(WinMediaDriver::new());
+    driver.set_router(router.clone()).await;
+    driver.set_feedback_sender(feedback_tx.clone()).await;
+
+    match router
+        .register_driver(crate::drivers::winmedia::DRIVER_NAME.to_string(), driver)
+        .await
+    {
+        Ok(_) => info!("Registered WinMedia driver"),
+        Err(e) => warn!(
+            "Failed to register WinMedia driver (will continue without it): {}",
             e
         ),
     }
