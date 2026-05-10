@@ -1,10 +1,15 @@
 //! Action parameter parsing for the WinAudio driver.
 //!
-//! Session-targeted actions accept a single string parameter of the form
-//! `"pinned:<N>"` or `"discovered:<N>"` where `N` is a 1-based slot for
-//! pinned apps and a 0-based index for discovery slots. The slot index is
-//! resolved at runtime by the driver's mapping layer to a concrete
-//! Windows audio session.
+//! Session-targeted actions accept a single string parameter:
+//!   * `"pinned:<N>"` — slot fixed by `winaudio.pinned_apps[i].fader` (1..=8).
+//!   * `"discovered:<N>"` — legacy 0-based index into the discovery FIFO.
+//!   * `"auto"` — strip is *free* to receive a detected app. The driver
+//!     resolves it at runtime based on the control's position among other
+//!     `auto`-bound winaudio controls of the same action on the active
+//!     page (declaration order maps to discovery FIFO order).
+//!
+//! `"auto"` is the recommended form; `"discovered:N"` remains for
+//! backwards compatibility with older profiles.
 
 use anyhow::{anyhow, Result};
 use serde_json::Value;
@@ -14,20 +19,31 @@ pub enum SessionTarget {
     /// Pinned slot, 1..=8 (matches the fader number declared in YAML).
     Pinned(u8),
     /// Discovery slot, 0-based, used to index into the FIFO list of
-    /// auto-discovered sessions that aren't pinned.
+    /// auto-discovered sessions that aren't pinned. Legacy form.
     Discovered(u8),
+    /// Strip is auto-bound: the driver picks the next available
+    /// detected app at runtime, based on the YAML declaration order of
+    /// `auto`-bound controls for the same action on the active page.
+    Auto,
 }
 
 pub fn parse_session_target(params: &[Value]) -> Result<SessionTarget> {
     let raw = params
         .first()
         .ok_or_else(|| {
-            anyhow!("session action requires a target parameter (pinned:N or discovered:N)")
+            anyhow!("session action requires a target parameter (auto, pinned:N or discovered:N)")
         })?
         .as_str()
-        .ok_or_else(|| anyhow!("session target must be a string (pinned:N or discovered:N)"))?;
+        .ok_or_else(|| {
+            anyhow!("session target must be a string (auto, pinned:N or discovered:N)")
+        })?;
 
-    let (kind, idx) = raw
+    let trimmed = raw.trim();
+    if trimmed.eq_ignore_ascii_case("auto") {
+        return Ok(SessionTarget::Auto);
+    }
+
+    let (kind, idx) = trimmed
         .split_once(':')
         .ok_or_else(|| anyhow!("session target '{}' missing ':' separator", raw))?;
 
@@ -50,7 +66,7 @@ pub fn parse_session_target(params: &[Value]) -> Result<SessionTarget> {
             Ok(SessionTarget::Discovered(n))
         },
         other => Err(anyhow!(
-            "unknown session target kind '{}': expected 'pinned' or 'discovered'",
+            "unknown session target kind '{}': expected 'auto', 'pinned' or 'discovered'",
             other
         )),
     }
@@ -71,6 +87,20 @@ mod tests {
     fn parses_discovered() {
         let p = parse_session_target(&[json!("discovered:2")]).unwrap();
         assert_eq!(p, SessionTarget::Discovered(2));
+    }
+
+    #[test]
+    fn parses_auto() {
+        let p = parse_session_target(&[json!("auto")]).unwrap();
+        assert_eq!(p, SessionTarget::Auto);
+    }
+
+    #[test]
+    fn parses_auto_case_insensitive() {
+        let p = parse_session_target(&[json!("AUTO")]).unwrap();
+        assert_eq!(p, SessionTarget::Auto);
+        let p = parse_session_target(&[json!("Auto")]).unwrap();
+        assert_eq!(p, SessionTarget::Auto);
     }
 
     #[test]

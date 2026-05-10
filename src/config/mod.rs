@@ -51,6 +51,10 @@ pub struct PinnedApp {
     /// Optional friendly label rendered on the LCD; falls back to process_name.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    /// Optional explicit LCD color. When unset, the driver assigns a
+    /// color from the same 1..=7 cycle as discovered apps.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<LcdColor>,
 }
 
 /// MIDI port configuration

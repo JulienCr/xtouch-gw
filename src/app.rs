@@ -209,7 +209,7 @@ pub async fn run_app(
     }
 
     // Register the Windows audio driver (no-op on non-Windows, gated on config).
-    driver_setup::register_winaudio_driver(&config, &router, &feedback_tx).await;
+    driver_setup::register_winaudio_driver(&config, &router, &feedback_tx, &led_tx).await;
 
     // Register the Windows media transport driver (play/pause/next/previous).
     driver_setup::register_winmedia_driver(&config, &router, &feedback_tx).await;
@@ -673,7 +673,8 @@ async fn handle_config_reload(
         deps.tray_handler,
     )
     .await;
-    driver_setup::register_winaudio_driver(&new_config, router, deps.feedback_tx).await;
+    driver_setup::register_winaudio_driver(&new_config, router, deps.feedback_tx, deps.led_tx)
+        .await;
     driver_setup::register_winmedia_driver(&new_config, router, deps.feedback_tx).await;
     if let Some(obs_driver) = deps.obs_driver {
         // Re-register OBS only when the new profile actually uses it.

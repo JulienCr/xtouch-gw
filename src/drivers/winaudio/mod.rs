@@ -22,8 +22,9 @@ mod session;
 #[cfg(target_os = "windows")]
 mod session_events;
 
-use crate::config::WinAudioConfig;
+use crate::config::{ControlMapping, PageConfig, WinAudioConfig};
 use crate::drivers::{Driver, ExecutionContext};
+use crate::xtouch::{build_lcd_colors_sysex, build_lcd_strip_sysex};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
@@ -37,11 +38,21 @@ pub use actions::{parse_session_target, SessionTarget};
 /// Driver name used for `app: "winaudio"` in YAML control mappings.
 pub const DRIVER_NAME: &str = "winaudio";
 
+/// YAML page name on which the dynamic LCD render is applied. Hard-coded
+/// for now; documented hors-scope in the plan.
+const WINAUDIO_PAGE_NAME: &str = "Windows Audio";
+
 pub struct WinAudioDriver {
     config: Arc<RwLock<WinAudioConfig>>,
     initialized: AtomicBool,
     /// Wired post-construction via [`WinAudioDriver::set_router`].
     router: Arc<RwLock<Option<Arc<crate::router::Router>>>>,
+    /// Wired post-construction via [`WinAudioDriver::set_led_sender`].
+    /// Raw MIDI bytes pushed through this channel are consumed by the
+    /// main event loop and forwarded to the X-Touch via `send_raw`.
+    /// Same pattern as `obs_indicators` — keeps the driver Send-safe
+    /// because `XTouchDriver` itself is not `Sync`.
+    led_tx: Arc<RwLock<Option<mpsc::Sender<Vec<u8>>>>>,
     /// Wired post-construction. The COM event consumer task uses this to
     /// inject synthetic `("winaudio", raw_midi)` feedback into the unified
     /// router feedback path.
@@ -58,6 +69,7 @@ impl WinAudioDriver {
             config: Arc::new(RwLock::new(config)),
             initialized: AtomicBool::new(false),
             router: Arc::new(RwLock::new(None)),
+            led_tx: Arc::new(RwLock::new(None)),
             feedback_tx: Arc::new(RwLock::new(None)),
             discovery: Arc::new(RwLock::new(mapping::DiscoveryState::default())),
             #[cfg(target_os = "windows")]
@@ -69,6 +81,14 @@ impl WinAudioDriver {
     /// Called by driver_setup after construction.
     pub async fn set_router(&self, router: Arc<crate::router::Router>) {
         *self.router.write().await = Some(router);
+    }
+
+    /// Wire the driver to the LED MIDI channel that the main loop drains
+    /// into `xtouch.send_raw`. This is how the driver pushes dynamic
+    /// LCD strip text + colors without holding a non-Sync reference to
+    /// the X-Touch driver itself.
+    pub async fn set_led_sender(&self, tx: mpsc::Sender<Vec<u8>>) {
+        *self.led_tx.write().await = Some(tx);
     }
 
     /// Wire the driver to the unified feedback channel.
@@ -85,6 +105,23 @@ impl Driver for WinAudioDriver {
 
     async fn init(&self, _ctx: ExecutionContext) -> Result<()> {
         info!("WinAudio driver initializing");
+
+        // Assign cycle colors to all pinned process names so they share
+        // the same 1..=7 cycle as discovered apps. Pinned apps with an
+        // explicit YAML `color:` field still take precedence at render
+        // time — this is just the fallback assignment.
+        {
+            let cfg = self.config.read().await;
+            let pinned_lc: Vec<String> = cfg
+                .pinned_apps
+                .iter()
+                .map(|p| p.process_name.to_lowercase())
+                .collect();
+            drop(cfg);
+            let mut state = self.discovery.write().await;
+            state.observe_pinned(&pinned_lc);
+        }
+
         #[cfg(target_os = "windows")]
         {
             match com_thread::ComThreadHandle::spawn() {
@@ -99,6 +136,7 @@ impl Driver for WinAudioDriver {
                                 self.config.clone(),
                                 self.discovery.clone(),
                                 self.router.clone(),
+                                self.led_tx.clone(),
                             ));
                         } else {
                             warn!(
@@ -126,9 +164,15 @@ impl Driver for WinAudioDriver {
                     let com = self.com.clone();
                     let cfg = self.config.clone();
                     let disc = self.discovery.clone();
+                    let router = self.router.clone();
+                    let led_tx = self.led_tx.clone();
                     tokio::spawn(async move {
                         tokio::time::sleep(std::time::Duration::from_millis(800)).await;
                         refresh_full_state(&com, &cfg, &disc).await;
+                        // If the active page is already the winaudio
+                        // page at startup (no PageChanged event will
+                        // fire to wake the watcher), render the LCD now.
+                        render_lcd_if_active(&router, &led_tx, &cfg, &disc).await;
                     });
                 },
                 Err(e) => {
@@ -167,11 +211,12 @@ impl Driver for WinAudioDriver {
             "master_mute" => self.handle_master_mute(ctx.is_button_release()).await,
             "session_volume" => {
                 let target = parse_session_target(&params)?;
-                self.handle_session_volume(target, fader_scalar).await
+                self.handle_session_volume(target, fader_scalar, &ctx, action)
+                    .await
             },
             "session_mute" => {
                 let target = parse_session_target(&params)?;
-                self.handle_session_mute(target, ctx.is_button_release())
+                self.handle_session_mute(target, ctx.is_button_release(), &ctx, action)
                     .await
             },
             _ => {
@@ -234,11 +279,13 @@ impl WinAudioDriver {
         &self,
         target: SessionTarget,
         normalized: Option<f32>,
+        ctx: &ExecutionContext,
+        action: &str,
     ) -> Result<()> {
         let Some(scalar) = normalized else {
             return Ok(());
         };
-        let Some(process_name_lc) = self.resolve_target(target).await else {
+        let Some(process_name_lc) = self.resolve_target(target, ctx, action).await else {
             debug!("session_volume {:?}: no process bound", target);
             return Ok(());
         };
@@ -252,11 +299,17 @@ impl WinAudioDriver {
         Ok(())
     }
 
-    async fn handle_session_mute(&self, target: SessionTarget, is_release: bool) -> Result<()> {
+    async fn handle_session_mute(
+        &self,
+        target: SessionTarget,
+        is_release: bool,
+        ctx: &ExecutionContext,
+        action: &str,
+    ) -> Result<()> {
         if is_release {
             return Ok(());
         }
-        let Some(process_name_lc) = self.resolve_target(target).await else {
+        let Some(process_name_lc) = self.resolve_target(target, ctx, action).await else {
             return Ok(());
         };
         debug!("session_mute {} toggle", process_name_lc);
@@ -269,13 +322,30 @@ impl WinAudioDriver {
         Ok(())
     }
 
-    async fn resolve_target(&self, target: SessionTarget) -> Option<String> {
+    /// Resolve a `SessionTarget` to a concrete lowercase process name.
+    /// `Auto` requires the active page + control_id from `ctx` so the
+    /// driver can find this control's position among other auto-bound
+    /// controls and index the discovery FIFO accordingly.
+    async fn resolve_target(
+        &self,
+        target: SessionTarget,
+        ctx: &ExecutionContext,
+        action: &str,
+    ) -> Option<String> {
         let cfg = self.config.read().await;
         match target {
             SessionTarget::Pinned(fader) => mapping::pinned_target(&cfg.pinned_apps, fader),
             SessionTarget::Discovered(slot) => {
                 let discovery = self.discovery.read().await;
                 mapping::discovered_target(&cfg.pinned_apps, &discovery, slot)
+            },
+            SessionTarget::Auto => {
+                let control_id = ctx.control_id.as_deref()?;
+                let router = self.router.read().await.clone()?;
+                let page = router.get_active_page().await?;
+                let auto_idx = auto_strip_index(&page, action, control_id)?;
+                let discovery = self.discovery.read().await;
+                mapping::auto_target(&cfg.pinned_apps, &discovery, auto_idx)
             },
         }
     }
@@ -299,19 +369,21 @@ impl WinAudioDriver {
         let mut rx = live_tx.subscribe();
         #[cfg(target_os = "windows")]
         let com = self.com.clone();
-        #[cfg(target_os = "windows")]
         let config = self.config.clone();
-        #[cfg(target_os = "windows")]
         let discovery = self.discovery.clone();
+        let router_for_render = self.router.clone();
+        let led_tx = self.led_tx.clone();
         tokio::spawn(async move {
             while let Ok(event) = rx.recv().await {
                 if let crate::event_bus::LiveEvent::PageChanged { name, .. } = event {
-                    if name == "Windows Audio" {
+                    if name == WINAUDIO_PAGE_NAME {
                         debug!("WinAudio: page activated, refreshing master + sessions");
                         #[cfg(target_os = "windows")]
                         {
                             refresh_full_state(&com, &config, &discovery).await;
                         }
+                        render_lcd_if_active(&router_for_render, &led_tx, &config, &discovery)
+                            .await;
                     }
                 }
             }
@@ -451,6 +523,7 @@ async fn run_event_consumer(
     config: Arc<RwLock<WinAudioConfig>>,
     discovery: Arc<RwLock<mapping::DiscoveryState>>,
     router: Arc<RwLock<Option<Arc<crate::router::Router>>>>,
+    led_tx: Arc<RwLock<Option<mpsc::Sender<Vec<u8>>>>>,
 ) {
     use std::collections::HashMap;
     use tokio::time::{interval, Duration, MissedTickBehavior};
@@ -474,7 +547,7 @@ async fn run_event_consumer(
                     debug!("WinAudio event consumer: source closed");
                     break;
                 };
-                buffer_event(&mut pending, event, &config, &discovery).await;
+                buffer_event(&mut pending, event, &config, &discovery, &router, &led_tx).await;
             }
             _ = ticker.tick() => {
                 if pending.is_empty() {
@@ -493,12 +566,19 @@ async fn run_event_consumer(
 /// Stash an event into the coalesce buffer. Sessions are keyed by their
 /// resolved YAML target (`pinned:N` / `discovered:N`); unresolvable
 /// sessions are dropped silently.
+///
+/// `ActiveSessionsChanged` is handled inline (not coalesced) because
+/// it's a discrete state-transition event, not a continuous stream:
+/// updates the discovery FIFO + active set and triggers a non-blocking
+/// LCD render in a spawned task so the 50 ms fader flush isn't stalled.
 #[cfg(target_os = "windows")]
 async fn buffer_event(
     pending: &mut std::collections::HashMap<FeedbackKey, PendingFeedback>,
     event: com_thread::AudioEvent,
     config: &Arc<RwLock<WinAudioConfig>>,
     discovery: &Arc<RwLock<mapping::DiscoveryState>>,
+    router: &Arc<RwLock<Option<Arc<crate::router::Router>>>>,
+    led_tx: &Arc<RwLock<Option<mpsc::Sender<Vec<u8>>>>>,
 ) {
     match event {
         com_thread::AudioEvent::MasterVolumeChanged { scalar, mute } => {
@@ -525,6 +605,30 @@ async fn buffer_event(
                 FeedbackKey::Session(target),
                 PendingFeedback { scalar, mute },
             );
+        },
+        com_thread::AudioEvent::ActiveSessionsChanged { names_lc } => {
+            // Update FIFO + active set atomically, then schedule the LCD
+            // render in a separate task so 8 strips × 2 SysEx writes
+            // (~30 ms USB MIDI) don't block the 50 ms fader flush tick.
+            {
+                let cfg = config.read().await;
+                let pinned_lc: std::collections::HashSet<String> = cfg
+                    .pinned_apps
+                    .iter()
+                    .map(|p| p.process_name.to_lowercase())
+                    .collect();
+                drop(cfg);
+                let mut state = discovery.write().await;
+                state.observe(&names_lc, &pinned_lc);
+                state.set_active(&names_lc);
+            }
+            let router = router.clone();
+            let led_tx = led_tx.clone();
+            let config = config.clone();
+            let discovery = discovery.clone();
+            tokio::spawn(async move {
+                render_lcd_if_active(&router, &led_tx, &config, &discovery).await;
+            });
         },
     }
 }
@@ -692,4 +796,254 @@ fn mute_note_bytes(note: u8, muted: bool) -> Vec<u8> {
         velocity: if muted { 127 } else { 0 },
     }
     .to_bytes()
+}
+
+// -- Auto target resolution + dynamic LCD render -----------------------------
+
+/// Parse the strip number from a control id like "fader4" or "mute4".
+/// Returns 1..=8 for valid strip controls; `None` for anything else
+/// (e.g. "fader_master", "flip", "rewind").
+fn strip_index_of(control_id: &str) -> Option<u8> {
+    let suffix = control_id
+        .strip_prefix("fader")
+        .or_else(|| control_id.strip_prefix("mute"))?;
+    let n: u8 = suffix.parse().ok()?;
+    (1..=8).contains(&n).then_some(n)
+}
+
+/// Position of `control_id` among the page controls bound to
+/// `winaudio.<action>` with `params: ["auto"]`, ordered by ascending
+/// strip number. The HashMap-backed `controls` field has no inherent
+/// declaration order, so we use the strip number as a deterministic
+/// key. Returns `None` if `control_id` isn't an `auto`-bound winaudio
+/// control on this page.
+fn auto_strip_index(page: &PageConfig, action: &str, control_id: &str) -> Option<u8> {
+    let controls = page.controls.as_ref()?;
+    let mut auto_strips: Vec<(u8, &str)> = controls
+        .iter()
+        .filter(|(_, m)| is_auto_winaudio_action(m, action))
+        .filter_map(|(id, _)| strip_index_of(id).map(|n| (n, id.as_str())))
+        .collect();
+    auto_strips.sort_by_key(|(n, _)| *n);
+    auto_strips
+        .iter()
+        .position(|(_, id)| *id == control_id)
+        .map(|p| p as u8)
+}
+
+fn is_auto_winaudio_action(m: &ControlMapping, action: &str) -> bool {
+    if m.app != DRIVER_NAME {
+        return false;
+    }
+    if m.action.as_deref() != Some(action) {
+        return false;
+    }
+    let Some(params) = m.params.as_ref() else {
+        return false;
+    };
+    params
+        .first()
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().eq_ignore_ascii_case("auto"))
+        .unwrap_or(false)
+}
+
+/// Render the dynamic LCD strips for the winaudio page if it is the
+/// currently active page. Cheap no-op otherwise. Pushes raw SysEx
+/// bytes through the `led_tx` channel — the main event loop drains
+/// them and forwards to `xtouch.send_raw`.
+async fn render_lcd_if_active(
+    router: &Arc<RwLock<Option<Arc<crate::router::Router>>>>,
+    led_tx: &Arc<RwLock<Option<mpsc::Sender<Vec<u8>>>>>,
+    config: &Arc<RwLock<WinAudioConfig>>,
+    discovery: &Arc<RwLock<mapping::DiscoveryState>>,
+) {
+    let Some(router_arc) = router.read().await.clone() else {
+        return;
+    };
+    let Some(page) = router_arc.get_active_page().await else {
+        return;
+    };
+    if page.name != WINAUDIO_PAGE_NAME {
+        return;
+    }
+    let Some(tx) = led_tx.read().await.clone() else {
+        debug!("WinAudio render: no led_tx wired, skipping LCD render");
+        return;
+    };
+    render_winaudio_lcd(&page, &tx, config, discovery).await;
+}
+
+/// Compute and push the 8 LCD strips for the winaudio page. Strips
+/// whose process is not currently active render as black + empty.
+/// Pinned apps with an explicit YAML color use it; otherwise the
+/// cycle color from `assigned_color` is used.
+///
+/// Emits raw SysEx via `led_tx` rather than calling
+/// `apply_lcd_for_page`: keeps the 7-segment display untouched and
+/// avoids needing a non-Sync `Arc<XTouchDriver>` reference.
+async fn render_winaudio_lcd(
+    page: &PageConfig,
+    led_tx: &mpsc::Sender<Vec<u8>>,
+    config: &Arc<RwLock<WinAudioConfig>>,
+    discovery: &Arc<RwLock<mapping::DiscoveryState>>,
+) {
+    let cfg = config.read().await;
+    let disc = discovery.read().await;
+
+    let mut colors: [u8; 8] = [0; 8];
+    let mut labels: [String; 8] = Default::default();
+
+    for strip_idx in 1u8..=8 {
+        let control_id = format!("fader{strip_idx}");
+        let process_lc = resolve_strip_process(&control_id, page, &cfg, &disc, "session_volume");
+
+        let Some(process_lc) = process_lc else {
+            continue;
+        };
+        if !disc.is_active(&process_lc) {
+            continue;
+        }
+
+        labels[(strip_idx - 1) as usize] = label_for_process(&cfg.pinned_apps, &process_lc);
+        colors[(strip_idx - 1) as usize] = color_for_process(&cfg.pinned_apps, &disc, &process_lc);
+    }
+
+    drop(disc);
+    drop(cfg);
+
+    for (i, label) in labels.iter().enumerate() {
+        let (upper, lower) = build_lcd_strip_sysex(i as u8, label, "");
+        if led_tx.send(upper).await.is_err() {
+            debug!("WinAudio LCD: led_tx closed, dropping render");
+            return;
+        }
+        if led_tx.send(lower).await.is_err() {
+            debug!("WinAudio LCD: led_tx closed, dropping render");
+            return;
+        }
+    }
+    let color_msg = build_lcd_colors_sysex(&colors);
+    if led_tx.send(color_msg).await.is_err() {
+        debug!("WinAudio LCD: led_tx closed, dropping color update");
+    }
+}
+
+/// Resolve `fader{N}` on the active page to a process name, walking
+/// the same path as runtime action dispatch (`pinned`, `discovered`,
+/// `auto`). Returns `None` if the strip isn't bound to a winaudio
+/// session action or no process is currently mapped to it.
+fn resolve_strip_process(
+    control_id: &str,
+    page: &PageConfig,
+    cfg: &WinAudioConfig,
+    disc: &mapping::DiscoveryState,
+    action: &str,
+) -> Option<String> {
+    let controls = page.controls.as_ref()?;
+    let m = controls.get(control_id)?;
+    if m.app != DRIVER_NAME || m.action.as_deref() != Some(action) {
+        return None;
+    }
+    let params = m.params.as_ref().cloned().unwrap_or_default();
+    let target = match parse_session_target(&params) {
+        Ok(t) => t,
+        Err(_) => return None,
+    };
+    match target {
+        SessionTarget::Pinned(fader) => mapping::pinned_target(&cfg.pinned_apps, fader),
+        SessionTarget::Discovered(slot) => mapping::discovered_target(&cfg.pinned_apps, disc, slot),
+        SessionTarget::Auto => {
+            let auto_idx = auto_strip_index(page, action, control_id)?;
+            mapping::auto_target(&cfg.pinned_apps, disc, auto_idx)
+        },
+    }
+}
+
+/// LCD label for a process: pinned `display_name` if set, otherwise
+/// `derive_label`.
+fn label_for_process(pinned: &[crate::config::PinnedApp], process_lc: &str) -> String {
+    if let Some(pin) = pinned
+        .iter()
+        .find(|p| p.process_name.to_lowercase() == process_lc)
+    {
+        pin.display_name
+            .clone()
+            .unwrap_or_else(|| mapping::derive_label(&pin.process_name))
+    } else {
+        mapping::derive_label(process_lc)
+    }
+}
+
+/// LCD color for a process: pinned `color` if set in YAML, else the
+/// cycle color from `assigned_color`. Falls back to white (7) if a
+/// process somehow has no assigned color (defensive — should not
+/// happen with normal lifecycle).
+fn color_for_process(
+    pinned: &[crate::config::PinnedApp],
+    disc: &mapping::DiscoveryState,
+    process_lc: &str,
+) -> u8 {
+    if let Some(pin) = pinned
+        .iter()
+        .find(|p| p.process_name.to_lowercase() == process_lc)
+    {
+        if let Some(color) = pin.color.as_ref() {
+            return color.to_u8();
+        }
+    }
+    disc.color_for(process_lc).unwrap_or(7)
+}
+
+#[cfg(test)]
+mod auto_strip_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn ctl(action: &str, target: &str) -> ControlMapping {
+        ControlMapping {
+            app: DRIVER_NAME.to_string(),
+            action: Some(action.to_string()),
+            params: Some(vec![serde_json::json!(target)]),
+            midi: None,
+            indicator: None,
+            overlay: None,
+        }
+    }
+
+    #[test]
+    fn strip_index_parses_fader_and_mute() {
+        assert_eq!(strip_index_of("fader1"), Some(1));
+        assert_eq!(strip_index_of("fader8"), Some(8));
+        assert_eq!(strip_index_of("mute4"), Some(4));
+        assert_eq!(strip_index_of("fader_master"), None);
+        assert_eq!(strip_index_of("flip"), None);
+        assert_eq!(strip_index_of("fader9"), None);
+    }
+
+    #[test]
+    fn auto_strip_index_orders_by_strip_number() {
+        let mut controls: HashMap<String, ControlMapping> = HashMap::new();
+        controls.insert("fader7".into(), ctl("session_volume", "auto"));
+        controls.insert("fader4".into(), ctl("session_volume", "auto"));
+        controls.insert("fader6".into(), ctl("session_volume", "auto"));
+        controls.insert("fader5".into(), ctl("session_volume", "auto"));
+        // Pinned strips are not in the auto list.
+        controls.insert("fader1".into(), ctl("session_volume", "pinned:1"));
+        // Mute auto strip — different action, must not affect volume ordering.
+        controls.insert("mute4".into(), ctl("session_mute", "auto"));
+
+        let page = PageConfig {
+            name: "Windows Audio".into(),
+            controls: Some(controls),
+            ..Default::default()
+        };
+
+        assert_eq!(auto_strip_index(&page, "session_volume", "fader4"), Some(0));
+        assert_eq!(auto_strip_index(&page, "session_volume", "fader5"), Some(1));
+        assert_eq!(auto_strip_index(&page, "session_volume", "fader6"), Some(2));
+        assert_eq!(auto_strip_index(&page, "session_volume", "fader7"), Some(3));
+        assert_eq!(auto_strip_index(&page, "session_volume", "fader1"), None);
+        assert_eq!(auto_strip_index(&page, "session_mute", "mute4"), Some(0));
+    }
 }

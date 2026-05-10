@@ -174,6 +174,7 @@ pub async fn register_winaudio_driver(
     config: &AppConfig,
     router: &Arc<Router>,
     feedback_tx: &mpsc::Sender<(String, Vec<u8>)>,
+    led_tx: &mpsc::Sender<Vec<u8>>,
 ) {
     let referenced = config.pages.iter().any(|p| {
         p.controls
@@ -210,6 +211,7 @@ pub async fn register_winaudio_driver(
 
     let driver = Arc::new(WinAudioDriver::new(winaudio_cfg));
     driver.set_router(router.clone()).await;
+    driver.set_led_sender(led_tx.clone()).await;
     driver.set_feedback_sender(feedback_tx.clone()).await;
 
     match router
