@@ -478,20 +478,9 @@ async fn handle_tray_command(
 /// background work (OBS reconnection loop, MIDI bridge readers, WinAudio
 /// COM thread) so dropped profiles don't keep polling.
 async fn prune_unused_drivers(router: &Arc<Router>, new_config: &AppConfig) {
-    let needed = new_config.referenced_apps();
-    let registered = router.list_drivers().await;
-    for name in registered {
-        if needed.contains(&name) {
-            continue;
-        }
-        info!(
-            "Unregistering driver '{}' (no longer referenced by active profile)",
-            name
-        );
-        if let Err(e) = router.unregister_driver(&name).await {
-            warn!("Failed to unregister driver '{}': {}", name, e);
-        }
-    }
+    router
+        .unregister_drivers_not_in(&new_config.referenced_apps())
+        .await;
 }
 
 /// Publish the current profiles list + active profile to the tray UI.

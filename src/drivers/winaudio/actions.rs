@@ -6,7 +6,11 @@
 //!   * `"auto"` — strip is *free* to receive a detected app. The driver
 //!     resolves it at runtime based on the control's position among other
 //!     `auto`-bound winaudio controls of the same action on the active
-//!     page (declaration order maps to discovery FIFO order).
+//!     page. Because `PageConfig.controls` is a `HashMap` with no
+//!     declaration order, ordering is by ascending strip number (the
+//!     numeric suffix of `fader{N}` / `mute{N}`): the lowest-numbered
+//!     auto strip receives discovery slot 0, the next receives slot 1,
+//!     etc.
 //!
 //! `"auto"` is the recommended form; `"discovered:N"` remains for
 //! backwards compatibility with older profiles.
@@ -22,7 +26,7 @@ pub enum SessionTarget {
     /// auto-discovered sessions that aren't pinned. Legacy form.
     Discovered(u8),
     /// Strip is auto-bound: the driver picks the next available
-    /// detected app at runtime, based on the YAML declaration order of
+    /// detected app at runtime, ordered by ascending strip number among
     /// `auto`-bound controls for the same action on the active page.
     Auto,
 }

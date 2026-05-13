@@ -89,6 +89,27 @@ impl super::Router {
         Ok(Some(driver))
     }
 
+    /// Unregister any driver whose name is not in `needed`. Used during
+    /// profile reload to stop background work for drivers the new
+    /// profile no longer references. Driver shutdown errors are logged
+    /// but not propagated — a failed shutdown should not block the
+    /// reload.
+    pub async fn unregister_drivers_not_in(&self, needed: &std::collections::HashSet<String>) {
+        let registered = self.list_drivers().await;
+        for name in registered {
+            if needed.contains(&name) {
+                continue;
+            }
+            tracing::info!(
+                "Unregistering driver '{}' (no longer referenced by active profile)",
+                name
+            );
+            if let Err(e) = self.unregister_driver(&name).await {
+                warn!("Failed to unregister driver '{}': {}", name, e);
+            }
+        }
+    }
+
     /// Shutdown all registered drivers
     pub async fn shutdown_all_drivers(&self) -> Result<()> {
         debug!("Shutting down all drivers...");

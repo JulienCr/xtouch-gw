@@ -458,38 +458,70 @@ impl AppConfig {
             .unwrap_or(true)
     }
 
-    /// Collect every app name referenced by control mappings on any page
-    /// (including `pages_global`). Used to decide which drivers a profile
-    /// requires.
+    /// Collect every app name referenced by control mappings or
+    /// passthrough configs on any page (including `pages_global`). Used
+    /// to decide which drivers a profile requires.
+    ///
+    /// Walks both `controls.*.app` and page-level `passthrough` /
+    /// `passthroughs` so that a profile relying solely on top-level
+    /// passthrough routing does not have its bridge driver pruned on
+    /// reload.
     pub fn referenced_apps(&self) -> std::collections::HashSet<String> {
-        let mut apps = std::collections::HashSet::new();
-        let mut record = |controls: &HashMap<String, ControlMapping>| {
+        fn record_controls(
+            controls: &HashMap<String, ControlMapping>,
+            apps: &mut std::collections::HashSet<String>,
+        ) {
             for mapping in controls.values() {
                 apps.insert(mapping.app.clone());
             }
-        };
+        }
+
+        let mut apps = std::collections::HashSet::new();
         for page in &self.pages {
             if let Some(controls) = &page.controls {
-                record(controls);
+                record_controls(controls, &mut apps);
+            }
+            if let Some(pt) = &page.passthrough {
+                apps.insert(pt.driver.clone());
+            }
+            if let Some(pts) = &page.passthroughs {
+                for pt in pts {
+                    apps.insert(pt.driver.clone());
+                }
             }
         }
-        if let Some(controls) = self.pages_global.as_ref().and_then(|g| g.controls.as_ref()) {
-            record(controls);
+        if let Some(global) = self.pages_global.as_ref() {
+            if let Some(controls) = global.controls.as_ref() {
+                record_controls(controls, &mut apps);
+            }
+            if let Some(pts) = global.passthroughs.as_ref() {
+                for pt in pts {
+                    apps.insert(pt.driver.clone());
+                }
+            }
         }
         apps
     }
 
-    /// True if any page or `pages_global` mapping references the given app name.
+    /// True if any page or `pages_global` mapping (control or
+    /// passthrough) references the given app name.
     pub fn references_app(&self, name: &str) -> bool {
-        let any = |c: &HashMap<String, ControlMapping>| c.values().any(|m| m.app == name);
-        self.pages
-            .iter()
-            .any(|p| p.controls.as_ref().is_some_and(any))
-            || self
-                .pages_global
-                .as_ref()
-                .and_then(|g| g.controls.as_ref())
-                .is_some_and(any)
+        let any_control = |c: &HashMap<String, ControlMapping>| c.values().any(|m| m.app == name);
+        let any_pt = |pts: &[PassthroughConfig]| pts.iter().any(|p| p.driver == name);
+
+        let in_pages = self.pages.iter().any(|p| {
+            p.controls.as_ref().is_some_and(any_control)
+                || p.passthrough.as_ref().is_some_and(|pt| pt.driver == name)
+                || p.passthroughs.as_ref().is_some_and(|pts| any_pt(pts))
+        });
+        if in_pages {
+            return true;
+        }
+        let Some(global) = self.pages_global.as_ref() else {
+            return false;
+        };
+        global.controls.as_ref().is_some_and(any_control)
+            || global.passthroughs.as_ref().is_some_and(|pts| any_pt(pts))
     }
 
     /// Load configuration from file with validation
@@ -821,5 +853,121 @@ mod tests {
 
         let win = parsed.winaudio.as_ref().expect("winaudio block expected");
         assert_eq!(win.pinned_apps.len(), 3);
+    }
+
+    fn empty_config() -> AppConfig {
+        AppConfig {
+            midi: MidiConfig {
+                input_port: "in".into(),
+                output_port: "out".into(),
+                apps: None,
+            },
+            obs: None,
+            xtouch: None,
+            paging: None,
+            gamepad: None,
+            pages_global: None,
+            winaudio: None,
+            pages: vec![],
+            tray: None,
+        }
+    }
+
+    fn control(app: &str) -> ControlMapping {
+        ControlMapping {
+            app: app.to_string(),
+            action: Some("noop".into()),
+            params: None,
+            midi: None,
+            indicator: None,
+            overlay: None,
+        }
+    }
+
+    fn passthrough(driver: &str) -> PassthroughConfig {
+        PassthroughConfig {
+            driver: driver.to_string(),
+            to_port: "to".into(),
+            from_port: "from".into(),
+            filter: None,
+            optional: None,
+            transform: None,
+        }
+    }
+
+    #[test]
+    fn referenced_apps_collects_page_and_global_controls() {
+        let mut cfg = empty_config();
+        let mut page_controls = HashMap::new();
+        page_controls.insert("fader1".into(), control("voicemeeter"));
+        page_controls.insert("mute1".into(), control("qlc"));
+
+        cfg.pages.push(PageConfig {
+            name: "P1".into(),
+            controls: Some(page_controls),
+            ..PageConfig::default()
+        });
+
+        let mut global_controls = HashMap::new();
+        global_controls.insert("prev".into(), control("obs"));
+        cfg.pages_global = Some(GlobalPageDefaults {
+            controls: Some(global_controls),
+            lcd: None,
+            passthroughs: None,
+        });
+
+        let apps = cfg.referenced_apps();
+        assert!(apps.contains("voicemeeter"));
+        assert!(apps.contains("qlc"));
+        assert!(apps.contains("obs"));
+        assert_eq!(apps.len(), 3);
+    }
+
+    #[test]
+    fn referenced_apps_includes_page_passthrough_drivers() {
+        let mut cfg = empty_config();
+        cfg.pages.push(PageConfig {
+            name: "P1".into(),
+            passthrough: Some(passthrough("voicemeeter")),
+            passthroughs: Some(vec![passthrough("qlc")]),
+            ..PageConfig::default()
+        });
+
+        let apps = cfg.referenced_apps();
+        assert!(apps.contains("voicemeeter"));
+        assert!(apps.contains("qlc"));
+    }
+
+    #[test]
+    fn referenced_apps_includes_global_passthrough_drivers() {
+        let mut cfg = empty_config();
+        cfg.pages_global = Some(GlobalPageDefaults {
+            controls: None,
+            lcd: None,
+            passthroughs: Some(vec![passthrough("voicemeeter")]),
+        });
+
+        let apps = cfg.referenced_apps();
+        assert!(apps.contains("voicemeeter"));
+        assert_eq!(apps.len(), 1);
+    }
+
+    #[test]
+    fn references_app_matches_passthrough_and_controls() {
+        let mut cfg = empty_config();
+        cfg.pages.push(PageConfig {
+            name: "P1".into(),
+            passthrough: Some(passthrough("voicemeeter")),
+            ..PageConfig::default()
+        });
+
+        assert!(cfg.references_app("voicemeeter"));
+        assert!(!cfg.references_app("qlc"));
+
+        let mut controls = HashMap::new();
+        controls.insert("fader1".into(), control("qlc"));
+        cfg.pages[0].controls = Some(controls);
+
+        assert!(cfg.references_app("qlc"));
     }
 }
