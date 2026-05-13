@@ -13,6 +13,30 @@
 
   const dispatch = createEventDispatcher<{ change: unknown }>();
 
+  // Static target list for the winaudio session_volume / session_mute params.
+  // Pinned slots map 1..=8 to `winaudio.pinned_apps[i].fader`. Discovered
+  // slots 0..=7 are the legacy FIFO indices; `auto` is the modern form
+  // (driver picks the next free detected app at runtime).
+  const winaudioTargetOpts: { value: string; label: string }[] = [
+    { value: 'auto', label: 'auto (any detected app)' },
+    { value: 'pinned:1', label: 'pinned:1' },
+    { value: 'pinned:2', label: 'pinned:2' },
+    { value: 'pinned:3', label: 'pinned:3' },
+    { value: 'pinned:4', label: 'pinned:4' },
+    { value: 'pinned:5', label: 'pinned:5' },
+    { value: 'pinned:6', label: 'pinned:6' },
+    { value: 'pinned:7', label: 'pinned:7' },
+    { value: 'pinned:8', label: 'pinned:8' },
+    { value: 'discovered:0', label: 'discovered:0 (legacy)' },
+    { value: 'discovered:1', label: 'discovered:1 (legacy)' },
+    { value: 'discovered:2', label: 'discovered:2 (legacy)' },
+    { value: 'discovered:3', label: 'discovered:3 (legacy)' },
+    { value: 'discovered:4', label: 'discovered:4 (legacy)' },
+    { value: 'discovered:5', label: 'discovered:5 (legacy)' },
+    { value: 'discovered:6', label: 'discovered:6 (legacy)' },
+    { value: 'discovered:7', label: 'discovered:7 (legacy)' }
+  ];
+
   $: pickerOpts =
     param.picker === 'obs.scene'
       ? sceneOpts
@@ -20,7 +44,9 @@
         ? inputOpts
         : param.picker === 'obs.source'
           ? sourceOpts
-          : null;
+          : param.picker === 'winaudio.target'
+            ? winaudioTargetOpts
+            : null;
 
   $: pickerPlaceholder =
     param.picker === 'obs.scene'
@@ -29,7 +55,9 @@
         ? 'input…'
         : param.picker === 'obs.source'
           ? 'source…'
-          : '';
+          : param.picker === 'winaudio.target'
+            ? 'auto, pinned:N, discovered:N'
+            : '';
 
   $: label =
     param.picker === 'obs.source' ? `${param.name} (in ${sceneContext || 'any scene'})` : param.name;

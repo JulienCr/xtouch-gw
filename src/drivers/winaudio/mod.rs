@@ -12,6 +12,7 @@
 mod actions;
 #[cfg(target_os = "windows")]
 mod callback;
+mod catalog;
 #[cfg(target_os = "windows")]
 mod com_thread;
 mod mapping;
@@ -236,6 +237,10 @@ impl Driver for WinAudioDriver {
         }
         info!("WinAudio driver shut down");
         Ok(())
+    }
+
+    fn action_catalog(&self) -> Vec<crate::api_editor::ActionDescriptor> {
+        catalog::winaudio_catalog()
     }
 }
 
