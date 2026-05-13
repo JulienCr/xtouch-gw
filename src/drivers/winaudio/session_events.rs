@@ -1,7 +1,7 @@
 //! Per-session COM callbacks: `IAudioSessionEvents` for live volume/mute
-//! change notifications, and `IAudioSessionNotification` for catching
-//! sessions that appear after driver startup (e.g. an app that starts
-//! producing audio later).
+//! change notifications and session-end detection, and
+//! `IAudioSessionNotification` for catching sessions that appear after
+//! driver startup (e.g. an app that starts producing audio later).
 //!
 //! Both callbacks fire on a WASAPI-internal thread, so the bodies must
 //! be non-blocking. They communicate back to the COM thread by pushing
@@ -15,24 +15,32 @@ use tracing::trace;
 use windows::core::{implement, GUID};
 use windows::Win32::Foundation::BOOL;
 use windows::Win32::Media::Audio::{
-    AudioSessionDisconnectReason, AudioSessionState, IAudioSessionControl,
-    IAudioSessionEvents_Impl, IAudioSessionNotification_Impl,
+    AudioSessionDisconnectReason, AudioSessionState, AudioSessionStateExpired,
+    IAudioSessionControl, IAudioSessionEvents_Impl, IAudioSessionNotification_Impl,
 };
 
 use super::com_thread::{AudioCmd, AudioEvent};
 
 /// Listener attached to one `IAudioSessionControl` to relay volume/mute
-/// changes back to the gateway as `SessionVolumeSnapshot` events.
+/// changes back to the gateway as `SessionVolumeSnapshot` events, and
+/// to request a session refresh whenever the session ends (process
+/// exits, endpoint disconnects).
 #[implement(windows::Win32::Media::Audio::IAudioSessionEvents)]
 pub struct SessionEventsCallback {
     event_tx: mpsc::Sender<AudioEvent>,
+    cmd_tx: mpsc::Sender<AudioCmd>,
     process_name_lc: String,
 }
 
 impl SessionEventsCallback {
-    pub fn new(event_tx: mpsc::Sender<AudioEvent>, process_name_lc: String) -> Self {
+    pub fn new(
+        event_tx: mpsc::Sender<AudioEvent>,
+        cmd_tx: mpsc::Sender<AudioCmd>,
+        process_name_lc: String,
+    ) -> Self {
         Self {
             event_tx,
+            cmd_tx,
             process_name_lc,
         }
     }
@@ -96,7 +104,18 @@ impl IAudioSessionEvents_Impl for SessionEventsCallback {
         Ok(())
     }
 
-    fn OnStateChanged(&self, _state: AudioSessionState) -> windows::core::Result<()> {
+    fn OnStateChanged(&self, state: AudioSessionState) -> windows::core::Result<()> {
+        // `Expired` is the reliable signal that the owning process has
+        // exited. `OnSessionDisconnected` only fires for endpoint-level
+        // disconnects (device removed), not for plain app exits — so
+        // without this hook, closing Discord would never blank its LCD.
+        if state == AudioSessionStateExpired {
+            trace!(
+                "SessionEvents OnStateChanged(Expired): {}",
+                self.process_name_lc
+            );
+            let _ = self.cmd_tx.try_send(AudioCmd::RefreshSessions);
+        }
         Ok(())
     }
 
@@ -104,6 +123,11 @@ impl IAudioSessionEvents_Impl for SessionEventsCallback {
         &self,
         _disconnect_reason: AudioSessionDisconnectReason,
     ) -> windows::core::Result<()> {
+        trace!(
+            "SessionEvents OnSessionDisconnected: {}",
+            self.process_name_lc
+        );
+        let _ = self.cmd_tx.try_send(AudioCmd::RefreshSessions);
         Ok(())
     }
 }

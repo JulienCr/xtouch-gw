@@ -27,41 +27,10 @@ pub struct AppConfig {
     pub tray: Option<TrayConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pages_global: Option<GlobalPageDefaults>,
-    /// Voicemeeter process detector — when configured, pages with
-    /// `requires_voicemeeter: true` are skipped while VM is absent and
-    /// the page tagged `auto_when_voicemeeter_absent: true` becomes
-    /// the active fallback.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub voicemeeter_detection: Option<VoicemeeterDetectionConfig>,
     /// Windows audio (master + per-app session) configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub winaudio: Option<WinAudioConfig>,
     pub pages: Vec<PageConfig>,
-}
-
-/// Voicemeeter presence detection configuration.
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
-pub struct VoicemeeterDetectionConfig {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    #[serde(default = "default_voicemeeter_process_names")]
-    pub process_names: Vec<String>,
-    #[serde(default = "default_voicemeeter_poll_interval_ms")]
-    pub poll_interval_ms: u64,
-}
-
-fn default_voicemeeter_process_names() -> Vec<String> {
-    vec![
-        "voicemeeter.exe".to_string(),
-        "voicemeeter8x64.exe".to_string(),
-        "voicemeeterpro.exe".to_string(),
-        "voicemeeterbanana.exe".to_string(),
-        "voicemeeterpotato.exe".to_string(),
-    ]
-}
-
-fn default_voicemeeter_poll_interval_ms() -> u64 {
-    5000
 }
 
 /// Windows audio driver configuration.
@@ -82,6 +51,10 @@ pub struct PinnedApp {
     /// Optional friendly label rendered on the LCD; falls back to process_name.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    /// Optional explicit LCD color. When unset, the driver assigns a
+    /// color from the same 1..=7 cycle as discovered apps.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<LcdColor>,
 }
 
 /// MIDI port configuration
@@ -314,14 +287,6 @@ pub struct PageConfig {
     pub passthrough: Option<PassthroughConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub passthroughs: Option<Vec<PassthroughConfig>>,
-    /// When true, this page is skipped in prev/next navigation while
-    /// Voicemeeter is not detected.
-    #[serde(default)]
-    pub requires_voicemeeter: bool,
-    /// When true, this page becomes the auto-active fallback while
-    /// Voicemeeter is not detected. Only one page may have this flag set.
-    #[serde(default)]
-    pub auto_when_voicemeeter_absent: bool,
 }
 
 /// LED indicator configuration
@@ -485,6 +450,80 @@ pub struct PbToCcTransform {
 }
 
 impl AppConfig {
+    /// True when the X-Touch is configured (or defaulted) to MCU mode.
+    pub fn is_mcu_mode(&self) -> bool {
+        self.xtouch
+            .as_ref()
+            .map(|x| matches!(x.mode, XTouchMode::Mcu))
+            .unwrap_or(true)
+    }
+
+    /// Collect every app name referenced by control mappings or
+    /// passthrough configs on any page (including `pages_global`). Used
+    /// to decide which drivers a profile requires.
+    ///
+    /// Walks both `controls.*.app` and page-level `passthrough` /
+    /// `passthroughs` so that a profile relying solely on top-level
+    /// passthrough routing does not have its bridge driver pruned on
+    /// reload.
+    pub fn referenced_apps(&self) -> std::collections::HashSet<String> {
+        fn record_controls(
+            controls: &HashMap<String, ControlMapping>,
+            apps: &mut std::collections::HashSet<String>,
+        ) {
+            for mapping in controls.values() {
+                apps.insert(mapping.app.clone());
+            }
+        }
+
+        let mut apps = std::collections::HashSet::new();
+        for page in &self.pages {
+            if let Some(controls) = &page.controls {
+                record_controls(controls, &mut apps);
+            }
+            if let Some(pt) = &page.passthrough {
+                apps.insert(pt.driver.clone());
+            }
+            if let Some(pts) = &page.passthroughs {
+                for pt in pts {
+                    apps.insert(pt.driver.clone());
+                }
+            }
+        }
+        if let Some(global) = self.pages_global.as_ref() {
+            if let Some(controls) = global.controls.as_ref() {
+                record_controls(controls, &mut apps);
+            }
+            if let Some(pts) = global.passthroughs.as_ref() {
+                for pt in pts {
+                    apps.insert(pt.driver.clone());
+                }
+            }
+        }
+        apps
+    }
+
+    /// True if any page or `pages_global` mapping (control or
+    /// passthrough) references the given app name.
+    pub fn references_app(&self, name: &str) -> bool {
+        let any_control = |c: &HashMap<String, ControlMapping>| c.values().any(|m| m.app == name);
+        let any_pt = |pts: &[PassthroughConfig]| pts.iter().any(|p| p.driver == name);
+
+        let in_pages = self.pages.iter().any(|p| {
+            p.controls.as_ref().is_some_and(any_control)
+                || p.passthrough.as_ref().is_some_and(|pt| pt.driver == name)
+                || p.passthroughs.as_ref().is_some_and(|pts| any_pt(pts))
+        });
+        if in_pages {
+            return true;
+        }
+        let Some(global) = self.pages_global.as_ref() else {
+            return false;
+        };
+        global.controls.as_ref().is_some_and(any_control)
+            || global.passthroughs.as_ref().is_some_and(|pts| any_pt(pts))
+    }
+
     /// Load configuration from file with validation
     pub async fn load(path: &str) -> Result<Self> {
         let contents = fs::read_to_string(path)
@@ -602,21 +641,6 @@ impl AppConfig {
             }
         }
 
-        // Voicemeeter fallback: at most one page may carry the
-        // `auto_when_voicemeeter_absent` flag.
-        let auto_pages: Vec<&str> = self
-            .pages
-            .iter()
-            .filter(|p| p.auto_when_voicemeeter_absent)
-            .map(|p| p.name.as_str())
-            .collect();
-        if auto_pages.len() > 1 {
-            anyhow::bail!(
-                "Multiple pages marked auto_when_voicemeeter_absent: {:?} (only one is allowed)",
-                auto_pages
-            );
-        }
-
         // Validate winaudio pinned_apps slot range and uniqueness.
         if let Some(winaudio) = &self.winaudio {
             let mut seen = std::collections::HashSet::new();
@@ -658,8 +682,8 @@ impl AppConfig {
         }
 
         // Validate app name references a configured app
-        // (obs and winaudio are non-MIDI apps that don't need a port entry).
-        const NON_MIDI_APPS: &[&str] = &["obs", "winaudio"];
+        // (obs, winaudio, winmedia are non-MIDI apps that don't need a port entry).
+        const NON_MIDI_APPS: &[&str] = &["obs", "winaudio", "winmedia"];
         if !NON_MIDI_APPS.contains(&mapping.app.as_str()) && !midi_app_names.contains(&mapping.app)
         {
             anyhow::bail!(
@@ -827,30 +851,123 @@ mod tests {
         let parsed: AppConfig = serde_yaml::from_str(&yaml).expect("YAML parse failed");
         parsed.validate().expect("config validation failed");
 
-        let vm = parsed
-            .voicemeeter_detection
-            .as_ref()
-            .expect("voicemeeter_detection block expected in example");
-        assert!(vm.enabled);
-        assert_eq!(vm.poll_interval_ms, 5000);
-
         let win = parsed.winaudio.as_ref().expect("winaudio block expected");
         assert_eq!(win.pinned_apps.len(), 3);
+    }
 
-        let auto_pages: Vec<&str> = parsed
-            .pages
-            .iter()
-            .filter(|p| p.auto_when_voicemeeter_absent)
-            .map(|p| p.name.as_str())
-            .collect();
-        assert_eq!(auto_pages, ["Windows Audio"]);
+    fn empty_config() -> AppConfig {
+        AppConfig {
+            midi: MidiConfig {
+                input_port: "in".into(),
+                output_port: "out".into(),
+                apps: None,
+            },
+            obs: None,
+            xtouch: None,
+            paging: None,
+            gamepad: None,
+            pages_global: None,
+            winaudio: None,
+            pages: vec![],
+            tray: None,
+        }
+    }
 
-        let req_pages: Vec<&str> = parsed
-            .pages
-            .iter()
-            .filter(|p| p.requires_voicemeeter)
-            .map(|p| p.name.as_str())
-            .collect();
-        assert_eq!(req_pages, ["Voicemeeter+QLC"]);
+    fn control(app: &str) -> ControlMapping {
+        ControlMapping {
+            app: app.to_string(),
+            action: Some("noop".into()),
+            params: None,
+            midi: None,
+            indicator: None,
+            overlay: None,
+        }
+    }
+
+    fn passthrough(driver: &str) -> PassthroughConfig {
+        PassthroughConfig {
+            driver: driver.to_string(),
+            to_port: "to".into(),
+            from_port: "from".into(),
+            filter: None,
+            optional: None,
+            transform: None,
+        }
+    }
+
+    #[test]
+    fn referenced_apps_collects_page_and_global_controls() {
+        let mut cfg = empty_config();
+        let mut page_controls = HashMap::new();
+        page_controls.insert("fader1".into(), control("voicemeeter"));
+        page_controls.insert("mute1".into(), control("qlc"));
+
+        cfg.pages.push(PageConfig {
+            name: "P1".into(),
+            controls: Some(page_controls),
+            ..PageConfig::default()
+        });
+
+        let mut global_controls = HashMap::new();
+        global_controls.insert("prev".into(), control("obs"));
+        cfg.pages_global = Some(GlobalPageDefaults {
+            controls: Some(global_controls),
+            lcd: None,
+            passthroughs: None,
+        });
+
+        let apps = cfg.referenced_apps();
+        assert!(apps.contains("voicemeeter"));
+        assert!(apps.contains("qlc"));
+        assert!(apps.contains("obs"));
+        assert_eq!(apps.len(), 3);
+    }
+
+    #[test]
+    fn referenced_apps_includes_page_passthrough_drivers() {
+        let mut cfg = empty_config();
+        cfg.pages.push(PageConfig {
+            name: "P1".into(),
+            passthrough: Some(passthrough("voicemeeter")),
+            passthroughs: Some(vec![passthrough("qlc")]),
+            ..PageConfig::default()
+        });
+
+        let apps = cfg.referenced_apps();
+        assert!(apps.contains("voicemeeter"));
+        assert!(apps.contains("qlc"));
+    }
+
+    #[test]
+    fn referenced_apps_includes_global_passthrough_drivers() {
+        let mut cfg = empty_config();
+        cfg.pages_global = Some(GlobalPageDefaults {
+            controls: None,
+            lcd: None,
+            passthroughs: Some(vec![passthrough("voicemeeter")]),
+        });
+
+        let apps = cfg.referenced_apps();
+        assert!(apps.contains("voicemeeter"));
+        assert_eq!(apps.len(), 1);
+    }
+
+    #[test]
+    fn references_app_matches_passthrough_and_controls() {
+        let mut cfg = empty_config();
+        cfg.pages.push(PageConfig {
+            name: "P1".into(),
+            passthrough: Some(passthrough("voicemeeter")),
+            ..PageConfig::default()
+        });
+
+        assert!(cfg.references_app("voicemeeter"));
+        assert!(!cfg.references_app("qlc"));
+
+        let mut controls = HashMap::new();
+        controls.insert("fader1".into(), control("qlc"));
+        cfg.pages[0].controls = Some(controls);
+
+        assert!(cfg.references_app("qlc"));
     }
 }

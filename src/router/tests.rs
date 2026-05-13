@@ -29,7 +29,6 @@ fn make_test_config(pages: Vec<PageConfig>) -> AppConfig {
         paging: None,
         gamepad: None,
         pages_global: None,
-        voicemeeter_detection: None,
         winaudio: None,
         pages,
         tray: None,
@@ -506,4 +505,100 @@ async fn test_page_epoch_survives_set_page() {
     // Setting to same page still increments (refresh_page is called)
     router.set_active_page("QLC").await.unwrap();
     assert_eq!(router.get_page_epoch(), initial + 3);
+}
+
+// ===== Driver unregister / profile-prune tests =====
+
+#[tokio::test]
+async fn test_unregister_driver_removes_from_map() {
+    let config = make_test_config(vec![make_test_page("Test Page")]);
+    let router = make_test_router(config);
+
+    router
+        .register_driver(
+            "winaudio".to_string(),
+            Arc::new(ConsoleDriver::new("winaudio")),
+        )
+        .await
+        .unwrap();
+    assert!(router.get_driver("winaudio").await.is_some());
+
+    let removed = router.unregister_driver("winaudio").await.unwrap();
+    assert!(removed.is_some(), "expected the driver Arc to be returned");
+    assert!(router.get_driver("winaudio").await.is_none());
+    assert!(!router.list_drivers().await.contains(&"winaudio".into()));
+}
+
+#[tokio::test]
+async fn test_unregister_driver_unknown_name_is_ok_none() {
+    let config = make_test_config(vec![make_test_page("Test Page")]);
+    let router = make_test_router(config);
+
+    let result = router.unregister_driver("never_registered").await.unwrap();
+    assert!(result.is_none());
+}
+
+#[tokio::test]
+async fn test_unregister_drivers_not_in_keeps_needed_and_drops_rest() {
+    let config = make_test_config(vec![make_test_page("Test Page")]);
+    let router = make_test_router(config);
+
+    for name in ["voicemeeter", "obs", "winaudio"] {
+        router
+            .register_driver(name.to_string(), Arc::new(ConsoleDriver::new(name)))
+            .await
+            .unwrap();
+    }
+    assert_eq!(router.list_drivers().await.len(), 3);
+
+    let needed: std::collections::HashSet<String> =
+        ["voicemeeter".to_string(), "winaudio".to_string()]
+            .into_iter()
+            .collect();
+    router.unregister_drivers_not_in(&needed).await;
+
+    let remaining: std::collections::HashSet<String> =
+        router.list_drivers().await.into_iter().collect();
+    assert_eq!(remaining, needed, "obs should have been pruned");
+}
+
+#[tokio::test]
+async fn test_unregister_drivers_not_in_with_empty_needed_drops_all() {
+    let config = make_test_config(vec![make_test_page("Test Page")]);
+    let router = make_test_router(config);
+
+    router
+        .register_driver("obs".to_string(), Arc::new(ConsoleDriver::new("obs")))
+        .await
+        .unwrap();
+    router
+        .register_driver(
+            "winaudio".to_string(),
+            Arc::new(ConsoleDriver::new("winaudio")),
+        )
+        .await
+        .unwrap();
+
+    router
+        .unregister_drivers_not_in(&std::collections::HashSet::new())
+        .await;
+
+    assert!(router.list_drivers().await.is_empty());
+}
+
+#[tokio::test]
+async fn test_unregister_drivers_not_in_is_idempotent() {
+    let config = make_test_config(vec![make_test_page("Test Page")]);
+    let router = make_test_router(config);
+
+    router
+        .register_driver("obs".to_string(), Arc::new(ConsoleDriver::new("obs")))
+        .await
+        .unwrap();
+
+    let needed: std::collections::HashSet<String> = ["obs".to_string()].into_iter().collect();
+    router.unregister_drivers_not_in(&needed).await;
+    router.unregister_drivers_not_in(&needed).await;
+
+    assert_eq!(router.list_drivers().await, vec!["obs".to_string()]);
 }

@@ -110,6 +110,7 @@
 - [ ] Network control protocol
 - [ ] Plugin system for custom drivers
 - [ ] GUI configuration editor
+- [ ] **Profile selector GUI** (pre-launch): replace the console `dialoguer` prompt with a small native window (egui or tray-icon dialog) that lets the user pick the profile before the gateway starts. One button per profile + numeric shortcuts (1–9) for fast selection.
 
 ## Critical Success Metrics
 - **Latency**: End-to-end <20ms (measure with oscilloscope if possible)

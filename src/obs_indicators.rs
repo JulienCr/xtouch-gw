@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use crate::api;
-use crate::config::{CameraControlConfig, XTouchMode};
+use crate::config::CameraControlConfig;
 use crate::control_mapping::{ControlMappingDB, MidiSpec};
 use crate::drivers::IndicatorCallback;
 use crate::router::Router;
@@ -41,14 +41,9 @@ pub fn build_indicator_callback(
             // Extract only needed config fields under a short read guard (avoid full clone)
             let (is_mcu_mode, camera_control, gamepad_config) = {
                 let config = router.config.read().await;
-                let is_mcu = config
-                    .xtouch
-                    .as_ref()
-                    .map(|x| matches!(x.mode, XTouchMode::Mcu))
-                    .unwrap_or(true);
                 let cc = config.obs.as_ref().and_then(|o| o.camera_control.clone());
                 let gp = config.gamepad.clone();
-                (is_mcu, cc, gp)
+                (config.is_mcu_mode(), cc, gp)
             };
             handle_indicator_signal(
                 &router,

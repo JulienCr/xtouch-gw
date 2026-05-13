@@ -78,11 +78,7 @@ impl super::Router {
                 paging.map(|p| p.prev_note).unwrap_or(46),
                 paging.map(|p| p.next_note).unwrap_or(47),
                 config.pages.len(),
-                config
-                    .xtouch
-                    .as_ref()
-                    .map(|x| matches!(x.mode, crate::config::XTouchMode::Mcu))
-                    .unwrap_or(true),
+                config.is_mcu_mode(),
             )
         };
 

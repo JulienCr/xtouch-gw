@@ -22,9 +22,16 @@ pub struct TrayManager {
     driver_statuses: HashMap<String, ConnectionStatus>,
     /// Current activity states for all drivers (driver, direction) -> is_active
     driver_activities: HashMap<(String, ActivityDirection), bool>,
+    /// Available profile names, sorted.
+    profiles: Vec<String>,
+    /// Active profile name (rendered with a checkmark in the menu).
+    active_profile: Option<String>,
     /// Hash of last menu content to avoid unnecessary rebuilds
     last_menu_hash: u64,
 }
+
+/// Prefix for profile menu item IDs (e.g. "profile:twitch").
+const PROFILE_MENU_PREFIX: &str = "profile:";
 
 impl TrayManager {
     /// Create a new tray manager
@@ -39,6 +46,8 @@ impl TrayManager {
             config,
             driver_statuses: HashMap::new(),
             driver_activities: HashMap::new(),
+            profiles: Vec::new(),
+            active_profile: None,
             last_menu_hash: 0,
         }
     }
@@ -153,6 +162,13 @@ impl TrayManager {
                         // Note: In a real implementation, this would show a dialog
                         // For now, we just log it
                     },
+                    other if other.starts_with(PROFILE_MENU_PREFIX) => {
+                        let name = &other[PROFILE_MENU_PREFIX.len()..];
+                        debug!("Profile selected from tray: {}", name);
+                        let _ = self
+                            .command_tx
+                            .try_send(TrayCommand::SwitchProfile(name.to_string()));
+                    },
                     _ => {
                         debug!("Unknown menu item: {:?}", event.id);
                     },
@@ -221,6 +237,20 @@ impl TrayManager {
                                 new_hash
                             );
                         }
+                    }
+                },
+                TrayUpdate::ProfilesList { profiles, active } => {
+                    trace!(
+                        "Tray: profiles list updated ({} profiles, active={:?})",
+                        profiles.len(),
+                        active
+                    );
+                    self.profiles = profiles;
+                    self.active_profile = active;
+                    if let Ok(new_menu) = self.build_menu_with_all_statuses() {
+                        tray_icon.set_menu(Some(Box::new(new_menu.clone())));
+                        *menu_clone.lock() = new_menu;
+                        self.last_menu_hash = self.calculate_menu_hash();
                     }
                 },
             }
@@ -341,6 +371,35 @@ impl TrayManager {
 
             menu.append(&muda::PredefinedMenuItem::separator())?;
         }
+
+        // Profile switcher submenu (always visible — even an empty list is
+        // diagnostic info during startup before the first ProfilesList update).
+        let profile_label = match &self.active_profile {
+            Some(name) => format!("Profile: {}", name),
+            None => "Profile".to_string(),
+        };
+        let profile_menu = muda::Submenu::new(profile_label, true);
+        if self.profiles.is_empty() {
+            let placeholder = muda::MenuItem::new("(no profiles loaded)", false, None);
+            profile_menu.append(&placeholder)?;
+        } else {
+            for name in &self.profiles {
+                let is_active = self.active_profile.as_deref() == Some(name.as_str());
+                let label = if is_active {
+                    format!("✓ {}", name)
+                } else {
+                    format!("   {}", name)
+                };
+                let id = format!("{}{}", PROFILE_MENU_PREFIX, name);
+                // Active profile item is disabled — clicking it would no-op
+                // and the checkmark already conveys the state.
+                let item = muda::MenuItem::with_id(id, label, !is_active, None);
+                profile_menu.append(&item)?;
+            }
+        }
+        menu.append(&profile_menu)?;
+
+        menu.append(&muda::PredefinedMenuItem::separator())?;
 
         // Actions
         let connect_obs = muda::MenuItem::with_id("connect_obs", "Connect OBS", true, None);
@@ -519,6 +578,13 @@ impl TrayManager {
             }
             active.hash(&mut hasher);
         }
+
+        // Hash profiles list and active selection so menu rebuilds when
+        // either changes.
+        for name in &self.profiles {
+            name.hash(&mut hasher);
+        }
+        self.active_profile.hash(&mut hasher);
 
         hasher.finish()
     }

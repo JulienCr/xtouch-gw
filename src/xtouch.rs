@@ -646,7 +646,23 @@ pub(crate) fn ascii7(text: &str, length: usize) -> Vec<u8> {
     bytes
 }
 
-/// Build the two SysEx messages required to update one LCD strip
+/// Build the SysEx message that sets all 8 LCD strip background colors.
+///
+/// Each entry must be 0..=7 (extra values are clamped); 0 = off (black),
+/// 7 = white. Returns a single 15-byte SysEx (6-byte header + 8 color
+/// bytes + 1 terminator) ready for `send_raw()` or queueing into the
+/// router's pending-MIDI buffer.
+pub fn build_lcd_colors_sysex(colors: &[u8; 8]) -> Vec<u8> {
+    let mut data = Vec::with_capacity(15);
+    data.extend_from_slice(&[0xF0, 0x00, 0x00, 0x66, 0x14, 0x72]);
+    for c in colors {
+        data.push((*c).min(7));
+    }
+    data.push(0xF7);
+    data
+}
+
+/// Build the two SysEx messages that update a single LCD strip
 /// (upper line + lower line) on an X-Touch.
 ///
 /// `strip_index` must be 0..=7. Returns `(upper_sysex, lower_sysex)` as

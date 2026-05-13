@@ -124,6 +124,7 @@ pub enum AppKey {
     Qlc,
     Obs,
     WinAudio,
+    WinMedia,
     #[serde(rename = "midi-bridge")]
     MidiBridge,
 }
@@ -136,6 +137,7 @@ impl AppKey {
             AppKey::Qlc,
             AppKey::Obs,
             AppKey::WinAudio,
+            AppKey::WinMedia,
             AppKey::MidiBridge,
         ]
     }
@@ -147,6 +149,7 @@ impl AppKey {
             "qlc" => Some(AppKey::Qlc),
             "obs" => Some(AppKey::Obs),
             "winaudio" => Some(AppKey::WinAudio),
+            "winmedia" => Some(AppKey::WinMedia),
             "midi-bridge" => Some(AppKey::MidiBridge),
             _ => None,
         }
@@ -159,6 +162,7 @@ impl AppKey {
             AppKey::Qlc => "qlc",
             AppKey::Obs => "obs",
             AppKey::WinAudio => "winaudio",
+            AppKey::WinMedia => "winmedia",
             AppKey::MidiBridge => "midi-bridge",
         }
     }

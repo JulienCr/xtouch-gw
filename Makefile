@@ -3,7 +3,7 @@
 
 .PHONY: help build release run test check clean fmt clippy watch docs \
         ts-run ts-test ts-sniff compare setup install-deps bench profile \
-        dev sniffer web-sniffer all ci
+        dev sniffer web-sniffer all ci installer installer-fast
 
 # Default target
 .DEFAULT_GOAL := help
@@ -53,6 +53,18 @@ release:
 	@echo Building release version...
 	@$(CARGO) build --release
 	@echo Build complete: target/release/xtouch-gw.exe
+
+## installer: Build the Windows installer (.exe) via Inno Setup
+installer:
+	@echo Building installer...
+	@powershell -ExecutionPolicy Bypass -File .\installer\build-installer.ps1
+	@echo Installer written to dist\
+
+## installer-fast: Build installer without re-running cargo build/Stream Deck build
+installer-fast:
+	@echo Building installer (skip cargo + Stream Deck)...
+	@powershell -ExecutionPolicy Bypass -File .\installer\build-installer.ps1 -SkipBuild -SkipStreamDeck
+	@echo Installer written to dist\
 
 ## run: Run with example config
 run: build

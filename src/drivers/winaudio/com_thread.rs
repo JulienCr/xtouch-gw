@@ -69,6 +69,15 @@ pub enum AudioEvent {
         scalar: f32,
         mute: bool,
     },
+    /// Emitted at the end of every `RefreshSessions` pass — once the
+    /// current set of active sessions has been fully enumerated. The
+    /// vector contains the lowercase exe name of every session
+    /// currently producing audio (no duplicates). Acts as an atomic
+    /// marker so the consumer can replace its "active" set in one shot
+    /// rather than trying to derive it from the snapshot burst.
+    ActiveSessionsChanged {
+        names_lc: Vec<String>,
+    },
 }
 
 /// Bounded capacity for the command queue. Faders generate ~30 PB/s; 64
@@ -255,7 +264,7 @@ fn run_com_loop(
     // push their current state. This handles apps that already had
     // audio sessions open when the gateway started.
     if let Some(mgr) = session_mgr.as_ref() {
-        register_session_events_for_all(mgr, &event_tx, &mut session_regs);
+        register_session_events_for_all(mgr, &event_tx, &cmd_tx, &mut session_regs);
     }
 
     info!("WinAudio COM loop running");
@@ -293,7 +302,7 @@ fn run_com_loop(
             },
             AudioCmd::RefreshSessions => {
                 if let Some(mgr) = session_mgr.as_ref() {
-                    register_session_events_for_all(mgr, &event_tx, &mut session_regs);
+                    register_session_events_for_all(mgr, &event_tx, &cmd_tx, &mut session_regs);
                 }
             },
             AudioCmd::SetSessionScalar {
@@ -410,12 +419,16 @@ fn run_com_loop(
 }
 
 /// Enumerate all sessions, register an `IAudioSessionEvents` callback on
-/// each new one, and push a `SessionVolumeSnapshot` so the consumer sees
-/// every session's current state immediately. Re-running this is safe:
-/// already-registered sessions are skipped (looked up by PID).
+/// each new one, push a `SessionVolumeSnapshot` so the consumer sees
+/// every session's current state immediately, then emit a single
+/// `ActiveSessionsChanged` summary at the end. Re-running this is safe:
+/// already-registered sessions are skipped (looked up by PID), and PIDs
+/// that have disappeared since the previous pass are unregistered to
+/// prevent the `session_regs` map from growing unbounded.
 fn register_session_events_for_all(
     mgr: &SessionManager,
     event_tx: &mpsc::Sender<AudioEvent>,
+    cmd_tx: &mpsc::Sender<AudioCmd>,
     session_regs: &mut HashMap<u32, SessionReg>,
 ) {
     let sessions = match mgr.enumerate() {
@@ -426,9 +439,17 @@ fn register_session_events_for_all(
         },
     };
 
+    let mut active_names: Vec<String> = Vec::with_capacity(sessions.len());
+    let mut active_pids: std::collections::HashSet<u32> =
+        std::collections::HashSet::with_capacity(sessions.len());
+
     for s in sessions {
         if s.process_name.is_empty() {
             continue;
+        }
+        active_pids.insert(s.pid);
+        if !active_names.contains(&s.process_name) {
+            active_names.push(s.process_name.clone());
         }
 
         // Always push the current state — the consumer is idempotent and
@@ -447,7 +468,8 @@ fn register_session_events_for_all(
             continue;
         }
 
-        let cb_impl = SessionEventsCallback::new(event_tx.clone(), s.process_name.clone());
+        let cb_impl =
+            SessionEventsCallback::new(event_tx.clone(), cmd_tx.clone(), s.process_name.clone());
         let events: IAudioSessionEvents = cb_impl.into();
         match unsafe { s.control.RegisterAudioSessionNotification(&events) } {
             Ok(()) => {
@@ -469,4 +491,30 @@ fn register_session_events_for_all(
             ),
         }
     }
+
+    // Unregister callbacks for PIDs that have disappeared since the last
+    // pass. Prevents the map from growing unboundedly across long-lived
+    // sessions where many short-lived audio sources come and go.
+    let stale_pids: Vec<u32> = session_regs
+        .keys()
+        .filter(|pid| !active_pids.contains(pid))
+        .copied()
+        .collect();
+    for pid in stale_pids {
+        if let Some(reg) = session_regs.remove(&pid) {
+            if let Err(e) = unsafe { reg.control.UnregisterAudioSessionNotification(&reg.events) } {
+                trace!(
+                    "UnregisterAudioSessionNotification(pid={}) on stale session failed: {:?}",
+                    pid,
+                    e
+                );
+            }
+        }
+    }
+
+    // Atomic "active set" marker — the consumer uses this to swap its
+    // active-session view in one go.
+    let _ = event_tx.try_send(AudioEvent::ActiveSessionsChanged {
+        names_lc: active_names,
+    });
 }

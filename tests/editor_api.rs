@@ -238,6 +238,9 @@ fn fx_with_catalog() -> Fx {
         live_tx: None,
         obs: None,
         drivers: Arc::new(catalogs),
+        fader_setpoint: None,
+        active_page_reader: None,
+        active_page_setter: None,
     });
     let router = routes().with_state(state);
     Fx {

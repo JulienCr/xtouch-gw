@@ -95,6 +95,33 @@ impl MidiSpec {
             },
         }
     }
+
+    /// Encode an LED on/off command for this MIDI spec. Mirrors the
+    /// X-Touch button-LED convention: NoteOn vel 127 lights, vel 0
+    /// extinguishes; CC 127/0; PB max/0 as a benign fallback when YAML
+    /// happens to bind a button-style indicator to a fader.
+    pub fn led_bytes(&self, lit: bool) -> Vec<u8> {
+        use crate::midi::MidiMessage;
+        match *self {
+            MidiSpec::Note { note } => MidiMessage::NoteOn {
+                channel: 0,
+                note,
+                velocity: if lit { 127 } else { 0 },
+            }
+            .to_bytes(),
+            MidiSpec::ControlChange { cc } => MidiMessage::ControlChange {
+                channel: 0,
+                cc,
+                value: if lit { 127 } else { 0 },
+            }
+            .to_bytes(),
+            MidiSpec::PitchBend { channel } => MidiMessage::PitchBend {
+                channel: channel & 0x0F,
+                value: if lit { 16383 } else { 0 },
+            }
+            .to_bytes(),
+        }
+    }
 }
 
 /// Control mapping database

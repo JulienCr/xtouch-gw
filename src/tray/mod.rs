@@ -25,6 +25,8 @@ pub enum TrayCommand {
     ConnectObs,
     /// Recheck all driver connections
     RecheckAll,
+    /// Activate a profile by name (mirrors profile.yaml → watched config.yaml).
+    SwitchProfile(String),
     /// Shutdown the application
     Shutdown,
 }
@@ -46,6 +48,13 @@ pub enum TrayUpdate {
     ActivitySnapshot {
         /// Map of (driver_name, direction) -> is_active
         activities: std::collections::HashMap<(String, ActivityDirection), bool>,
+    },
+    /// Refresh the list of profiles shown in the tray menu, with the active
+    /// one marked. Sent at startup and whenever the active profile changes
+    /// (tray-initiated, web editor, or config watcher reload).
+    ProfilesList {
+        profiles: Vec<String>,
+        active: Option<String>,
     },
 }
 
