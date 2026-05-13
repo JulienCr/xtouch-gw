@@ -176,17 +176,7 @@ pub async fn register_winaudio_driver(
     feedback_tx: &mpsc::Sender<(String, Vec<u8>)>,
     led_tx: &mpsc::Sender<Vec<u8>>,
 ) {
-    let referenced = config.pages.iter().any(|p| {
-        p.controls
-            .as_ref()
-            .map(|m| m.values().any(|c| c.app == "winaudio"))
-            .unwrap_or(false)
-    }) || config
-        .pages_global
-        .as_ref()
-        .and_then(|g| g.controls.as_ref())
-        .map(|m| m.values().any(|c| c.app == "winaudio"))
-        .unwrap_or(false);
+    let referenced = config.references_app(crate::drivers::winaudio::DRIVER_NAME);
 
     if !referenced && config.winaudio.is_none() {
         debug!("WinAudio driver not configured and unreferenced — skipping registration");
@@ -239,24 +229,9 @@ pub async fn register_winmedia_driver(
     config: &AppConfig,
     router: &Arc<Router>,
     feedback_tx: &mpsc::Sender<(String, Vec<u8>)>,
+    control_db: &Arc<ControlMappingDB>,
 ) {
-    let referenced = config.pages.iter().any(|p| {
-        p.controls
-            .as_ref()
-            .map(|m| {
-                m.values()
-                    .any(|c| c.app == crate::drivers::winmedia::DRIVER_NAME)
-            })
-            .unwrap_or(false)
-    }) || config
-        .pages_global
-        .as_ref()
-        .and_then(|g| g.controls.as_ref())
-        .map(|m| {
-            m.values()
-                .any(|c| c.app == crate::drivers::winmedia::DRIVER_NAME)
-        })
-        .unwrap_or(false);
+    let referenced = config.references_app(crate::drivers::winmedia::DRIVER_NAME);
 
     if !referenced {
         debug!("WinMedia driver unreferenced — skipping registration");
@@ -275,6 +250,7 @@ pub async fn register_winmedia_driver(
     let driver = Arc::new(WinMediaDriver::new());
     driver.set_router(router.clone()).await;
     driver.set_feedback_sender(feedback_tx.clone()).await;
+    driver.set_control_db(Arc::clone(control_db)).await;
 
     match router
         .register_driver(crate::drivers::winmedia::DRIVER_NAME.to_string(), driver)

@@ -450,6 +450,48 @@ pub struct PbToCcTransform {
 }
 
 impl AppConfig {
+    /// True when the X-Touch is configured (or defaulted) to MCU mode.
+    pub fn is_mcu_mode(&self) -> bool {
+        self.xtouch
+            .as_ref()
+            .map(|x| matches!(x.mode, XTouchMode::Mcu))
+            .unwrap_or(true)
+    }
+
+    /// Collect every app name referenced by control mappings on any page
+    /// (including `pages_global`). Used to decide which drivers a profile
+    /// requires.
+    pub fn referenced_apps(&self) -> std::collections::HashSet<String> {
+        let mut apps = std::collections::HashSet::new();
+        let mut record = |controls: &HashMap<String, ControlMapping>| {
+            for mapping in controls.values() {
+                apps.insert(mapping.app.clone());
+            }
+        };
+        for page in &self.pages {
+            if let Some(controls) = &page.controls {
+                record(controls);
+            }
+        }
+        if let Some(controls) = self.pages_global.as_ref().and_then(|g| g.controls.as_ref()) {
+            record(controls);
+        }
+        apps
+    }
+
+    /// True if any page or `pages_global` mapping references the given app name.
+    pub fn references_app(&self, name: &str) -> bool {
+        let any = |c: &HashMap<String, ControlMapping>| c.values().any(|m| m.app == name);
+        self.pages
+            .iter()
+            .any(|p| p.controls.as_ref().is_some_and(any))
+            || self
+                .pages_global
+                .as_ref()
+                .and_then(|g| g.controls.as_ref())
+                .is_some_and(any)
+    }
+
     /// Load configuration from file with validation
     pub async fn load(path: &str) -> Result<Self> {
         let contents = fs::read_to_string(path)

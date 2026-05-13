@@ -49,6 +49,9 @@ pub struct WinMediaDriver {
     /// synthetic `("winmedia", note_on_bytes)` feedback into the unified
     /// router feedback path.
     feedback_tx: Arc<RwLock<Option<mpsc::Sender<(String, Vec<u8>)>>>>,
+    /// Wired post-construction. Reused for every play-LED resolution
+    /// instead of reloading from disk on each emit.
+    control_db: Arc<RwLock<Option<Arc<crate::control_mapping::ControlMappingDB>>>>,
     /// Last observed SMTC playing state. `None` before the first poll.
     /// Stored so we can re-emit on page change without waiting for the
     /// next state transition.
@@ -62,6 +65,7 @@ impl WinMediaDriver {
             shutdown_flag: Arc::new(AtomicBool::new(false)),
             router: Arc::new(RwLock::new(None)),
             feedback_tx: Arc::new(RwLock::new(None)),
+            control_db: Arc::new(RwLock::new(None)),
             last_state: Arc::new(RwLock::new(None)),
         }
     }
@@ -75,6 +79,12 @@ impl WinMediaDriver {
     /// Wire the driver to the unified feedback channel.
     pub async fn set_feedback_sender(&self, tx: mpsc::Sender<(String, Vec<u8>)>) {
         *self.feedback_tx.write().await = Some(tx);
+    }
+
+    /// Share the application-wide control mapping DB so the play-LED
+    /// resolver can avoid re-reading the embedded CSV on every poll.
+    pub async fn set_control_db(&self, db: Arc<crate::control_mapping::ControlMappingDB>) {
+        *self.control_db.write().await = Some(db);
     }
 }
 
@@ -171,6 +181,7 @@ impl WinMediaDriver {
         let shutdown_flag = Arc::clone(&self.shutdown_flag);
         let router = Arc::clone(&self.router);
         let feedback_tx = Arc::clone(&self.feedback_tx);
+        let control_db = Arc::clone(&self.control_db);
         let last_state = Arc::clone(&self.last_state);
 
         tokio::spawn(async move {
@@ -204,7 +215,7 @@ impl WinMediaDriver {
                 *last = Some(playing);
                 drop(last);
 
-                emit_play_indicator(&feedback_tx, &router, playing).await;
+                emit_play_indicator(&feedback_tx, &router, &control_db, playing).await;
             }
         });
     }
@@ -227,6 +238,7 @@ impl WinMediaDriver {
         let mut rx = live_tx.subscribe();
         let feedback_tx = Arc::clone(&self.feedback_tx);
         let router_handle = Arc::clone(&self.router);
+        let control_db = Arc::clone(&self.control_db);
         let last_state = Arc::clone(&self.last_state);
         let shutdown_flag = Arc::clone(&self.shutdown_flag);
 
@@ -240,7 +252,7 @@ impl WinMediaDriver {
                 }
                 let cached = *last_state.read().await;
                 if let Some(playing) = cached {
-                    emit_play_indicator(&feedback_tx, &router_handle, playing).await;
+                    emit_play_indicator(&feedback_tx, &router_handle, &control_db, playing).await;
                 }
             }
         });
@@ -362,6 +374,7 @@ fn read_smtc_playing() -> bool {
 async fn emit_play_indicator(
     feedback_tx: &Arc<RwLock<Option<mpsc::Sender<(String, Vec<u8>)>>>>,
     router: &Arc<RwLock<Option<Arc<crate::router::Router>>>>,
+    control_db: &Arc<RwLock<Option<Arc<crate::control_mapping::ControlMappingDB>>>>,
     playing: bool,
 ) {
     let Some(tx) = feedback_tx.read().await.clone() else {
@@ -373,30 +386,22 @@ async fn emit_play_indicator(
     let Some(page) = router.get_active_page().await else {
         return;
     };
-
-    let mcu_mode = is_mcu_mode(&router).await;
-    let Ok(db) = crate::control_mapping::load_default_mappings() else {
-        warn!("WinMedia: control_mapping DB unavailable");
+    let Some(db) = control_db.read().await.clone() else {
+        debug!("WinMedia: control DB not yet wired, dropping LED emit");
         return;
     };
+
+    let mcu_mode = router.config.read().await.is_mcu_mode();
     let Some(spec) = resolve_play_pause_spec(&page, &db, mcu_mode) else {
         // No control bound — nothing to light. Common on pages without
         // transport buttons (lighting, etc.).
         return;
     };
 
-    let bytes = led_bytes_for_spec(&spec, playing);
+    let bytes = spec.led_bytes(playing);
     if let Err(e) = tx.send((DRIVER_NAME.to_string(), bytes)).await {
         debug!("WinMedia: feedback channel closed: {}", e);
     }
-}
-
-async fn is_mcu_mode(router: &Arc<crate::router::Router>) -> bool {
-    let cfg = router.config.read().await;
-    cfg.xtouch
-        .as_ref()
-        .map(|x| matches!(x.mode, crate::config::XTouchMode::Mcu))
-        .unwrap_or(true)
 }
 
 /// Find the page control bound to `winmedia.play_pause` (or any of its
@@ -413,48 +418,9 @@ fn resolve_play_pause_spec(
             return None;
         }
         let action = m.action.as_deref()?;
-        if vk_for_action(action) == Some(VK_MEDIA_PLAY_PAUSE)
-            && action != "stop"
-            && action != "next"
-            && action != "previous"
-        {
-            Some(id.clone())
-        } else {
-            None
-        }
+        (vk_for_action(action) == Some(VK_MEDIA_PLAY_PAUSE)).then(|| id.clone())
     })?;
     db.get_midi_spec(&control_id, mcu_mode)
-}
-
-/// Convert a resolved MIDI spec + playing flag into the wire bytes
-/// expected by the X-Touch for an LED indicator. Mirrors WinAudio's
-/// mute-LED convention: NoteOn with velocity 127 lights, velocity 0
-/// extinguishes; CC indicators use 127 / 0 likewise.
-fn led_bytes_for_spec(spec: &crate::control_mapping::MidiSpec, lit: bool) -> Vec<u8> {
-    use crate::control_mapping::MidiSpec;
-    use crate::midi::MidiMessage;
-    match *spec {
-        MidiSpec::Note { note } => MidiMessage::NoteOn {
-            channel: 0,
-            note,
-            velocity: if lit { 127 } else { 0 },
-        }
-        .to_bytes(),
-        MidiSpec::ControlChange { cc } => MidiMessage::ControlChange {
-            channel: 0,
-            cc,
-            value: if lit { 127 } else { 0 },
-        }
-        .to_bytes(),
-        // play_pause is a button by every reasonable mapping; a
-        // PitchBend resolution would be a YAML mistake. Emit a benign
-        // value rather than panicking.
-        MidiSpec::PitchBend { channel } => MidiMessage::PitchBend {
-            channel: channel & 0x0F,
-            value: if lit { 16383 } else { 0 },
-        }
-        .to_bytes(),
-    }
 }
 
 fn media_catalog() -> Vec<ActionDescriptor> {
@@ -512,7 +478,7 @@ mod tests {
     #[test]
     fn led_bytes_note_lit_uses_velocity_127() {
         let spec = crate::control_mapping::MidiSpec::Note { note: 94 };
-        let bytes = led_bytes_for_spec(&spec, true);
+        let bytes = spec.led_bytes(true);
         // NoteOn channel 0 = 0x90, note 94, velocity 127.
         assert_eq!(bytes, vec![0x90, 94, 127]);
     }
@@ -520,7 +486,7 @@ mod tests {
     #[test]
     fn led_bytes_note_unlit_uses_velocity_0() {
         let spec = crate::control_mapping::MidiSpec::Note { note: 94 };
-        let bytes = led_bytes_for_spec(&spec, false);
+        let bytes = spec.led_bytes(false);
         assert_eq!(bytes, vec![0x90, 94, 0]);
     }
 }

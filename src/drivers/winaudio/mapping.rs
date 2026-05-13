@@ -98,9 +98,17 @@ impl DiscoveryState {
     }
 
     /// Replace the active session set wholesale. Called on every
-    /// `ActiveSessionsChanged` event from the COM thread.
-    pub fn set_active(&mut self, names_lc: &[String]) {
-        self.active = names_lc.iter().cloned().collect();
+    /// `ActiveSessionsChanged` event from the COM thread. Returns
+    /// `true` if the set actually changed; callers use this to skip
+    /// downstream re-renders when the COM thread fires a redundant
+    /// "changed" event during burst session-disconnect cascades.
+    pub fn set_active(&mut self, names_lc: &[String]) -> bool {
+        let new_set: HashSet<String> = names_lc.iter().cloned().collect();
+        if new_set == self.active {
+            return false;
+        }
+        self.active = new_set;
+        true
     }
 
     /// Look up the cycle color for a process name, or `None` if it has
@@ -182,11 +190,6 @@ pub fn pinned_target(pinned: &[PinnedApp], fader: u8) -> Option<String> {
 /// process name, return the YAML target string (`"pinned:N"` or
 /// `"discovered:N"`) that pages bind to. Returns `None` if the session
 /// is neither pinned nor in the discovery FIFO.
-///
-/// Note: this returns the *canonical* legacy target string. Pages that
-/// use the new `"auto"` syntax resolve via [`auto_target`] instead;
-/// `target_for_process` is still used to key feedback events to a
-/// specific YAML control via the active page.
 pub fn target_for_process(
     pinned: &[PinnedApp],
     discovery: &DiscoveryState,
@@ -227,23 +230,6 @@ pub fn discovered_target(
         .filter(|n| !pinned_lc.contains(*n))
         .nth(slot as usize)
         .cloned()
-}
-
-/// Resolve an `auto` target on the active page. The Nth control on the
-/// page (in YAML declaration order) bound to `winaudio.<action>` with
-/// `params: ["auto"]` maps to the Nth entry of the discovery FIFO
-/// (filtered of pinned names).
-///
-/// `auto_strip_index` is the position of `control_id` within the ordered
-/// list of `auto`-bound controls for the same action. The caller
-/// computes that from the active page, since this module has no access
-/// to `PageConfig`.
-pub fn auto_target(
-    pinned: &[PinnedApp],
-    discovery: &DiscoveryState,
-    auto_strip_index: u8,
-) -> Option<String> {
-    discovered_target(pinned, discovery, auto_strip_index)
 }
 
 /// Find a session info matching a process name (lowercase).
@@ -449,18 +435,28 @@ mod tests {
     #[test]
     fn set_active_replaces_set_wholesale() {
         let mut s = DiscoveryState::default();
-        s.set_active(&["a.exe".into(), "b.exe".into()]);
+        assert!(s.set_active(&["a.exe".into(), "b.exe".into()]));
         assert!(s.is_active("a.exe"));
         assert!(s.is_active("b.exe"));
         assert!(!s.is_active("c.exe"));
-        s.set_active(&["c.exe".into()]);
+        assert!(s.set_active(&["c.exe".into()]));
         assert!(!s.is_active("a.exe"));
         assert!(!s.is_active("b.exe"));
         assert!(s.is_active("c.exe"));
     }
 
     #[test]
-    fn auto_target_indexes_discovery_filtered_of_pinned() {
+    fn set_active_returns_false_when_unchanged() {
+        let mut s = DiscoveryState::default();
+        assert!(s.set_active(&["a.exe".into(), "b.exe".into()]));
+        // Same names, different order — set equality holds.
+        assert!(!s.set_active(&["b.exe".into(), "a.exe".into()]));
+        // Adding a new name flips back to true.
+        assert!(s.set_active(&["a.exe".into(), "b.exe".into(), "c.exe".into()]));
+    }
+
+    #[test]
+    fn discovered_target_indexes_discovery_filtered_of_pinned() {
         let pinned = vec![pin(1, "Discord.exe")];
         let discovery = DiscoveryState {
             discovered_order: vec![
@@ -471,17 +467,17 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            auto_target(&pinned, &discovery, 0),
+            discovered_target(&pinned, &discovery, 0),
             Some("spotify.exe".into())
         );
         assert_eq!(
-            auto_target(&pinned, &discovery, 1),
+            discovered_target(&pinned, &discovery, 1),
             Some("firefox.exe".into())
         );
         assert_eq!(
-            auto_target(&pinned, &discovery, 2),
+            discovered_target(&pinned, &discovery, 2),
             Some("steam.exe".into())
         );
-        assert_eq!(auto_target(&pinned, &discovery, 3), None);
+        assert_eq!(discovered_target(&pinned, &discovery, 3), None);
     }
 }

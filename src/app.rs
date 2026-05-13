@@ -212,11 +212,10 @@ pub async fn run_app(
     driver_setup::register_winaudio_driver(&config, &router, &feedback_tx, &led_tx).await;
 
     // Register the Windows media transport driver (play/pause/next/previous).
-    driver_setup::register_winmedia_driver(&config, &router, &feedback_tx).await;
+    driver_setup::register_winmedia_driver(&config, &router, &feedback_tx, &control_db).await;
 
-    // Keep `feedback_tx` alive for late driver registration on profile
-    // switches (see `handle_config_reload`). The receiver `feedback_rx` is
-    // owned by the main loop; the channel stays open until shutdown.
+    // `feedback_tx` is kept alive for late driver registration on profile
+    // switches; receiver lives in the main loop until shutdown.
     debug!("All drivers registered and initialized");
 
     // Spawn Stream Deck API server task
@@ -350,9 +349,7 @@ pub async fn run_app(
                     &api_state,
                     &deps,
                 ).await;
-                // Keep the tray's profile checkmark in sync — covers both
-                // tray-initiated switches and external ones (web editor,
-                // direct profile file edit, etc.).
+                // Refresh the tray profile checkmark for both tray-initiated and external switches.
                 publish_profiles_list(&tray_update_tx, &profile_store);
                 // Best-effort: notify editor live subscribers.
                 let _ = live_tx.send(crate::event_bus::LiveEvent::ConfigReloaded {
@@ -477,33 +474,11 @@ async fn handle_tray_command(
     }
 }
 
-/// Collect every app name referenced by control mappings in `config`.
-/// Used during profile switches to decide which registered drivers are
-/// still needed and which can be unregistered.
-fn referenced_apps(config: &AppConfig) -> std::collections::HashSet<String> {
-    let mut apps = std::collections::HashSet::new();
-    for page in &config.pages {
-        if let Some(controls) = &page.controls {
-            for mapping in controls.values() {
-                apps.insert(mapping.app.clone());
-            }
-        }
-    }
-    if let Some(global) = &config.pages_global {
-        if let Some(controls) = &global.controls {
-            for mapping in controls.values() {
-                apps.insert(mapping.app.clone());
-            }
-        }
-    }
-    apps
-}
-
 /// Unregister any driver the new config no longer references. Stops
 /// background work (OBS reconnection loop, MIDI bridge readers, WinAudio
 /// COM thread) so dropped profiles don't keep polling.
 async fn prune_unused_drivers(router: &Arc<Router>, new_config: &AppConfig) {
-    let needed = referenced_apps(new_config);
+    let needed = new_config.referenced_apps();
     let registered = router.list_drivers().await;
     for name in registered {
         if needed.contains(&name) {
@@ -661,11 +636,8 @@ async fn handle_config_reload(
     // Extract gamepad config before moving new_config into update_config
     let new_gamepad_config = new_config.gamepad.clone();
 
-    // Profile switches can introduce drivers absent from the previous
-    // profile (e.g. winaudio when going twitch → basic). Register the
-    // missing ones BEFORE update_config runs its post-swap refresh so
-    // pages referencing the new drivers find them on the very first
-    // dispatch. Already-registered drivers are skipped (idempotent).
+    // Register profile-introduced drivers BEFORE update_config so the
+    // post-swap refresh dispatches to them. Existing ones are skipped.
     driver_setup::register_midi_bridge_drivers(
         &new_config,
         router,
@@ -675,12 +647,10 @@ async fn handle_config_reload(
     .await;
     driver_setup::register_winaudio_driver(&new_config, router, deps.feedback_tx, deps.led_tx)
         .await;
-    driver_setup::register_winmedia_driver(&new_config, router, deps.feedback_tx).await;
+    driver_setup::register_winmedia_driver(&new_config, router, deps.feedback_tx, deps.control_db)
+        .await;
     if let Some(obs_driver) = deps.obs_driver {
-        // Re-register OBS only when the new profile actually uses it.
-        // OBS init() re-arms its shutdown flag, so the same Arc survives
-        // unregister/register cycles cleanly.
-        if referenced_apps(&new_config).contains(crate::state::AppKey::Obs.as_str()) {
+        if new_config.references_app(crate::state::AppKey::Obs.as_str()) {
             driver_setup::register_obs_driver(
                 obs_driver,
                 router,
@@ -693,10 +663,8 @@ async fn handle_config_reload(
         }
     }
 
-    // Drop drivers the new profile no longer references so their
-    // background tasks (OBS reconnect loop, COM thread, MIDI readers)
-    // stop. Done BEFORE update_config so the post-swap refresh_page
-    // doesn't try to dispatch to drivers about to be torn down.
+    // Stop background tasks for drivers the new profile no longer uses.
+    // Done before update_config so the post-swap refresh skips them.
     prune_unused_drivers(router, &new_config).await;
 
     match router.update_config(new_config).await {

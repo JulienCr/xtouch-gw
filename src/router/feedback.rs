@@ -140,14 +140,8 @@ impl super::Router {
             }
         }
 
-        // Also check X-Touch mode
         // BUG-007 FIX: Use config_snapshot consistently
-        let is_mcu_mode = config_snapshot
-            .xtouch
-            .as_ref()
-            .map(|x| matches!(x.mode, crate::config::XTouchMode::Mcu))
-            .unwrap_or(true);
-        // Note: No need for drop() - config_snapshot is owned, not a guard
+        let is_mcu_mode = config_snapshot.is_mcu_mode();
 
         if let Some(control_id) = found_control_id {
             // Load hardware mapping to find native message

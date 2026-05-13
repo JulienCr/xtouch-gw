@@ -48,10 +48,7 @@ pub struct WinAudioDriver {
     /// Wired post-construction via [`WinAudioDriver::set_router`].
     router: Arc<RwLock<Option<Arc<crate::router::Router>>>>,
     /// Wired post-construction via [`WinAudioDriver::set_led_sender`].
-    /// Raw MIDI bytes pushed through this channel are consumed by the
-    /// main event loop and forwarded to the X-Touch via `send_raw`.
-    /// Same pattern as `obs_indicators` — keeps the driver Send-safe
-    /// because `XTouchDriver` itself is not `Sync`.
+    /// Raw MIDI bytes pushed here are forwarded to the X-Touch by the main loop.
     led_tx: Arc<RwLock<Option<mpsc::Sender<Vec<u8>>>>>,
     /// Wired post-construction. The COM event consumer task uses this to
     /// inject synthetic `("winaudio", raw_midi)` feedback into the unified
@@ -155,12 +152,9 @@ impl Driver for WinAudioDriver {
                     // every time "Windows Audio" becomes active.
                     self.spawn_page_watcher().await;
 
-                    // Initial state push, after a short delay so the
-                    // VM auto-switch (poll every 5s, but first tick is
-                    // immediate) has a chance to land us on the right
-                    // page. The page filter inside the router would
-                    // otherwise drop a feedback emit while we're still
-                    // on "Voicemeeter+QLC".
+                    // Initial state push, after a short delay so the active
+                    // page settles before we emit; the router's page filter
+                    // would otherwise drop the feedback.
                     let com = self.com.clone();
                     let cfg = self.config.clone();
                     let disc = self.discovery.clone();
@@ -345,7 +339,7 @@ impl WinAudioDriver {
                 let page = router.get_active_page().await?;
                 let auto_idx = auto_strip_index(&page, action, control_id)?;
                 let discovery = self.discovery.read().await;
-                mapping::auto_target(&cfg.pinned_apps, &discovery, auto_idx)
+                mapping::discovered_target(&cfg.pinned_apps, &discovery, auto_idx)
             },
         }
     }
@@ -610,7 +604,9 @@ async fn buffer_event(
             // Update FIFO + active set atomically, then schedule the LCD
             // render in a separate task so 8 strips × 2 SysEx writes
             // (~30 ms USB MIDI) don't block the 50 ms fader flush tick.
-            {
+            // Skip the spawn when the active set didn't actually change —
+            // session-disconnect cascades fire redundant "changed" events.
+            let active_changed = {
                 let cfg = config.read().await;
                 let pinned_lc: std::collections::HashSet<String> = cfg
                     .pinned_apps
@@ -620,7 +616,10 @@ async fn buffer_event(
                 drop(cfg);
                 let mut state = discovery.write().await;
                 state.observe(&names_lc, &pinned_lc);
-                state.set_active(&names_lc);
+                state.set_active(&names_lc)
+            };
+            if !active_changed {
+                return;
             }
             let router = router.clone();
             let led_tx = led_tx.clone();
@@ -652,7 +651,7 @@ async fn flush_pending(
     let Some(page) = router_arc.get_active_page().await else {
         return true;
     };
-    let mcu_mode = is_mcu_mode(&router_arc).await;
+    let mcu_mode = router_arc.config.read().await.is_mcu_mode();
 
     let Ok(db) = crate::control_mapping::load_default_mappings() else {
         warn!("WinAudio flush: control_mapping DB unavailable");
@@ -675,22 +674,13 @@ async fn flush_pending(
 
         // Mute → Note (LED).
         if let Some(spec) = resolve_action_spec(&page, mute_action, target, db, mcu_mode) {
-            let bytes = bytes_for_mute(&spec, p.mute);
+            let bytes = spec.led_bytes(p.mute);
             if !try_send(feedback_tx, bytes).await {
                 return false;
             }
         }
     }
     true
-}
-
-#[cfg(target_os = "windows")]
-async fn is_mcu_mode(router: &Arc<crate::router::Router>) -> bool {
-    let cfg = router.config.read().await;
-    cfg.xtouch
-        .as_ref()
-        .map(|x| matches!(x.mode, crate::config::XTouchMode::Mcu))
-        .unwrap_or(true)
 }
 
 /// Find the page control bound to `(action, target)` and resolve it to
@@ -751,29 +741,7 @@ fn bytes_for_volume(spec: &crate::control_mapping::MidiSpec, scalar: f32) -> Vec
             value: convert::denormalize_to_7bit(scalar),
         }
         .to_bytes(),
-        MidiSpec::Note { note } => mute_note_bytes(note, scalar > 0.0),
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn bytes_for_mute(spec: &crate::control_mapping::MidiSpec, muted: bool) -> Vec<u8> {
-    use crate::control_mapping::MidiSpec;
-    match *spec {
-        MidiSpec::Note { note } => mute_note_bytes(note, muted),
-        // Some surfaces wire mute to a CC indicator instead of a note.
-        MidiSpec::ControlChange { cc } => crate::midi::MidiMessage::ControlChange {
-            channel: 0,
-            cc,
-            value: if muted { 127 } else { 0 },
-        }
-        .to_bytes(),
-        // PitchBend doesn't make sense for mute LEDs, but emit something
-        // sane rather than panicking.
-        MidiSpec::PitchBend { channel } => crate::midi::MidiMessage::PitchBend {
-            channel: channel & 0x0F,
-            value: if muted { 16383 } else { 0 },
-        }
-        .to_bytes(),
+        MidiSpec::Note { note } => MidiSpec::Note { note }.led_bytes(scalar > 0.0),
     }
 }
 
@@ -783,19 +751,6 @@ async fn try_send(feedback_tx: &mpsc::Sender<(String, Vec<u8>)>, raw: Vec<u8>) -
         .send((DRIVER_NAME.to_string(), raw))
         .await
         .is_ok()
-}
-
-/// X-Touch button-LED convention: always `NoteOn`, with velocity 127 to
-/// light and velocity 0 to extinguish. The hardware treats `NoteOff` as
-/// a button-release event, not an LED-off — see `xtouch.rs::set_button_led`
-/// for the canonical comment.
-fn mute_note_bytes(note: u8, muted: bool) -> Vec<u8> {
-    crate::midi::MidiMessage::NoteOn {
-        channel: 0,
-        note,
-        velocity: if muted { 127 } else { 0 },
-    }
-    .to_bytes()
 }
 
 // -- Auto target resolution + dynamic LCD render -----------------------------
@@ -945,17 +900,14 @@ fn resolve_strip_process(
     if m.app != DRIVER_NAME || m.action.as_deref() != Some(action) {
         return None;
     }
-    let params = m.params.as_ref().cloned().unwrap_or_default();
-    let target = match parse_session_target(&params) {
-        Ok(t) => t,
-        Err(_) => return None,
-    };
+    let params = m.params.as_deref().unwrap_or(&[]);
+    let target = parse_session_target(params).ok()?;
     match target {
         SessionTarget::Pinned(fader) => mapping::pinned_target(&cfg.pinned_apps, fader),
         SessionTarget::Discovered(slot) => mapping::discovered_target(&cfg.pinned_apps, disc, slot),
         SessionTarget::Auto => {
             let auto_idx = auto_strip_index(page, action, control_id)?;
-            mapping::auto_target(&cfg.pinned_apps, disc, auto_idx)
+            mapping::discovered_target(&cfg.pinned_apps, disc, auto_idx)
         },
     }
 }

@@ -124,7 +124,10 @@ async fn main() -> Result<()> {
 
     // Construct profile store and ensure it's initialized (migrates an existing
     // config.yaml into profiles/default.yaml on first run).
-    let profile_root = std::path::PathBuf::from("profiles");
+    // Root `profiles/` next to the watched config so installed mode lands in
+    // %APPDATA%\XTouch GW\profiles instead of CWD (which would be Program Files
+    // when launched from the Start Menu shortcut).
+    let profile_root = app_paths.base_dir().join("profiles");
     let watched_path = std::path::PathBuf::from(&config_path);
     let profile_store = Arc::new(crate::config::profiles::ProfileStore::new(
         profile_root,
