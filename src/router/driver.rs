@@ -94,8 +94,17 @@ impl super::Router {
     /// profile no longer references. Driver shutdown errors are logged
     /// but not propagated — a failed shutdown should not block the
     /// reload.
-    pub async fn unregister_drivers_not_in(&self, needed: &std::collections::HashSet<String>) {
+    ///
+    /// Returns the list of driver names that were actually removed, so
+    /// callers can purge any per-app state associated with them (e.g.
+    /// `StateActor::clear_states_for_app`) and prevent unbounded growth
+    /// of `app_states` across repeated profile reloads.
+    pub async fn unregister_drivers_not_in(
+        &self,
+        needed: &std::collections::HashSet<String>,
+    ) -> Vec<String> {
         let registered = self.list_drivers().await;
+        let mut removed = Vec::new();
         for name in registered {
             if needed.contains(&name) {
                 continue;
@@ -104,10 +113,13 @@ impl super::Router {
                 "Unregistering driver '{}' (no longer referenced by active profile)",
                 name
             );
-            if let Err(e) = self.unregister_driver(&name).await {
-                warn!("Failed to unregister driver '{}': {}", name, e);
+            match self.unregister_driver(&name).await {
+                Ok(Some(_)) => removed.push(name),
+                Ok(None) => {},
+                Err(e) => warn!("Failed to unregister driver '{}': {}", name, e),
             }
         }
+        removed
     }
 
     /// Shutdown all registered drivers

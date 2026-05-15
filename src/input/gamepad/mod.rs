@@ -12,7 +12,6 @@ pub mod hybrid_id;
 pub mod hybrid_provider;
 pub mod mapper;
 pub mod normalize;
-pub mod provider; // Legacy provider (for reference)
 pub mod slot;
 pub mod stick_buffer;
 pub mod visualizer;

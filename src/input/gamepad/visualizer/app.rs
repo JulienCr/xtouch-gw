@@ -171,6 +171,14 @@ impl GamepadVisualizerApp {
                 );
             }
         }
+
+        // Prune stale entries: gilrs may miss `Disconnected` events on unclean
+        // Bluetooth/USB-yank under Windows WGI, leaving orphaned map entries.
+        self.state
+            .gilrs_controllers
+            .retain(|id, _| self.gilrs.connected_gamepad(*id).is_some());
+        self.capture_state
+            .retain(|id, _| self.gilrs.connected_gamepad(*id).is_some());
     }
 
     /// Get count of connected controllers across both backends.

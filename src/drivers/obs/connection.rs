@@ -4,12 +4,22 @@
 
 use anyhow::{Context, Result};
 use serde_json::Value;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{debug, info};
 
 use super::driver::ObsDriver;
+
+/// RAII releaser for the `reconnecting` single-flight guard. Ensures the
+/// flag is cleared on every exit path including panic unwinds.
+struct ReconnectGuard<'a>(&'a AtomicBool);
+impl Drop for ReconnectGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
 
 impl ObsDriver {
     /// Get the connected OBS client, or an error if not connected
@@ -105,6 +115,12 @@ impl ObsDriver {
         *self.client.write().await = Some(client);
         *self.reconnect_count.lock() = 0;
 
+        // Fresh session: caches from the previous (possibly different) OBS
+        // session may reference scene items that no longer exist. Drop them
+        // so we never serve stale item IDs / transforms across reconnects.
+        self.transform_cache.write().clear();
+        self.item_id_cache.write().clear();
+
         // Refresh initial state
         self.refresh_state().await?;
 
@@ -130,6 +146,8 @@ impl ObsDriver {
         let activity_tracker = Arc::clone(&self.activity_tracker);
         let camera_control_config = Arc::clone(&self.camera_control_config);
         let camera_control_state = Arc::clone(&self.camera_control_state);
+        let transform_cache = Arc::clone(&self.transform_cache);
+        let item_id_cache = Arc::clone(&self.item_id_cache);
         let driver_for_reconnect = self.clone_for_task();
 
         tokio::spawn(super::event_listener::run_event_listener(
@@ -143,6 +161,8 @@ impl ObsDriver {
             activity_tracker,
             camera_control_config,
             camera_control_state,
+            transform_cache,
+            item_id_cache,
             driver_for_reconnect,
         ));
     }
@@ -218,8 +238,27 @@ impl ObsDriver {
         Ok(())
     }
 
-    /// Schedule reconnection with exponential backoff
+    /// Schedule reconnection with exponential backoff.
+    ///
+    /// Uses the `reconnecting: AtomicBool` flag as a single-flight guard
+    /// (compare_exchange) so multiple sources of "we got disconnected"
+    /// (action retry, listener shutdown) cannot stack overlapping
+    /// reconnect loops — which would race on `connect()` and could leak
+    /// connections. The guard is released via RAII `Drop` so panic unwinding
+    /// (or any future early-return path) cannot leave it stuck `true`.
     pub(super) async fn schedule_reconnect(&self) {
+        use std::sync::atomic::Ordering;
+
+        if self
+            .reconnecting
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            debug!("OBS reconnect already in progress, skipping");
+            return;
+        }
+        let _guard = ReconnectGuard(&self.reconnecting);
+
         loop {
             if *self.shutdown_flag.lock() {
                 return;
@@ -234,7 +273,6 @@ impl ObsDriver {
             let delay_ms = std::cmp::min(30_000, 1000 * retry_count);
             debug!("⏳ OBS reconnect #{} in {}ms", retry_count, delay_ms);
 
-            // Emit reconnecting status
             self.emit_status(crate::tray::ConnectionStatus::Reconnecting {
                 attempt: retry_count,
             });
@@ -248,11 +286,10 @@ impl ObsDriver {
             match self.connect().await {
                 Ok(_) => {
                     info!("✅ OBS reconnection successful");
-                    return; // Success, exit loop
+                    return;
                 },
                 Err(e) => {
                     debug!("OBS reconnect #{} failed: {}", retry_count, e);
-                    // Continue loop for next attempt
                 },
             }
         }

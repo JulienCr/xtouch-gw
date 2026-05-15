@@ -5,6 +5,7 @@
 use obws::Client as ObsClient;
 use parking_lot::Mutex;
 use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
@@ -49,6 +50,10 @@ pub struct ObsDriver {
     // Reconnection state
     pub(super) reconnect_count: Arc<Mutex<usize>>,
     pub(super) shutdown_flag: Arc<Mutex<bool>>,
+    /// Single-flight guard for the reconnect task. Prevents action-fired
+    /// reconnects from racing with the listener-fired reconnect task.
+    /// True while a `schedule_reconnect` loop is running.
+    pub(super) reconnecting: Arc<AtomicBool>,
 
     // Gamepad analog configuration
     pub(super) analog_pan_gain: Arc<parking_lot::RwLock<f64>>,
@@ -100,6 +105,7 @@ impl ObsDriver {
             activity_tracker: Arc::new(parking_lot::RwLock::new(None)),
             reconnect_count: Arc::new(Mutex::new(0)),
             shutdown_flag: Arc::new(Mutex::new(false)),
+            reconnecting: Arc::new(AtomicBool::new(false)),
             // Analog config (defaults matching config file)
             analog_pan_gain: Arc::new(parking_lot::RwLock::new(15.0)),
             analog_zoom_gain: Arc::new(parking_lot::RwLock::new(3.0)),
@@ -186,6 +192,7 @@ impl ObsDriver {
             activity_tracker: Arc::clone(&self.activity_tracker),
             reconnect_count: Arc::clone(&self.reconnect_count),
             shutdown_flag: Arc::clone(&self.shutdown_flag),
+            reconnecting: Arc::clone(&self.reconnecting),
             analog_pan_gain: Arc::clone(&self.analog_pan_gain),
             analog_zoom_gain: Arc::clone(&self.analog_zoom_gain),
             analog_deadzone: Arc::clone(&self.analog_deadzone),

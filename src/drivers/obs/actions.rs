@@ -134,11 +134,12 @@ impl Driver for ObsDriver {
     async fn init(&self, ctx: ExecutionContext) -> Result<()> {
         info!("Initializing OBS WebSocket driver");
 
-        // Re-arm shutdown flag in case this driver instance was previously
-        // unregistered (e.g. profile switch away from a profile using OBS).
-        // Without this reset, the background reconnection task spawned below
-        // would observe a stale `true` and exit immediately.
+        // Re-arm shutdown/reconnect guards in case this driver was previously
+        // unregistered (e.g. profile switch): stale `true` values would block
+        // the background reconnect task or all future reconnect attempts.
         *self.shutdown_flag.lock() = false;
+        self.reconnecting
+            .store(false, std::sync::atomic::Ordering::Release);
 
         // Store activity tracker if available
         if let Some(tracker) = ctx.activity_tracker {
@@ -173,8 +174,9 @@ impl Driver for ObsDriver {
         if self.client.read().await.is_none() {
             warn!("OBS not connected, action dropped");
 
-            // Trigger reconnect if not already running
-            if *self.reconnect_count.lock() == 0 {
+            // Skip spawning a task if a reconnect loop is already running —
+            // `schedule_reconnect` would bail on its own single-flight guard.
+            if !self.reconnecting.load(std::sync::atomic::Ordering::Acquire) {
                 debug!("Triggering background reconnection");
                 let driver_clone = self.clone_for_task();
                 tokio::spawn(async move {
@@ -394,6 +396,11 @@ impl Driver for ObsDriver {
     async fn shutdown(&self) -> Result<()> {
         info!("Shutting down OBS WebSocket driver");
         *self.shutdown_flag.lock() = true;
+
+        // Drop analog state so a re-init of this singleton driver doesn't
+        // replay stale velocities through `set_analog_rate`'s partial-merge.
+        self.analog_rates.write().clear();
+        self.analog_error_count.write().clear();
 
         if let Some(client) = self.client.write().await.take() {
             drop(client); // Close the connection

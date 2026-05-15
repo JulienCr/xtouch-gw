@@ -11,8 +11,7 @@ use crate::config::{AnalogConfig, GamepadConfig};
 use crate::router::Router;
 
 use super::analog::{apply_inversion, process_axis};
-use super::hybrid_provider::{EventCallback, HybridGamepadProvider};
-use super::provider::GamepadEvent;
+use super::hybrid_provider::{EventCallback, GamepadEvent, HybridGamepadProvider};
 
 /// Gamepad mapper - connects provider events to router
 ///

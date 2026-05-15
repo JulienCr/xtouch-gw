@@ -14,6 +14,12 @@ pub(super) struct EncoderState {
     pub(super) last_direction: i8,
 }
 
+/// Maximum age of an idle encoder state before it is evicted (ms).
+const ENCODER_IDLE_EVICT_MS: u128 = 60_000;
+
+/// Minimum spacing between GC sweeps (ms). Keeps `track_event` cheap.
+const ENCODER_GC_INTERVAL_MS: u128 = 1_000;
+
 /// Encoder speed tracker with adaptive acceleration
 ///
 /// Tracks encoder rotation velocity and applies acceleration multipliers
@@ -39,6 +45,8 @@ pub(super) struct EncoderSpeedTracker {
     idle_reset_ms: u64,
     // Per-encoder state
     states: HashMap<String, EncoderState>,
+    // Last time we ran the idle-state eviction sweep
+    last_gc: Option<Instant>,
 }
 
 impl EncoderSpeedTracker {
@@ -54,6 +62,7 @@ impl EncoderSpeedTracker {
             direction_flip_dampen: 0.5,
             idle_reset_ms: 700,
             states: HashMap::new(),
+            last_gc: None,
         }
     }
 
@@ -118,6 +127,24 @@ impl EncoderSpeedTracker {
         // Update direction
         if base_delta != 0.0 && direction != 0 {
             state.last_direction = direction;
+        }
+
+        // Opportunistic idle eviction: encoder IDs are tied to control
+        // surface strips and rarely change, but if a profile/page rotates
+        // through encoder identifiers (e.g. dynamic VPOT mappings) the
+        // map could grow unboundedly. Sweep at most once a second.
+        let should_gc = match self.last_gc {
+            None => true,
+            Some(prev) => now.duration_since(prev).as_millis() >= ENCODER_GC_INTERVAL_MS,
+        };
+        if should_gc {
+            self.last_gc = Some(now);
+            self.states.retain(|_, s| match s.last_ts {
+                Some(ts) => now.duration_since(ts).as_millis() < ENCODER_IDLE_EVICT_MS,
+                // Keep states that have never had a real event yet (they
+                // were just bootstrapped; will get a timestamp imminently).
+                None => true,
+            });
         }
 
         accel

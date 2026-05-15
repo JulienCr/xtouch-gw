@@ -28,6 +28,11 @@ pub struct TrayManager {
     active_profile: Option<String>,
     /// Hash of last menu content to avoid unnecessary rebuilds
     last_menu_hash: u64,
+    /// Last `IconColor` applied to the tray icon. Used to skip
+    /// `generate_icon_bytes` + `set_icon` when the resulting palette is
+    /// unchanged. `None` means no icon has been applied yet via the
+    /// update loop (the startup gray icon is set separately).
+    last_icon_color: Option<IconColor>,
 }
 
 /// Prefix for profile menu item IDs (e.g. "profile:twitch").
@@ -49,6 +54,7 @@ impl TrayManager {
             profiles: Vec::new(),
             active_profile: None,
             last_menu_hash: 0,
+            last_icon_color: None,
         }
     }
 
@@ -195,10 +201,25 @@ impl TrayManager {
                     let icon_color = self.calculate_overall_icon_color();
                     trace!("Overall icon color: {:?}", icon_color);
 
-                    let icon_bytes = generate_icon_bytes(icon_color);
-                    if let Ok(new_icon) = tray_icon::Icon::from_rgba(icon_bytes, 16, 16) {
-                        let _ = tray_icon.set_icon(Some(new_icon));
-                        trace!("Tray icon updated");
+                    // Skip RGBA generation + `set_icon` when the resulting
+                    // palette is unchanged. Driver status updates can arrive
+                    // frequently (rate-limited to 50ms each, but multiple
+                    // drivers and reconnect attempts add up) while the
+                    // overall color rarely actually changes — without this
+                    // dedup we allocate a fresh 16x16 RGBA Vec and call
+                    // into the Win32 tray API on every status update.
+                    if self.last_icon_color != Some(icon_color) {
+                        let icon_bytes = generate_icon_bytes(icon_color);
+                        if let Ok(new_icon) = tray_icon::Icon::from_rgba(icon_bytes, 16, 16) {
+                            let _ = tray_icon.set_icon(Some(new_icon));
+                            self.last_icon_color = Some(icon_color);
+                            trace!("Tray icon updated to {:?}", icon_color);
+                        }
+                    } else {
+                        trace!(
+                            "Tray icon color unchanged ({:?}), skipping set_icon",
+                            icon_color
+                        );
                     }
 
                     // Update tooltip with current status summary

@@ -5,7 +5,7 @@ use tracing::{debug, warn};
 
 use super::HybridProviderState;
 use crate::input::gamepad::hybrid_id::HybridControllerId;
-use crate::input::gamepad::provider::GamepadEvent;
+use crate::input::gamepad::hybrid_provider::GamepadEvent;
 use crate::input::gamepad::xinput_convert::{
     convert_xinput_axes, convert_xinput_buttons, poll_xinput_controller, CachedXInputState,
 };

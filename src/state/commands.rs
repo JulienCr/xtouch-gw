@@ -4,21 +4,9 @@
 //! separating the hot path (fire-and-forget updates) from request-response
 //! operations that need acknowledgment.
 
-use super::persistence::StateSnapshot;
 use super::types::{AppKey, MidiAddr, MidiStateEntry, MidiStatus};
 use std::collections::HashMap;
-use std::sync::Arc;
 use tokio::sync::oneshot;
-
-// ============================================================================
-// Type Aliases
-// ============================================================================
-
-/// Subscriber callback function type
-///
-/// Called when state is updated, receives the entry and the application key.
-/// Must be Send + Sync for cross-thread usage.
-pub type SubscriberFn = Arc<dyn Fn(&MidiStateEntry, AppKey) + Send + Sync>;
 
 // ============================================================================
 // StateCommand
@@ -49,7 +37,6 @@ pub type SubscriberFn = Arc<dyn Fn(&MidiStateEntry, AppKey) + Send + Sync>;
 /// - `ListStatesForApps`: Batch list for multiple apps
 /// - `CheckSuppressAntiEcho`: Query anti-echo suppression
 /// - `CheckSuppressLWW`: Query last-write-wins suppression
-/// - `Subscribe`: Register state change listener
 pub enum StateCommand {
     // -------------------------------------------------------------------------
     // Hot path commands (no response - fire and forget)
@@ -191,21 +178,11 @@ pub enum StateCommand {
     /// Clears the anti-echo shadow state to allow re-emission during page refresh.
     ClearShadows,
 
-    /// Subscribe to state change notifications
-    ///
-    /// Returns a subscriber ID that can be used for unsubscription.
-    Subscribe {
-        /// Callback function to invoke on state changes
-        listener: SubscriberFn,
-        /// Response channel returning subscriber ID
-        response: oneshot::Sender<usize>,
-    },
-
     /// Gracefully shut down the state actor
     Shutdown,
 }
 
-// Manual Debug implementation because SubscriberFn doesn't implement Debug
+// Manual Debug implementation because some variants hold response channels
 impl std::fmt::Debug for StateCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -270,53 +247,9 @@ impl std::fmt::Debug for StateCommand {
                 .finish(),
             StateCommand::ClearAllStates => write!(f, "ClearAllStates"),
             StateCommand::ClearShadows => write!(f, "ClearShadows"),
-            StateCommand::Subscribe { .. } => f.debug_struct("Subscribe").finish_non_exhaustive(),
             StateCommand::Shutdown => write!(f, "Shutdown"),
         }
     }
-}
-
-// ============================================================================
-// PersistenceCommand
-// ============================================================================
-
-/// Commands for the persistence actor
-///
-/// Handles asynchronous state persistence to disk. All operations are
-/// fire-and-forget except for `LoadSnapshot` which returns data.
-///
-/// # Usage
-///
-/// The persistence actor runs in a separate task and handles:
-/// - Periodic snapshot saves
-/// - On-demand flush before shutdown
-/// - State recovery on startup
-#[derive(Debug)]
-pub enum PersistenceCommand {
-    /// Save a state snapshot to disk
-    ///
-    /// Fire-and-forget: the caller doesn't wait for completion.
-    /// The actor handles file I/O asynchronously.
-    SaveSnapshot(StateSnapshot),
-
-    /// Load the most recent snapshot from disk
-    ///
-    /// Returns `None` if no snapshot exists or loading fails.
-    LoadSnapshot {
-        /// Response channel
-        response: oneshot::Sender<Option<StateSnapshot>>,
-    },
-
-    /// Flush any pending writes to disk
-    ///
-    /// Used before shutdown to ensure all state is persisted.
-    /// Fire-and-forget but blocks internally until complete.
-    Flush,
-
-    /// Gracefully shut down the persistence actor
-    ///
-    /// Performs a final flush before exiting.
-    Shutdown,
 }
 
 #[cfg(test)]
@@ -368,20 +301,6 @@ mod tests {
         // Test lifecycle commands
         let cmd = StateCommand::Shutdown;
         assert_eq!(format!("{:?}", cmd), "Shutdown");
-    }
-
-    #[test]
-    fn test_persistence_command_debug() {
-        let cmd = PersistenceCommand::Flush;
-        assert_eq!(format!("{:?}", cmd), "Flush");
-
-        let cmd = PersistenceCommand::Shutdown;
-        assert_eq!(format!("{:?}", cmd), "Shutdown");
-
-        let (tx, _rx) = oneshot::channel();
-        let cmd = PersistenceCommand::LoadSnapshot { response: tx };
-        let debug_str = format!("{:?}", cmd);
-        assert!(debug_str.contains("LoadSnapshot"));
     }
 
     #[tokio::test]

@@ -8,8 +8,8 @@ use super::HybridProviderState;
 use crate::config::AnalogConfig;
 use crate::input::gamepad::axis::gilrs_axis_to_control_id;
 use crate::input::gamepad::hybrid_id::HybridControllerId;
+use crate::input::gamepad::hybrid_provider::GamepadEvent;
 use crate::input::gamepad::normalize::normalize_gilrs_stick;
-use crate::input::gamepad::provider::GamepadEvent;
 use crate::input::gamepad::stick_buffer::{StickBuffer, StickId};
 
 impl HybridProviderState {

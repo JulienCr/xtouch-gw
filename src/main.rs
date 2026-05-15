@@ -160,9 +160,13 @@ async fn main() -> Result<()> {
         tokio::fs::create_dir_all(parent).await?;
     }
 
-    // Create tray channels and activity tracker
+    // The tray update channel is bounded so MIDI-hot-path `try_send` from
+    // `ActivityTracker::record` can drop on overflow instead of letting the
+    // queue grow indefinitely when the Win32 tray thread stalls — this
+    // process is expected to run for weeks.
+    const TRAY_UPDATE_CHANNEL_CAPACITY: usize = 1024;
     let (tray_update_tx, tray_update_rx) =
-        crossbeam::channel::unbounded::<crate::tray::TrayUpdate>();
+        crossbeam::channel::bounded::<crate::tray::TrayUpdate>(TRAY_UPDATE_CHANNEL_CAPACITY);
     let (tray_command_tx, tray_command_rx) =
         crossbeam::channel::unbounded::<crate::tray::TrayCommand>();
 
