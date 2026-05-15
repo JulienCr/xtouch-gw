@@ -14,6 +14,8 @@ mod actions;
 mod callback;
 mod catalog;
 #[cfg(target_os = "windows")]
+mod com_handlers;
+#[cfg(target_os = "windows")]
 mod com_thread;
 mod mapping;
 #[cfg(target_os = "windows")]
