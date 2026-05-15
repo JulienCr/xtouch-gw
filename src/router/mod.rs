@@ -23,6 +23,9 @@ pub use camera_target::CameraTargetState;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod refresh_plan_tests;
+
 use crate::config::AppConfig;
 use crate::drivers::Driver;
 use crate::state::persistence_actor::PersistenceActor;

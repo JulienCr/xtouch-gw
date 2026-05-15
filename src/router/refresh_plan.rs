@@ -7,13 +7,73 @@ use crate::config::PageConfig;
 use crate::control_mapping::{load_default_mappings, ControlMappingDB, MidiSpec};
 use crate::state::{AppKey, MidiAddr, MidiStateEntry, MidiStatus, MidiValue, Origin};
 use std::collections::HashMap;
-use tracing::trace;
+use tracing::{debug, trace};
 
 /// Internal entry with priority for plan conflict resolution
 #[derive(Clone)]
 struct PlanEntry {
     entry: MidiStateEntry,
     priority: u8,
+}
+
+/// Reverse-lookup maps from MIDI spec to `control_id`, built once per page
+/// refresh.
+///
+/// Replaces O(M) linear scans of `mapping_db.mappings` (with per-entry
+/// `MidiSpec::parse` string parsing) by O(1) `HashMap` lookups in the hot
+/// page-switch path. See issue #30 for context.
+///
+/// Only the MCU specs actually consumed by `plan_*_entries` are populated:
+/// notes (for `try_*_note_*`) and PitchBend channels (for `try_cc_to_pb_transform`
+/// and `is_app_mapped_to_fader`). MCU CC mappings exist in the DB but no
+/// current call site looks up controls by CC number, so that map is omitted.
+pub(super) struct MidiReverseMaps {
+    /// MCU note number -> `control_id`
+    pub note_to_control_id: HashMap<u8, String>,
+    /// MCU PitchBend channel (0-based) -> `control_id`
+    pub pb_channel_to_control_id: HashMap<u8, String>,
+}
+
+impl MidiReverseMaps {
+    /// Build reverse-lookup maps by scanning `mapping_db.mappings` ONCE and
+    /// parsing each `mcu_message` via `MidiSpec::parse`.
+    pub(super) fn build(mapping_db: &ControlMappingDB) -> Self {
+        let cap = mapping_db.mappings.len();
+        let mut note_to_control_id = HashMap::with_capacity(cap);
+        let mut pb_channel_to_control_id = HashMap::with_capacity(cap);
+
+        for (control_id, mapping) in &mapping_db.mappings {
+            let Ok(spec) = MidiSpec::parse(&mapping.mcu_message) else {
+                continue;
+            };
+            match spec {
+                MidiSpec::Note { note } => {
+                    note_to_control_id
+                        .entry(note)
+                        .or_insert_with(|| control_id.clone());
+                },
+                MidiSpec::PitchBend { channel } => {
+                    pb_channel_to_control_id
+                        .entry(channel)
+                        .or_insert_with(|| control_id.clone());
+                },
+                MidiSpec::ControlChange { .. } => {
+                    // MCU mode never binds buttons/encoders by CC; skip.
+                },
+            }
+        }
+
+        debug!(
+            "Built MIDI reverse-lookup maps: notes={} pb={}",
+            note_to_control_id.len(),
+            pb_channel_to_control_id.len()
+        );
+
+        Self {
+            note_to_control_id,
+            pb_channel_to_control_id,
+        }
+    }
 }
 
 /// Insert entry with priority-based replacement (higher priority wins, then newer timestamp)
@@ -63,6 +123,11 @@ impl super::Router {
             },
         };
 
+        // Build reverse-lookup maps ONCE per page-switch (issue #30).
+        // Replaces 2 × 32 × N × M `MidiSpec::parse` calls per refresh by a
+        // single M-entry scan plus O(1) lookups in `plan_*_entries`.
+        let reverse_maps = MidiReverseMaps::build(mapping_db);
+
         // Get apps mapped on this page (only restore state for mapped apps)
         let config = self.config.read().await;
         let apps_on_page = self.get_apps_for_page(page, &config);
@@ -73,9 +138,9 @@ impl super::Router {
                 continue;
             }
 
-            self.plan_pb_entries(page, &config, app, &mapping_db, &mut pb_plan)
+            self.plan_pb_entries(page, &config, app, &reverse_maps, &mut pb_plan)
                 .await;
-            self.plan_note_entries(page, &config, app, &mapping_db, &mut note_plan)
+            self.plan_note_entries(page, &config, app, &reverse_maps, &mut note_plan)
                 .await;
             Self::plan_cc_reset_entries(app, &mut cc_plan);
         }
@@ -93,7 +158,7 @@ impl super::Router {
         page: &PageConfig,
         config: &crate::config::AppConfig,
         app: &AppKey,
-        mapping_db: &ControlMappingDB,
+        reverse_maps: &MidiReverseMaps,
         pb_plan: &mut HashMap<u8, PlanEntry>,
     ) {
         for &ch in FADER_CHANNELS {
@@ -103,14 +168,14 @@ impl super::Router {
                 .await
             {
                 // BUG-010 FIX: Only use PB state if this app owns this fader on the current page.
-                if Self::is_app_mapped_to_fader(page, config, app.as_str(), ch, mapping_db) {
+                if Self::is_app_mapped_to_fader(page, config, app.as_str(), ch, reverse_maps) {
                     insert_prioritized(pb_plan, ch, latest_pb, 3);
                     continue;
                 }
             }
 
             if let Some(transformed_pb) = self
-                .try_cc_to_pb_transform(page, config, app, ch, mapping_db)
+                .try_cc_to_pb_transform(page, config, app, ch, reverse_maps)
                 .await
             {
                 trace!(
@@ -129,12 +194,12 @@ impl super::Router {
         page: &PageConfig,
         config: &crate::config::AppConfig,
         app: &AppKey,
-        mapping_db: &ControlMappingDB,
+        reverse_maps: &MidiReverseMaps,
         note_plan: &mut HashMap<(u8, u8), PlanEntry>,
     ) {
         for note in 0..=31 {
             if let Some(transformed_note) = self
-                .try_cc_to_note_transform(page, config, app, note, mapping_db)
+                .try_cc_to_note_transform(page, config, app, note, &reverse_maps.note_to_control_id)
                 .await
             {
                 let key = channel_data1_key(&transformed_note);
@@ -143,7 +208,7 @@ impl super::Router {
             }
 
             if let Some(note_entry) = self
-                .try_direct_note_lookup(page, config, app, note, mapping_db)
+                .try_direct_note_lookup(page, config, app, note, &reverse_maps.note_to_control_id)
                 .await
             {
                 let key = channel_data1_key(&note_entry);
@@ -249,12 +314,11 @@ impl super::Router {
         global_config: &crate::config::AppConfig,
         app: &AppKey,
         pb_channel: u8,
-        mapping_db: &ControlMappingDB,
+        reverse_maps: &MidiReverseMaps,
     ) -> Option<MidiStateEntry> {
-        let control_id = Self::find_control_by_midi_spec(
-            mapping_db,
-            |spec| matches!(spec, MidiSpec::PitchBend { channel } if *channel == pb_channel.saturating_sub(1)),
-        )?;
+        // PitchBend channels in MidiSpec are 0-based; pb_channel here is 1-based.
+        let mcu_channel = pb_channel.saturating_sub(1);
+        let control_id = reverse_maps.pb_channel_to_control_id.get(&mcu_channel)?;
 
         trace!(
             "CC->PB transform: control={} pb_channel={}",
@@ -262,8 +326,7 @@ impl super::Router {
             pb_channel
         );
 
-        let control_config = Self::get_control_config(page, global_config, &control_id)?;
-
+        let control_config = Self::get_control_config(page, global_config, control_id)?;
         if control_config.app != app.as_str() {
             return None;
         }
@@ -294,6 +357,27 @@ impl super::Router {
         })
     }
 
+    /// Resolve a note's control mapping for the current page, guarded by app
+    /// ownership.
+    ///
+    /// Shared preamble (issue #29) for `try_cc_to_note_transform` and
+    /// `try_direct_note_lookup`: O(1) reverse-map lookup, then page/global
+    /// config resolution, then app guard.
+    fn resolve_note_control(
+        page: &PageConfig,
+        global_config: &crate::config::AppConfig,
+        app: &AppKey,
+        note: u8,
+        note_map: &HashMap<u8, String>,
+    ) -> Option<(String, crate::config::ControlMapping)> {
+        let control_id = note_map.get(&note)?.clone();
+        let control_config = Self::get_control_config(page, global_config, &control_id)?;
+        if control_config.app != app.as_str() {
+            return None;
+        }
+        Some((control_id, control_config))
+    }
+
     /// Try to transform CC value to Note for page refresh (reverse transformation)
     async fn try_cc_to_note_transform(
         &self,
@@ -301,21 +385,13 @@ impl super::Router {
         global_config: &crate::config::AppConfig,
         app: &AppKey,
         note: u8,
-        mapping_db: &ControlMappingDB,
+        note_map: &HashMap<u8, String>,
     ) -> Option<MidiStateEntry> {
-        let control_id = Self::find_control_by_midi_spec(
-            mapping_db,
-            |spec| matches!(spec, MidiSpec::Note { note: n } if *n == note),
-        )?;
-
-        let control_config = Self::get_control_config(page, global_config, &control_id)?;
-
-        if control_config.app != app.as_str() {
-            return None;
-        }
+        let (control_id, control_config) =
+            Self::resolve_note_control(page, global_config, app, note, note_map)?;
 
         let (cc_entry, cc_value) = self.get_cc_value_for_control(app, &control_config).await?;
-        let velocity = if cc_value > 0 { 127 } else { 0 };
+        let velocity: u8 = if cc_value > 0 { 127 } else { 0 };
 
         trace!(
             "CC->Note transform: {} CC {} -> Note {} velocity {}",
@@ -332,7 +408,7 @@ impl super::Router {
                 channel: Some(1),
                 data1: Some(note),
             },
-            value: MidiValue::Number(velocity as u16),
+            value: MidiValue::Number(u16::from(velocity)),
             ts: cc_entry.ts,
             origin: Origin::App,
             known: true,
@@ -348,18 +424,9 @@ impl super::Router {
         global_config: &crate::config::AppConfig,
         app: &AppKey,
         note: u8,
-        mapping_db: &ControlMappingDB,
+        note_map: &HashMap<u8, String>,
     ) -> Option<MidiStateEntry> {
-        let control_id = Self::find_control_by_midi_spec(
-            mapping_db,
-            |spec| matches!(spec, MidiSpec::Note { note: n } if *n == note),
-        )?;
-
-        let control_config = Self::get_control_config(page, global_config, &control_id)?;
-
-        if control_config.app != app.as_str() {
-            return None;
-        }
+        Self::resolve_note_control(page, global_config, app, note, note_map)?;
 
         self.state_actor
             .get_known_latest(*app, MidiStatus::Note, Some(1), Some(note))

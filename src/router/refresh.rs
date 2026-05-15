@@ -1,5 +1,6 @@
 //! Page refresh logic and state replay
 
+use super::refresh_plan::MidiReverseMaps;
 use crate::config::{ControlMapping, PageConfig};
 use crate::control_mapping::{ControlMappingDB, MidiSpec};
 use crate::state::{MidiAddr, MidiStateEntry, MidiStatus, MidiValue, Origin};
@@ -102,22 +103,18 @@ impl super::Router {
         global_config: &crate::config::AppConfig,
         app_name: &str,
         pb_channel: u8,
-        mapping_db: &ControlMappingDB,
+        reverse_maps: &MidiReverseMaps,
     ) -> bool {
         // PB channels are 1-based (faders 1-9), MIDI spec uses 0-based
         if pb_channel == 0 {
             return false;
         }
-        let control_id = Self::find_control_by_midi_spec(
-            mapping_db,
-            |spec| matches!(spec, MidiSpec::PitchBend { channel } if *channel == pb_channel - 1),
-        );
-
-        let Some(control_id) = control_id else {
+        let mcu_channel = pb_channel - 1;
+        let Some(control_id) = reverse_maps.pb_channel_to_control_id.get(&mcu_channel) else {
             return false;
         };
 
-        match Self::get_control_config(page, global_config, &control_id) {
+        match Self::get_control_config(page, global_config, control_id) {
             Some(config) => config.app == app_name,
             None => false,
         }
@@ -162,6 +159,11 @@ impl super::Router {
     }
 
     /// Find control ID by matching a MIDI spec predicate
+    ///
+    /// Note: hot-path callers in `refresh_plan.rs` now use the pre-built
+    /// `MidiReverseMaps` for O(1) lookups (issue #30). This linear-scan
+    /// helper is retained for ad-hoc / future callers; remove once unused.
+    #[allow(dead_code)]
     pub(super) fn find_control_by_midi_spec<F>(
         mapping_db: &ControlMappingDB,
         predicate: F,
