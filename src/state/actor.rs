@@ -12,7 +12,7 @@ use super::commands::{StateCommand, SubscriberFn};
 use super::persistence_actor::PersistenceCommand;
 use super::types::{addr_key, AppKey, MidiAddr, MidiStateEntry, MidiStatus, Origin};
 use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use tracing::{debug, info, trace};
 
@@ -106,6 +106,9 @@ pub struct StateActor {
 
     /// Counter for tracking total updates processed
     update_count: u64,
+
+    /// Timestamp of last GC sweep for `last_user_action_ts` (throttling)
+    last_gc_user_action: Option<Instant>,
 }
 
 impl StateActor {
@@ -147,6 +150,7 @@ impl StateActor {
             command_rx: cmd_rx,
             persistence_tx,
             update_count: 0,
+            last_gc_user_action: None,
         };
 
         // Spawn the actor's run loop
@@ -543,6 +547,24 @@ impl StateActor {
     fn handle_mark_user_action(&mut self, key: String, ts: u64) {
         self.last_user_action_ts.insert(key.clone(), ts);
         trace!(key, ts, "User action marked");
+
+        // Throttled GC: sweep stale entries at most once per second to keep
+        // the map bounded over long uptimes (every unique (status,channel,data1)
+        // tuple inserts one entry that would otherwise live forever).
+        let now = Instant::now();
+        let should_gc = match self.last_gc_user_action {
+            None => true,
+            Some(last) => now.saturating_duration_since(last) >= Duration::from_secs(1),
+        };
+        if should_gc {
+            // Retain entries whose ts is within 2x the LWW grace period.
+            // ts is in ms since epoch, LWW_GRACE_PERIOD_PB is in ms (u64).
+            let now_ms = Self::now_ms();
+            let cutoff = now_ms.saturating_sub(2 * LWW_GRACE_PERIOD_PB);
+            self.last_user_action_ts
+                .retain(|_, entry_ts| *entry_ts >= cutoff);
+            self.last_gc_user_action = Some(now);
+        }
     }
 
     /// Hydrate state from a snapshot
