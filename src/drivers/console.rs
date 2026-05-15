@@ -1,4 +1,9 @@
 //! Console driver - logs all actions for testing and debugging
+//!
+//! This driver is consumed by integration/unit tests (see `src/router/tests.rs`).
+//! In a non-test bin build it is unreferenced, so we silence dead-code lints here.
+
+#![allow(dead_code)]
 
 use crate::drivers::{Driver, ExecutionContext};
 use anyhow::Result;

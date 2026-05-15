@@ -138,11 +138,13 @@ impl TrayMessageHandler {
     }
 
     /// Get current status of all drivers
+    #[allow(dead_code)] // diagnostics / future tray-UI batch query
     pub fn get_all_statuses(&self) -> HashMap<String, ConnectionStatus> {
         self.driver_statuses.read().clone()
     }
 
     /// Send initial status for a driver (used when driver is first initialized)
+    #[allow(dead_code)] // reserved for explicit driver-init wiring; subscribers currently push status
     pub fn send_initial_status(&self, driver_name: String, status: ConnectionStatus) {
         trace!(
             "TrayHandler: sending initial status for {}: {:?}",

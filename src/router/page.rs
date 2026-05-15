@@ -49,6 +49,7 @@ impl super::Router {
     /// the currently active page. Returns an empty set if no page is active.
     ///
     /// Used by main.rs to filter state updates to only apps on the active page.
+    #[allow(dead_code)] // reserved for state-update filtering (per AUDIT_STATE_PROGRESS.md); tests rely on `get_apps_for_page`
     pub async fn get_apps_for_active_page(&self) -> HashSet<String> {
         let config = self.config.read().await;
         let index = *self.active_page_index.read().await;
@@ -60,6 +61,7 @@ impl super::Router {
     }
 
     /// List all page names
+    #[allow(dead_code)] // exercised by `router::tests`; reserved for REPL/CLI page-listing
     pub async fn list_pages(&self) -> Vec<String> {
         let config = self.config.read().await;
         config.pages.iter().map(|p| p.name.clone()).collect()

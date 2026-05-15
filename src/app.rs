@@ -21,6 +21,12 @@ use crate::{api, display, driver_setup, helpers, input};
 ///
 /// Sets up X-Touch hardware, registers drivers, spawns the API server,
 /// and enters the core `tokio::select!` loop that handles all event sources.
+///
+/// The argument list is wide because this is the single top-level wiring
+/// site that owns every cross-cutting handle (router, config watcher, tray
+/// channels, profile store, live event bus). Bundling them into a struct
+/// would just move the boilerplate, so we accept the lint here.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_app(
     router: Arc<Router>,
     config: AppConfig,
@@ -85,6 +91,12 @@ pub async fn run_app(
         .take_event_receiver()
         .ok_or_else(|| anyhow::anyhow!("Failed to get X-Touch event receiver"))?;
 
+    // `XTouchDriver` is `!Sync` because of `MidiInputConnection`, but the `Arc`
+    // is only ever borrowed from the main task here (never moved into a
+    // `tokio::spawn`), so the lack of `Sync` is benign. We keep `Arc` (over
+    // `Rc`) so the same value can later be wired into multi-threaded paths
+    // without re-typing the entire surface.
+    #[allow(clippy::arc_with_non_send_sync)]
     let xtouch = Arc::new(xtouch);
     display::update_xtouch_display(&router, &xtouch).await;
     info!("X-Touch display initialized");

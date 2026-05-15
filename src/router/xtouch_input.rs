@@ -275,14 +275,12 @@ impl super::Router {
                 }
             },
             crate::config::MidiType::Pb => {
-                if let Some(ch) = target_spec.channel {
-                    Some(crate::midi::MidiMessage::PitchBend {
+                target_spec
+                    .channel
+                    .map(|ch| crate::midi::MidiMessage::PitchBend {
                         channel: config_channel_to_midi(ch),
                         value: denormalize_to_14bit(normalized_value),
                     })
-                } else {
-                    None
-                }
             },
             crate::config::MidiType::Passthrough => {
                 // Raw passthrough (no transformation)

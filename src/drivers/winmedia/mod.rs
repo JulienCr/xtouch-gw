@@ -33,9 +33,12 @@ pub const DRIVER_NAME: &str = "winmedia";
 /// keeping per-tick CPU work negligible.
 const SMTC_POLL_INTERVAL_MS: u64 = 500;
 
-/// Action name used to look up the play/pause control on the active
-/// page when the driver wants to emit an LED indicator.
-const PLAY_PAUSE_ACTION: &str = "play_pause";
+/// Synthetic feedback channel used to inject `("winmedia", note_on_bytes)`
+/// updates into the unified router feedback pipeline.
+type FeedbackSender = mpsc::Sender<(String, Vec<u8>)>;
+
+/// Shared optional handle to a feedback sender, populated by `set_feedback_sender`.
+type SharedFeedbackTx = Arc<RwLock<Option<FeedbackSender>>>;
 
 pub struct WinMediaDriver {
     initialized: AtomicBool,
@@ -48,7 +51,7 @@ pub struct WinMediaDriver {
     /// Wired post-construction. The polling task uses this to inject
     /// synthetic `("winmedia", note_on_bytes)` feedback into the unified
     /// router feedback path.
-    feedback_tx: Arc<RwLock<Option<mpsc::Sender<(String, Vec<u8>)>>>>,
+    feedback_tx: SharedFeedbackTx,
     /// Wired post-construction. Reused for every play-LED resolution
     /// instead of reloading from disk on each emit.
     control_db: Arc<RwLock<Option<Arc<crate::control_mapping::ControlMappingDB>>>>,
@@ -372,7 +375,7 @@ fn read_smtc_playing() -> bool {
 /// spec, then emit a NoteOn feedback message that lights (vel 127) or
 /// extinguishes (vel 0) the bound X-Touch button LED.
 async fn emit_play_indicator(
-    feedback_tx: &Arc<RwLock<Option<mpsc::Sender<(String, Vec<u8>)>>>>,
+    feedback_tx: &SharedFeedbackTx,
     router: &Arc<RwLock<Option<Arc<crate::router::Router>>>>,
     control_db: &Arc<RwLock<Option<Arc<crate::control_mapping::ControlMappingDB>>>>,
     playing: bool,

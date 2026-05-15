@@ -21,6 +21,7 @@ pub type IndicatorCallback = Arc<dyn Fn(String, Value) + Send + Sync>;
 
 /// Execution context passed to drivers for accessing router state and config
 #[derive(Clone)]
+#[allow(dead_code)] // `config` and `active_page` are part of the public driver API (consumed by tests and 3rd-party drivers).
 pub struct ExecutionContext {
     /// Application configuration
     pub config: Arc<RwLock<crate::config::AppConfig>>,
@@ -92,6 +93,7 @@ pub trait Driver: Send + Sync {
     ///
     /// Returns the current connection state of the driver.
     /// Default implementation: always connected (for drivers without network connections)
+    #[allow(dead_code)] // reserved for tray UI polling — currently driven by `subscribe_connection_status`
     fn connection_status(&self) -> crate::tray::ConnectionStatus {
         crate::tray::ConnectionStatus::Connected
     }
@@ -123,9 +125,13 @@ pub mod obs;
 pub mod winaudio;
 pub mod winmedia;
 
-// Re-export commonly used drivers
+// Re-export commonly used drivers (used by tests and external consumers).
+#[allow(unused_imports)]
 pub use console::ConsoleDriver;
+#[allow(unused_imports)]
 pub use midibridge::MidiBridgeDriver;
 pub use obs::ObsDriver;
+#[allow(unused_imports)]
 pub use winaudio::WinAudioDriver;
+#[allow(unused_imports)]
 pub use winmedia::WinMediaDriver;

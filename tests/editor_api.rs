@@ -194,7 +194,7 @@ async fn validate_rejects_bad_yaml() {
     .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(body["ok"], false);
-    assert!(body["errors"].as_array().unwrap().len() >= 1);
+    assert!(!body["errors"].as_array().unwrap().is_empty());
 }
 
 #[tokio::test]

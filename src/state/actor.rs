@@ -103,9 +103,6 @@ pub struct StateActor {
     /// Receiver for incoming commands
     command_rx: mpsc::Receiver<StateCommand>,
 
-    /// Sender for persistence commands
-    persistence_tx: mpsc::Sender<PersistenceCommand>,
-
     /// Counter for tracking total updates processed
     update_count: u64,
 
@@ -124,7 +121,9 @@ impl StateActor {
     ///
     /// # Arguments
     ///
-    /// * `persistence_tx` - Channel for sending persistence commands
+    /// * `_persistence_tx` - Reserved for future direct persistence wiring.
+    ///   Currently kept in the signature so callers don't break, but writes
+    ///   are routed through `PersistenceActorHandle` directly today.
     ///
     /// # Returns
     ///
@@ -136,7 +135,7 @@ impl StateActor {
     /// let (persist_tx, persist_rx) = mpsc::channel(16);
     /// let handle = StateActor::spawn(persist_tx);
     /// ```
-    pub fn spawn(persistence_tx: mpsc::Sender<PersistenceCommand>) -> StateActorHandle {
+    pub fn spawn(_persistence_tx: mpsc::Sender<PersistenceCommand>) -> StateActorHandle {
         let (cmd_tx, cmd_rx) = mpsc::channel(STATE_COMMAND_CHANNEL_CAPACITY);
 
         // Initialize state storage for all known apps
@@ -151,7 +150,6 @@ impl StateActor {
             app_shadows: HashMap::new(),
             last_user_action_ts: HashMap::new(),
             command_rx: cmd_rx,
-            persistence_tx,
             update_count: 0,
             last_gc_user_action: None,
             last_gc_shadows: None,

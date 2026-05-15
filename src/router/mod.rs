@@ -73,6 +73,7 @@ pub struct Router {
 
 impl Router {
     /// Create a new Router with initial configuration
+    #[allow(dead_code)] // exercised by `router::tests`; production uses `with_db_path`
     pub fn new(config: AppConfig) -> Result<Self> {
         Self::with_db_path(config, ".state/sled")
     }
@@ -181,6 +182,7 @@ impl Router {
     /// The two SysEx messages produced are appended to `pending_midi_messages`
     /// and `display_refresh_notify` is signalled so the main loop flushes
     /// them to the X-Touch on its next pass.
+    #[allow(dead_code)] // reserved for driver-driven LCD overlays (winaudio, winmedia indicators)
     pub async fn push_lcd_label(&self, channel: u8, upper: &str, lower: &str) {
         if !(1..=8).contains(&channel) {
             tracing::warn!("push_lcd_label: invalid channel {} (1..=8)", channel);

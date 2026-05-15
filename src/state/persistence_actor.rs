@@ -55,6 +55,7 @@ const SNAPSHOT_KEY: &[u8] = b"state_snapshot";
 
 /// Commands sent to the persistence actor
 #[derive(Debug)]
+#[allow(dead_code)] // `Shutdown` variant only used by tests today; kept for graceful-shutdown wiring
 pub enum PersistenceCommand {
     /// Save a state snapshot (debounced)
     Save(StateSnapshot),
@@ -287,6 +288,7 @@ impl PersistenceActor {
     /// # Errors
     ///
     /// Returns an error if serialization or database write fails.
+    #[allow(dead_code)] // reserved for synchronous flush paths (tests, graceful shutdown)
     fn write_snapshot(&self, snapshot: &StateSnapshot) -> Result<()> {
         let json = serde_json::to_vec(snapshot).context("Failed to serialize snapshot")?;
 
@@ -362,6 +364,7 @@ impl PersistenceActorHandle {
     /// This is a fire-and-forget operation. The actor will flush any pending
     /// snapshot before terminating. Use [`flush`](Self::flush) first if you
     /// need to ensure persistence completes.
+    #[allow(dead_code)] // exercised by tests; reserved for graceful shutdown wiring
     pub fn shutdown(&self) {
         // Best-effort send, ignore errors if already shut down
         let _ = self.cmd_tx.try_send(PersistenceCommand::Shutdown);

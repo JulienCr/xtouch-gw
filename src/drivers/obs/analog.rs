@@ -25,7 +25,7 @@ pub(super) fn shape_analog(value: f64, gamma: f64) -> f64 {
     }
 
     let sign = if value >= 0.0 { 1.0 } else { -1.0 };
-    let magnitude = value.abs().min(1.0).max(0.0);
+    let magnitude = value.abs().clamp(0.0, 1.0);
 
     // Apply gamma curve for finer control at low values
     let shaped = magnitude.powf(gamma);

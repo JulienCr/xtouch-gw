@@ -19,6 +19,7 @@ use crate::midi::{format_hex, MidiMessage};
 
 /// MIDI event from X-Touch
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // `timestamp`/`message` are part of the public event payload (consumers may inspect them)
 pub struct XTouchEvent {
     pub timestamp: Instant,
     pub message: MidiMessage,
@@ -76,6 +77,7 @@ impl XTouchDriver {
     }
 
     /// List available MIDI input ports
+    #[allow(dead_code)] // diagnostics helper exposed by the driver; reserved for CLI/tests
     pub fn list_input_ports() -> Result<Vec<String>> {
         let midi_in = MidiInput::new("XTouch-GW-Scanner")?;
         Ok(midi_in
@@ -86,6 +88,7 @@ impl XTouchDriver {
     }
 
     /// List available MIDI output ports
+    #[allow(dead_code)] // diagnostics helper exposed by the driver; reserved for CLI/tests
     pub fn list_output_ports() -> Result<Vec<String>> {
         let midi_out = MidiOutput::new("XTouch-GW-Scanner")?;
         Ok(midi_out
@@ -235,6 +238,7 @@ impl XTouchDriver {
     }
 
     /// Check if connected
+    #[allow(dead_code)] // status helper; reserved for tray UI and diagnostics
     pub fn is_connected(&self) -> bool {
         self.input_conn.is_some() && self.output_conn.is_some()
     }
@@ -260,6 +264,7 @@ impl XTouchDriver {
     ///
     /// Used for feedback routing from MIDI bridge drivers.
     /// This is a non-async version safe to call from within MIDI callbacks.
+    #[allow(dead_code)] // reserved for sync-callback feedback paths (currently routed through async send_raw)
     pub fn send_raw_sync(&self, data: &[u8]) -> Result<()> {
         let output = self
             .output_conn
@@ -371,6 +376,7 @@ impl XTouchDriver {
     }
 
     /// Set encoder LED ring (0-11 for position, 12-15 for modes)
+    #[allow(dead_code)] // public driver API; reserved for encoder-LED indicator wiring
     pub async fn set_encoder_led(&self, encoder: u8, value: u8) -> Result<()> {
         if encoder > 7 {
             bail!("Invalid encoder number: {} (must be 0-7)", encoder);
@@ -405,6 +411,7 @@ impl XTouchDriver {
     }
 
     /// Send only lower line LCD text (for value overlay)
+    #[allow(dead_code)] // public driver API; reserved for partial-LCD overlay paths (top line preserved)
     pub async fn send_lcd_strip_lower_text(&self, strip_index: u8, lower: &str) -> Result<()> {
         if strip_index > 7 {
             bail!("Invalid LCD strip index: {} (must be 0-7)", strip_index);

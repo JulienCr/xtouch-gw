@@ -37,6 +37,7 @@ pub struct ParamDescriptor {
 /// Coarse parameter type used by the editor to pick an input widget.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[allow(dead_code)] // Integer/Boolean variants reserved for future driver catalogs
 pub enum ParamKind {
     String,
     Number,
