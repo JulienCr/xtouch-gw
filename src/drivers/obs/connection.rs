@@ -280,19 +280,33 @@ impl ObsDriver {
         }
     }
 
-    /// Emit all indicator signals (studio mode, program/preview/selected scenes)
+    /// Emit `value` for `signal` and update the [`Self::last_emitted`]
+    /// dedupe cache so the event-listener's change-detection guard stays
+    /// consistent with what indicator subscribers have seen.
+    fn emit_signal_tracked(&self, signal: &'static str, value: Value) {
+        self.last_emitted.write().insert(signal, value.clone());
+        self.emit_signal(signal, value);
+    }
+
+    /// Emit all indicator signals (studio mode, program/preview/selected scenes).
+    ///
+    /// Called from `refresh_state` on both initial connect and reconnect.
+    /// Updates the `last_emitted` dedupe cache for every signal so the next
+    /// real OBS event with a value different from the post-reconnect state
+    /// (but equal to a value cached pre-reconnect) is not silently dropped
+    /// by [`emit_and_debounce`]'s change-detection guard.
     pub(super) async fn emit_all_signals(&self) {
         let studio_mode = *self.studio_mode.read();
         let program_scene = self.program_scene.read().clone();
         let preview_scene = self.preview_scene.read().clone();
 
-        // Emit individual signals
-        self.emit_signal(super::signals::STUDIO_MODE, Value::Bool(studio_mode));
-        self.emit_signal(
+        // Emit individual signals (tracked so post-reconnect dedupe stays sane).
+        self.emit_signal_tracked(super::signals::STUDIO_MODE, Value::Bool(studio_mode));
+        self.emit_signal_tracked(
             super::signals::CURRENT_PROGRAM_SCENE,
             Value::String(program_scene.clone()),
         );
-        self.emit_signal(
+        self.emit_signal_tracked(
             super::signals::CURRENT_PREVIEW_SCENE,
             Value::String(preview_scene.clone()),
         );
@@ -307,7 +321,7 @@ impl ObsDriver {
         // Only emit if changed (deduplication)
         let mut last = self.last_selected_sent.write();
         if last.as_ref() != Some(&selected) {
-            self.emit_signal(
+            self.emit_signal_tracked(
                 super::signals::SELECTED_SCENE,
                 Value::String(selected.clone()),
             );
