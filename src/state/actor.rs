@@ -109,6 +109,9 @@ pub struct StateActor {
 
     /// Timestamp of last GC sweep for `last_user_action_ts` (throttling)
     last_gc_user_action: Option<Instant>,
+
+    /// Timestamp of last GC sweep for `app_shadows` (throttling)
+    last_gc_shadows: Option<Instant>,
 }
 
 impl StateActor {
@@ -151,6 +154,7 @@ impl StateActor {
             persistence_tx,
             update_count: 0,
             last_gc_user_action: None,
+            last_gc_shadows: None,
         };
 
         // Spawn the actor's run loop
@@ -534,6 +538,28 @@ impl StateActor {
             value,
             "Shadow updated"
         );
+
+        // Throttled GC: bound anti-echo memory by purging entries older than
+        // 2x the widest anti-echo window. Anti-echo only consults entries
+        // within their respective windows (max = PB = 250ms), so anything
+        // older is dead weight.
+        let now = Instant::now();
+        let should_gc = match self.last_gc_shadows {
+            None => true,
+            Some(last) => now.saturating_duration_since(last) >= Duration::from_secs(1),
+        };
+        if should_gc {
+            let max_window = ANTI_ECHO_WINDOW_PB
+                .max(ANTI_ECHO_WINDOW_CC)
+                .max(ANTI_ECHO_WINDOW_NOTE);
+            let cutoff = Self::now_ms().saturating_sub(2 * max_window);
+            for inner in self.app_shadows.values_mut() {
+                inner.retain(|_, shadow| shadow.ts >= cutoff);
+            }
+            // Drop apps whose inner maps are now empty.
+            self.app_shadows.retain(|_, m| !m.is_empty());
+            self.last_gc_shadows = Some(now);
+        }
     }
 
     /// Mark a user action timestamp for Last-Write-Wins
