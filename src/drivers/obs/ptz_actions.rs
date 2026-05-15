@@ -201,17 +201,16 @@ impl ObsDriver {
         let (canvas_width, canvas_height) = self.get_canvas_dimensions().await?;
 
         // Build transform to reset position to center
-        let mut transform = obws::requests::scene_items::SceneItemTransform::default();
-
-        // Set alignment to center (so position refers to object center, not corner)
-        transform.alignment = Some(obws::common::Alignment::CENTER);
-
-        // Set position to canvas center
-        transform.position = Some(obws::requests::scene_items::Position {
-            x: Some((canvas_width / 2.0) as f32),
-            y: Some((canvas_height / 2.0) as f32),
+        let transform = obws::requests::scene_items::SceneItemTransform {
+            // Set alignment to center (so position refers to object center, not corner)
+            alignment: Some(obws::common::Alignment::CENTER),
+            // Set position to canvas center
+            position: Some(obws::requests::scene_items::Position {
+                x: Some((canvas_width / 2.0) as f32),
+                y: Some((canvas_height / 2.0) as f32),
+            }),
             ..Default::default()
-        });
+        };
 
         // Send to OBS
         let guard = self.get_connected_client().await?;
@@ -301,7 +300,6 @@ impl ObsDriver {
             transform.scale = Some(obws::requests::scene_items::Scale {
                 x: Some(1.0),
                 y: Some(1.0),
-                ..Default::default()
             });
             debug!("OBS Reset zoom (scale): 1.0x1.0");
         }

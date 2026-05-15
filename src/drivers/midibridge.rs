@@ -549,21 +549,18 @@ impl Driver for MidiBridgeDriver {
         match action {
             "passthrough" => {
                 // Extract raw MIDI bytes from context value
-                if let Some(value) = ctx.value {
-                    if let Value::Array(bytes_array) = value {
-                        let bytes: Vec<u8> = bytes_array
-                            .iter()
-                            .filter_map(|v| v.as_u64().map(|n| n as u8))
-                            .collect();
-                        if !bytes.is_empty() {
-                            debug!("→ Passthrough {} bytes to '{}'", bytes.len(), self.to_port);
-                            self.send_message(&bytes)?;
+                if let Some(Value::Array(bytes_array)) = ctx.value {
+                    let bytes: Vec<u8> = bytes_array
+                        .iter()
+                        .filter_map(|v| v.as_u64().map(|n| n as u8))
+                        .collect();
+                    if !bytes.is_empty() {
+                        debug!("→ Passthrough {} bytes to '{}'", bytes.len(), self.to_port);
+                        self.send_message(&bytes)?;
 
-                            // Record outbound activity
-                            if let Some(ref tracker) = ctx.activity_tracker {
-                                tracker
-                                    .record(&self.name, crate::tray::ActivityDirection::Outbound);
-                            }
+                        // Record outbound activity
+                        if let Some(ref tracker) = ctx.activity_tracker {
+                            tracker.record(&self.name, crate::tray::ActivityDirection::Outbound);
                         }
                     }
                 }

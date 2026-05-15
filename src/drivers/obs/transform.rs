@@ -295,8 +295,8 @@ impl ObsDriver {
                     current.x, current.y, new_state.x, new_state.y);
             } else {
                 // PATH 2: Scale-based scaling
-                new_state.scale_x = (current.scale_x * factor).max(0.01).min(10.0);
-                new_state.scale_y = (current.scale_y * factor).max(0.01).min(10.0);
+                new_state.scale_x = (current.scale_x * factor).clamp(0.01, 10.0);
+                new_state.scale_y = (current.scale_y * factor).clamp(0.01, 10.0);
 
                 // Calculate effective factor (may be capped by scale limits)
                 // If scale hits a limit (min 0.01 or max 10.0), the effective factor differs from requested
@@ -376,7 +376,6 @@ impl ObsDriver {
             transform.position = Some(obws::requests::scene_items::Position {
                 x: Some(new_state.x as f32),
                 y: Some(new_state.y as f32),
-                ..Default::default()
             });
         }
 
@@ -396,7 +395,6 @@ impl ObsDriver {
                     transform.scale = Some(obws::requests::scene_items::Scale {
                         x: Some(new_state.scale_x as f32),
                         y: Some(new_state.scale_y as f32),
-                        ..Default::default()
                     });
                 }
             } else {
@@ -404,7 +402,6 @@ impl ObsDriver {
                 transform.scale = Some(obws::requests::scene_items::Scale {
                     x: Some(new_state.scale_x as f32),
                     y: Some(new_state.scale_y as f32),
-                    ..Default::default()
                 });
                 debug!(
                     "OBS sending SCALE transform: {:.3}×{:.3}",
@@ -547,7 +544,6 @@ impl ObsDriver {
             transform.position = Some(obws::requests::scene_items::Position {
                 x: Some(new_state.x as f32),
                 y: Some(new_state.y as f32),
-                ..Default::default()
             });
         }
 
@@ -562,7 +558,6 @@ impl ObsDriver {
                 transform.scale = Some(obws::requests::scene_items::Scale {
                     x: Some(new_state.scale_x as f32),
                     y: Some(new_state.scale_y as f32),
-                    ..Default::default()
                 });
             }
         }
