@@ -403,6 +403,11 @@ impl Driver for ObsDriver {
         info!("Shutting down OBS WebSocket driver");
         *self.shutdown_flag.lock() = true;
 
+        // Drop analog state so a re-init of this singleton driver doesn't
+        // replay stale velocities through `set_analog_rate`'s partial-merge.
+        self.analog_rates.write().clear();
+        self.analog_error_count.write().clear();
+
         if let Some(client) = self.client.write().await.take() {
             drop(client); // Close the connection
         }
