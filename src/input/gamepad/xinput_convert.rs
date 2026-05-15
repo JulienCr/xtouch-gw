@@ -3,8 +3,8 @@
 //! Converts rusty_xinput controller state to standardized GamepadEvent format,
 //! ensuring consistency with gilrs-based events.
 
+use super::hybrid_provider::GamepadEvent;
 use super::normalize::normalize_stick_radial;
-use super::provider::GamepadEvent;
 use crate::config::AnalogConfig;
 use rusty_xinput::{XInputHandle, XInputState, XInputUsageError};
 

@@ -19,11 +19,28 @@ use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
-use super::provider::GamepadEvent;
 use super::slot::SlotManager;
 use super::stick_buffer::{StickBuffer, StickId};
 use super::xinput_convert::CachedXInputState;
 use crate::config::AnalogConfig;
+
+/// Standardized gamepad event emitted by the hybrid provider
+#[derive(Debug, Clone)]
+pub enum GamepadEvent {
+    /// Button press/release
+    Button {
+        control_id: String, // Full ID: "gamepad1.btn.a"
+        pressed: bool,
+    },
+    /// Analog axis movement
+    Axis {
+        control_id: String, // Full ID: "gamepad1.axis.lx"
+        value: f32,
+        analog_config: Option<AnalogConfig>, // Per-slot config
+        /// Monotonic sequence number for ordering (prevents race conditions under CPU load)
+        sequence: u64,
+    },
+}
 
 /// Callback type for gamepad events
 pub type EventCallback = Arc<dyn Fn(GamepadEvent) + Send + Sync>;
