@@ -110,7 +110,20 @@ fn sync_view_mode(
 /// Emit a signal via the driver and schedule the debounced `selectedScene`
 /// follow-up. Reuses [`ObsDriver::emit_signal`] so we have a single emission
 /// path for all indicator subscribers.
-fn emit_and_debounce(driver: &ObsDriver, signal: &str, value: Value) {
+///
+/// Skips the entire emission + debounce pipeline when `value` matches the
+/// last value emitted for `signal` (change-detection guard, #31). This
+/// eliminates redundant `String::clone` allocations and Tokio task spawns
+/// during continuous OBS scene-switching when the same scene is reasserted.
+fn emit_and_debounce(driver: &ObsDriver, signal: &'static str, value: Value) {
+    {
+        let last = driver.last_emitted.read();
+        if last.get(signal) == Some(&value) {
+            return;
+        }
+    }
+    driver.last_emitted.write().insert(signal, value.clone());
+
     driver.emit_signal(signal, value);
 
     ObsDriver::emit_selected_debounced(

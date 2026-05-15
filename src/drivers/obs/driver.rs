@@ -38,6 +38,11 @@ pub struct ObsDriver {
     // Indicator emission (using parking_lot for sync access)
     pub(super) indicator_emitters: Arc<parking_lot::RwLock<Vec<super::IndicatorCallback>>>,
     pub(super) last_selected_sent: Arc<parking_lot::RwLock<Option<String>>>,
+    /// Last value emitted per signal, keyed by `&'static` signal name (e.g.
+    /// `signals::CURRENT_PROGRAM_SCENE`). Used by `emit_and_debounce` as a
+    /// change-detection guard so identical scene/studio events don't allocate
+    /// or re-fan-out downstream.
+    pub(super) last_emitted: Arc<parking_lot::RwLock<HashMap<&'static str, serde_json::Value>>>,
 
     // Connection status tracking
     pub(super) status_callbacks: Arc<parking_lot::RwLock<Vec<crate::tray::StatusCallback>>>,
@@ -98,6 +103,7 @@ impl ObsDriver {
             item_id_cache: Arc::new(parking_lot::RwLock::new(HashMap::new())),
             indicator_emitters: Arc::new(parking_lot::RwLock::new(Vec::new())),
             last_selected_sent: Arc::new(parking_lot::RwLock::new(None)),
+            last_emitted: Arc::new(parking_lot::RwLock::new(HashMap::new())),
             status_callbacks: Arc::new(parking_lot::RwLock::new(Vec::new())),
             current_status: Arc::new(parking_lot::RwLock::new(
                 crate::tray::ConnectionStatus::Disconnected,
@@ -187,6 +193,7 @@ impl ObsDriver {
             item_id_cache: Arc::clone(&self.item_id_cache),
             indicator_emitters: Arc::clone(&self.indicator_emitters),
             last_selected_sent: Arc::clone(&self.last_selected_sent),
+            last_emitted: Arc::clone(&self.last_emitted),
             status_callbacks: Arc::clone(&self.status_callbacks),
             current_status: Arc::clone(&self.current_status),
             activity_tracker: Arc::clone(&self.activity_tracker),
