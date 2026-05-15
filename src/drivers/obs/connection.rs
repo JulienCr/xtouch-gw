@@ -134,37 +134,14 @@ impl ObsDriver {
         Ok(())
     }
 
-    /// Spawn background task to listen to OBS events
+    /// Spawn background task to listen to OBS events.
+    ///
+    /// Hands the listener a cheap `clone_for_task` of the driver so it can
+    /// reuse [`ObsDriver::emit_signal`] and access shared state (caches,
+    /// scene cells, shutdown flag) without re-passing every Arc field.
     pub(super) fn spawn_event_listener(&self) {
-        let client = Arc::clone(&self.client);
-        let studio_mode = Arc::clone(&self.studio_mode);
-        let program_scene = Arc::clone(&self.program_scene);
-        let preview_scene = Arc::clone(&self.preview_scene);
-        let emitters = Arc::clone(&self.indicator_emitters);
-        let last_selected = Arc::clone(&self.last_selected_sent);
-        let shutdown_flag = Arc::clone(&self.shutdown_flag);
-        let activity_tracker = Arc::clone(&self.activity_tracker);
-        let camera_control_config = Arc::clone(&self.camera_control_config);
-        let camera_control_state = Arc::clone(&self.camera_control_state);
-        let transform_cache = Arc::clone(&self.transform_cache);
-        let item_id_cache = Arc::clone(&self.item_id_cache);
-        let driver_for_reconnect = self.clone_for_task();
-
-        tokio::spawn(super::event_listener::run_event_listener(
-            client,
-            studio_mode,
-            program_scene,
-            preview_scene,
-            emitters,
-            last_selected,
-            shutdown_flag,
-            activity_tracker,
-            camera_control_config,
-            camera_control_state,
-            transform_cache,
-            item_id_cache,
-            driver_for_reconnect,
-        ));
+        let driver = self.clone_for_task();
+        tokio::spawn(super::event_listener::run_event_listener(driver));
     }
 
     /// Static helper to emit selectedScene with debouncing
@@ -303,19 +280,33 @@ impl ObsDriver {
         }
     }
 
-    /// Emit all indicator signals (studio mode, program/preview/selected scenes)
+    /// Emit `value` for `signal` and update the [`Self::last_emitted`]
+    /// dedupe cache so the event-listener's change-detection guard stays
+    /// consistent with what indicator subscribers have seen.
+    fn emit_signal_tracked(&self, signal: &'static str, value: Value) {
+        self.last_emitted.write().insert(signal, value.clone());
+        self.emit_signal(signal, value);
+    }
+
+    /// Emit all indicator signals (studio mode, program/preview/selected scenes).
+    ///
+    /// Called from `refresh_state` on both initial connect and reconnect.
+    /// Updates the `last_emitted` dedupe cache for every signal so the next
+    /// real OBS event with a value different from the post-reconnect state
+    /// (but equal to a value cached pre-reconnect) is not silently dropped
+    /// by [`emit_and_debounce`]'s change-detection guard.
     pub(super) async fn emit_all_signals(&self) {
         let studio_mode = *self.studio_mode.read();
         let program_scene = self.program_scene.read().clone();
         let preview_scene = self.preview_scene.read().clone();
 
-        // Emit individual signals
-        self.emit_signal(super::signals::STUDIO_MODE, Value::Bool(studio_mode));
-        self.emit_signal(
+        // Emit individual signals (tracked so post-reconnect dedupe stays sane).
+        self.emit_signal_tracked(super::signals::STUDIO_MODE, Value::Bool(studio_mode));
+        self.emit_signal_tracked(
             super::signals::CURRENT_PROGRAM_SCENE,
             Value::String(program_scene.clone()),
         );
-        self.emit_signal(
+        self.emit_signal_tracked(
             super::signals::CURRENT_PREVIEW_SCENE,
             Value::String(preview_scene.clone()),
         );
@@ -330,7 +321,7 @@ impl ObsDriver {
         // Only emit if changed (deduplication)
         let mut last = self.last_selected_sent.write();
         if last.as_ref() != Some(&selected) {
-            self.emit_signal(
+            self.emit_signal_tracked(
                 super::signals::SELECTED_SCENE,
                 Value::String(selected.clone()),
             );

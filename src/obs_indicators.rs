@@ -208,13 +208,14 @@ fn handle_preview_scene_change(
 fn find_dynamic_gamepad_slot_from_config(
     gamepad: &Option<crate::config::GamepadConfig>,
 ) -> Option<String> {
+    use crate::input::gamepad::GAMEPAD_PREFIX;
     gamepad
         .as_ref()
         .and_then(|g| g.gamepads.as_ref())
         .and_then(|slots| {
             slots.iter().enumerate().find_map(|(i, slot)| {
                 if slot.camera_target.as_deref() == Some("dynamic") {
-                    Some(format!("gamepad{}", i + 1))
+                    Some(format!("{}{}", GAMEPAD_PREFIX, i + 1))
                 } else {
                     None
                 }

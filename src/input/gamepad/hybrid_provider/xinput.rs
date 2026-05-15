@@ -9,6 +9,7 @@ use crate::input::gamepad::hybrid_provider::GamepadEvent;
 use crate::input::gamepad::xinput_convert::{
     convert_xinput_axes, convert_xinput_buttons, poll_xinput_controller, CachedXInputState,
 };
+use crate::input::gamepad::GAMEPAD_PREFIX;
 
 impl HybridProviderState {
     /// Poll XInput events for all 4 possible controllers
@@ -75,7 +76,7 @@ impl HybridProviderState {
                 }
             }
         } else {
-            ("gamepad".to_string(), None)
+            (GAMEPAD_PREFIX.to_string(), None)
         };
 
         // Generate button events

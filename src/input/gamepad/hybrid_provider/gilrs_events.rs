@@ -11,6 +11,7 @@ use crate::input::gamepad::hybrid_id::HybridControllerId;
 use crate::input::gamepad::hybrid_provider::GamepadEvent;
 use crate::input::gamepad::normalize::normalize_gilrs_stick;
 use crate::input::gamepad::stick_buffer::{StickBuffer, StickId};
+use crate::input::gamepad::GAMEPAD_PREFIX;
 
 impl HybridProviderState {
     /// Poll gilrs events (non-blocking)
@@ -25,7 +26,7 @@ impl HybridProviderState {
                     continue;
                 }
             } else {
-                ("gamepad".to_string(), None)
+                (GAMEPAD_PREFIX.to_string(), None)
             };
 
             for gamepad_event in self.convert_gilrs_event(id, event, &prefix, analog_config) {

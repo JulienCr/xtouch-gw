@@ -11,10 +11,10 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tracing::{debug, info, warn};
 
-use super::camera_actions::extract_gamepad_slot;
 use super::driver::ObsDriver;
 use super::ptz_actions::PtzAxis;
 use super::{Driver, ExecutionContext, IndicatorCallback};
+use crate::input::gamepad::extract_gamepad_slot;
 
 impl ObsDriver {
     /// Resolve camera_id to (scene, source) from camera_control config.
@@ -368,7 +368,7 @@ impl Driver for ObsDriver {
 
                 // Update modifier state in camera_targets
                 if let Some(ref camera_targets) = ctx.camera_targets {
-                    camera_targets.set_ptz_modifier(&slot, pressed);
+                    camera_targets.set_ptz_modifier(slot, pressed);
                     debug!(
                         "PTZ modifier: {} = {} (control: {})",
                         slot, pressed, control_id

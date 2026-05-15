@@ -4,20 +4,12 @@
 
 use anyhow::{Context, Result};
 use serde_json::Value;
-use tracing::{debug, info};
+use tracing::info;
 
 use super::camera::ViewMode;
 use super::driver::ObsDriver;
 use super::ExecutionContext;
-
-/// Extract gamepad slot from control_id (e.g., "gamepad1" from "gamepad1.btn.a")
-pub(super) fn extract_gamepad_slot(control_id: &str) -> String {
-    control_id
-        .split('.')
-        .next()
-        .unwrap_or("gamepad1")
-        .to_string()
-}
+use crate::input::gamepad::{extract_gamepad_slot, DEFAULT_GAMEPAD_SLOT, GAMEPAD_PREFIX};
 
 /// Context for setting PTZ target from gamepad controls
 pub(super) struct PtzTargetContext<'a> {
@@ -37,7 +29,7 @@ impl<'a> PtzTargetContext<'a> {
     /// Check if this is a gamepad control
     pub(super) fn is_gamepad(&self) -> bool {
         self.control_id
-            .map(|id| id.starts_with("gamepad"))
+            .map(|id| id.starts_with(GAMEPAD_PREFIX))
             .unwrap_or(false)
     }
 
@@ -45,7 +37,8 @@ impl<'a> PtzTargetContext<'a> {
     pub(super) fn gamepad_slot(&self) -> String {
         self.control_id
             .map(extract_gamepad_slot)
-            .unwrap_or_else(|| "gamepad1".to_string())
+            .unwrap_or(DEFAULT_GAMEPAD_SLOT)
+            .to_string()
     }
 
     /// Set PTZ target for gamepad if applicable. Returns true if target was set.

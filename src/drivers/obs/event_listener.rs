@@ -107,57 +107,50 @@ fn sync_view_mode(
     }
 }
 
-/// Emit a signal to all indicator emitters and schedule debounced selectedScene
-fn emit_and_debounce(
-    signal: &str,
-    value: Value,
-    studio_mode: &parking_lot::RwLock<bool>,
-    program_scene: &parking_lot::RwLock<String>,
-    preview_scene: &parking_lot::RwLock<String>,
-    emitters: &Arc<parking_lot::RwLock<Vec<super::IndicatorCallback>>>,
-    last_selected: &Arc<parking_lot::RwLock<Option<String>>>,
-) {
-    let emitters_guard = emitters.read();
-    for emit in emitters_guard.iter() {
-        emit(signal.to_string(), value.clone());
+/// Emit a signal via the driver and schedule the debounced `selectedScene`
+/// follow-up. Reuses [`ObsDriver::emit_signal`] so we have a single emission
+/// path for all indicator subscribers.
+///
+/// Skips the entire emission + debounce pipeline when `value` matches the
+/// last value emitted for `signal` (change-detection guard, #31). This
+/// eliminates redundant `String::clone` allocations and Tokio task spawns
+/// during continuous OBS scene-switching when the same scene is reasserted.
+fn emit_and_debounce(driver: &ObsDriver, signal: &'static str, value: Value) {
+    {
+        let last = driver.last_emitted.read();
+        if last.get(signal) == Some(&value) {
+            return;
+        }
     }
-    drop(emitters_guard);
+    driver.last_emitted.write().insert(signal, value.clone());
+
+    driver.emit_signal(signal, value);
 
     ObsDriver::emit_selected_debounced(
-        *studio_mode.read(),
-        program_scene.read().clone(),
-        preview_scene.read().clone(),
-        Arc::clone(emitters),
-        Arc::clone(last_selected),
+        *driver.studio_mode.read(),
+        driver.program_scene.read().clone(),
+        driver.preview_scene.read().clone(),
+        Arc::clone(&driver.indicator_emitters),
+        Arc::clone(&driver.last_selected_sent),
     );
 }
 
-/// Run the OBS event listener loop (spawned as a tokio task)
-#[allow(clippy::too_many_arguments)]
-pub(super) async fn run_event_listener(
-    client: Arc<tokio::sync::RwLock<Option<obws::Client>>>,
-    studio_mode: Arc<parking_lot::RwLock<bool>>,
-    program_scene: Arc<parking_lot::RwLock<String>>,
-    preview_scene: Arc<parking_lot::RwLock<String>>,
-    emitters: Arc<parking_lot::RwLock<Vec<super::IndicatorCallback>>>,
-    last_selected: Arc<parking_lot::RwLock<Option<String>>>,
-    shutdown_flag: Arc<parking_lot::Mutex<bool>>,
-    activity_tracker: Arc<parking_lot::RwLock<Option<Arc<crate::tray::ActivityTracker>>>>,
-    camera_control_config: Arc<parking_lot::RwLock<Option<crate::config::CameraControlConfig>>>,
-    camera_control_state: Arc<parking_lot::RwLock<super::camera::CameraControlState>>,
-    transform_cache: Arc<parking_lot::RwLock<HashMap<String, ObsItemState>>>,
-    item_id_cache: Arc<parking_lot::RwLock<HashMap<String, i64>>>,
-    driver_for_reconnect: ObsDriver,
-) {
+/// Run the OBS event listener loop (spawned as a tokio task).
+///
+/// Takes the full [`ObsDriver`] (cheap to clone — every field is `Arc`-backed
+/// via `clone_for_task`) so that scene/studio-mode events can route through
+/// the driver's own [`ObsDriver::emit_signal`] instead of re-implementing the
+/// emission loop with a stack of `Arc<RwLock<…>>` parameters.
+pub(super) async fn run_event_listener(driver: ObsDriver) {
     loop {
-        if *shutdown_flag.lock() {
+        if *driver.shutdown_flag.lock() {
             debug!("OBS event listener shutting down");
             break;
         }
 
         // Get event stream
         let events = {
-            let guard = client.read().await;
+            let guard = driver.client.read().await;
             match guard.as_ref() {
                 Some(c) => match c.events() {
                     Ok(stream) => stream,
@@ -180,91 +173,100 @@ pub(super) async fn run_event_listener(
 
         tokio::pin!(events);
         while let Some(event) = events.next().await {
-            if *shutdown_flag.lock() {
+            if *driver.shutdown_flag.lock() {
                 break;
             }
 
-            if let Some(ref tracker) = *activity_tracker.read() {
+            if let Some(ref tracker) = *driver.activity_tracker.read() {
                 tracker.record("obs", crate::tray::ActivityDirection::Inbound);
             }
 
             match event {
                 Event::CurrentProgramSceneChanged { name } => {
                     debug!("OBS program scene changed: {}", name);
-                    *program_scene.write() = name.clone();
+                    *driver.program_scene.write() = name.clone();
 
-                    if !*studio_mode.read() {
-                        sync_view_mode(&name, &camera_control_config, &camera_control_state);
+                    if !*driver.studio_mode.read() {
+                        sync_view_mode(
+                            &name,
+                            &driver.camera_control_config,
+                            &driver.camera_control_state,
+                        );
                     }
 
                     emit_and_debounce(
+                        &driver,
                         super::signals::CURRENT_PROGRAM_SCENE,
                         Value::String(name),
-                        &studio_mode,
-                        &program_scene,
-                        &preview_scene,
-                        &emitters,
-                        &last_selected,
                     );
                 },
 
                 Event::StudioModeStateChanged { enabled } => {
                     debug!("OBS studio mode changed: {}", enabled);
-                    *studio_mode.write() = enabled;
+                    *driver.studio_mode.write() = enabled;
 
                     let active_scene = if enabled {
-                        preview_scene.read().clone()
+                        driver.preview_scene.read().clone()
                     } else {
-                        program_scene.read().clone()
+                        driver.program_scene.read().clone()
                     };
-                    sync_view_mode(&active_scene, &camera_control_config, &camera_control_state);
-
-                    emit_and_debounce(
-                        super::signals::STUDIO_MODE,
-                        Value::Bool(enabled),
-                        &studio_mode,
-                        &program_scene,
-                        &preview_scene,
-                        &emitters,
-                        &last_selected,
+                    sync_view_mode(
+                        &active_scene,
+                        &driver.camera_control_config,
+                        &driver.camera_control_state,
                     );
+
+                    emit_and_debounce(&driver, super::signals::STUDIO_MODE, Value::Bool(enabled));
                 },
 
                 Event::CurrentPreviewSceneChanged { name } => {
                     debug!("OBS preview scene changed: {}", name);
-                    *preview_scene.write() = name.clone();
+                    *driver.preview_scene.write() = name.clone();
 
-                    if *studio_mode.read() {
-                        sync_view_mode(&name, &camera_control_config, &camera_control_state);
+                    if *driver.studio_mode.read() {
+                        sync_view_mode(
+                            &name,
+                            &driver.camera_control_config,
+                            &driver.camera_control_state,
+                        );
                     }
 
                     emit_and_debounce(
+                        &driver,
                         super::signals::CURRENT_PREVIEW_SCENE,
                         Value::String(name),
-                        &studio_mode,
-                        &program_scene,
-                        &preview_scene,
-                        &emitters,
-                        &last_selected,
                     );
                 },
 
                 Event::SceneItemRemoved { scene, source, .. } => {
-                    purge_caches_for_item(&transform_cache, &item_id_cache, &scene, &source);
+                    purge_caches_for_item(
+                        &driver.transform_cache,
+                        &driver.item_id_cache,
+                        &scene,
+                        &source,
+                    );
                 },
 
                 Event::SceneRemoved { name, .. } => {
                     let prefix = format!("{}::", name);
-                    purge_caches_where(&transform_cache, &item_id_cache, "scene", &name, |k| {
-                        k.starts_with(&prefix)
-                    });
+                    purge_caches_where(
+                        &driver.transform_cache,
+                        &driver.item_id_cache,
+                        "scene",
+                        &name,
+                        |k| k.starts_with(&prefix),
+                    );
                 },
 
                 Event::InputRemoved { name } => {
                     let suffix = format!("::{}", name);
-                    purge_caches_where(&transform_cache, &item_id_cache, "source", &name, |k| {
-                        k.ends_with(&suffix)
-                    });
+                    purge_caches_where(
+                        &driver.transform_cache,
+                        &driver.item_id_cache,
+                        "source",
+                        &name,
+                        |k| k.ends_with(&suffix),
+                    );
                 },
 
                 _ => {},
@@ -274,9 +276,9 @@ pub(super) async fn run_event_listener(
         // Stream ended (disconnected)
         warn!("OBS event stream closed");
 
-        driver_for_reconnect.emit_status(crate::tray::ConnectionStatus::Disconnected);
+        driver.emit_status(crate::tray::ConnectionStatus::Disconnected);
 
-        let driver_clone = driver_for_reconnect.clone_for_task();
+        let driver_clone = driver.clone_for_task();
         tokio::spawn(async move {
             driver_clone.schedule_reconnect().await;
         });

@@ -158,6 +158,7 @@ impl CameraTargetState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::input::gamepad::DEFAULT_GAMEPAD_SLOT;
     use tempfile::tempdir;
 
     #[test]
@@ -166,8 +167,11 @@ mod tests {
         let db = sled::open(temp.path().join("test.sled")).unwrap();
         let state = CameraTargetState::new(db);
 
-        state.set_target("gamepad1", "Main").unwrap();
-        assert_eq!(state.get_target("gamepad1"), Some("Main".to_string()));
+        state.set_target(DEFAULT_GAMEPAD_SLOT, "Main").unwrap();
+        assert_eq!(
+            state.get_target(DEFAULT_GAMEPAD_SLOT),
+            Some("Main".to_string())
+        );
         assert_eq!(state.get_target("gamepad2"), None);
     }
 
@@ -180,14 +184,17 @@ mod tests {
         {
             let db = sled::open(&db_path).unwrap();
             let state = CameraTargetState::new(db);
-            state.set_target("gamepad1", "Jardin").unwrap();
+            state.set_target(DEFAULT_GAMEPAD_SLOT, "Jardin").unwrap();
         }
 
         // Second instance - should restore target
         {
             let db = sled::open(&db_path).unwrap();
             let state = CameraTargetState::new(db);
-            assert_eq!(state.get_target("gamepad1"), Some("Jardin".to_string()));
+            assert_eq!(
+                state.get_target(DEFAULT_GAMEPAD_SLOT),
+                Some("Jardin".to_string())
+            );
         }
     }
 
@@ -197,10 +204,10 @@ mod tests {
         let db = sled::open(temp.path().join("test.sled")).unwrap();
         let state = CameraTargetState::new(db);
 
-        state.set_target("gamepad1", "Main").unwrap();
-        assert!(state.get_target("gamepad1").is_some());
+        state.set_target(DEFAULT_GAMEPAD_SLOT, "Main").unwrap();
+        assert!(state.get_target(DEFAULT_GAMEPAD_SLOT).is_some());
 
-        state.clear_target("gamepad1").unwrap();
-        assert!(state.get_target("gamepad1").is_none());
+        state.clear_target(DEFAULT_GAMEPAD_SLOT).unwrap();
+        assert!(state.get_target(DEFAULT_GAMEPAD_SLOT).is_none());
     }
 }
