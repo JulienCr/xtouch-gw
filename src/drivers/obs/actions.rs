@@ -139,6 +139,11 @@ impl Driver for ObsDriver {
         // Without this reset, the background reconnection task spawned below
         // would observe a stale `true` and exit immediately.
         *self.shutdown_flag.lock() = false;
+        // Same for the single-flight reconnect guard: a previous shutdown
+        // mid-reconnect could leave this `true` and block all future
+        // reconnect attempts.
+        self.reconnecting
+            .store(false, std::sync::atomic::Ordering::Release);
 
         // Store activity tracker if available
         if let Some(tracker) = ctx.activity_tracker {
@@ -173,8 +178,11 @@ impl Driver for ObsDriver {
         if self.client.read().await.is_none() {
             warn!("OBS not connected, action dropped");
 
-            // Trigger reconnect if not already running
-            if *self.reconnect_count.lock() == 0 {
+            // Trigger reconnect only if no reconnect loop is currently
+            // running. `schedule_reconnect` itself is single-flighted via
+            // `reconnecting`, but checking here avoids spawning a
+            // throwaway task that would immediately bail.
+            if !self.reconnecting.load(std::sync::atomic::Ordering::Acquire) {
                 debug!("Triggering background reconnection");
                 let driver_clone = self.clone_for_task();
                 tokio::spawn(async move {

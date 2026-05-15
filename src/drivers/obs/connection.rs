@@ -228,44 +228,72 @@ impl ObsDriver {
         Ok(())
     }
 
-    /// Schedule reconnection with exponential backoff
+    /// Schedule reconnection with exponential backoff.
+    ///
+    /// Uses the `reconnecting: AtomicBool` flag as a single-flight guard
+    /// (compare_exchange) so multiple sources of "we got disconnected"
+    /// (action retry, listener shutdown) cannot stack overlapping
+    /// reconnect loops — which would race on `connect()` and could leak
+    /// connections.
     pub(super) async fn schedule_reconnect(&self) {
-        loop {
-            if *self.shutdown_flag.lock() {
-                return;
-            }
+        use std::sync::atomic::Ordering;
 
-            let retry_count = {
-                let mut count = self.reconnect_count.lock();
-                *count += 1;
-                *count
-            };
+        // Single-flight guard. If another reconnect loop is already in
+        // flight, exit immediately.
+        if self
+            .reconnecting
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            debug!("OBS reconnect already in progress, skipping");
+            return;
+        }
 
-            let delay_ms = std::cmp::min(30_000, 1000 * retry_count);
-            debug!("⏳ OBS reconnect #{} in {}ms", retry_count, delay_ms);
+        // Ensure we always release the guard on every exit path.
+        // Wrap the loop body so panics also clear the flag.
+        let result: Result<(), ()> = async {
+            loop {
+                if *self.shutdown_flag.lock() {
+                    return Ok(());
+                }
 
-            // Emit reconnecting status
-            self.emit_status(crate::tray::ConnectionStatus::Reconnecting {
-                attempt: retry_count,
-            });
+                let retry_count = {
+                    let mut count = self.reconnect_count.lock();
+                    *count += 1;
+                    *count
+                };
 
-            sleep(Duration::from_millis(delay_ms as u64)).await;
+                let delay_ms = std::cmp::min(30_000, 1000 * retry_count);
+                debug!("⏳ OBS reconnect #{} in {}ms", retry_count, delay_ms);
 
-            if *self.shutdown_flag.lock() {
-                return;
-            }
+                // Emit reconnecting status
+                self.emit_status(crate::tray::ConnectionStatus::Reconnecting {
+                    attempt: retry_count,
+                });
 
-            match self.connect().await {
-                Ok(_) => {
-                    info!("✅ OBS reconnection successful");
-                    return; // Success, exit loop
-                },
-                Err(e) => {
-                    debug!("OBS reconnect #{} failed: {}", retry_count, e);
-                    // Continue loop for next attempt
-                },
+                sleep(Duration::from_millis(delay_ms as u64)).await;
+
+                if *self.shutdown_flag.lock() {
+                    return Ok(());
+                }
+
+                match self.connect().await {
+                    Ok(_) => {
+                        info!("✅ OBS reconnection successful");
+                        return Ok(());
+                    },
+                    Err(e) => {
+                        debug!("OBS reconnect #{} failed: {}", retry_count, e);
+                        // Continue loop for next attempt
+                    },
+                }
             }
         }
+        .await;
+
+        // Release the single-flight guard.
+        self.reconnecting.store(false, Ordering::Release);
+        let _ = result;
     }
 
     /// Emit a signal to all indicator subscribers
