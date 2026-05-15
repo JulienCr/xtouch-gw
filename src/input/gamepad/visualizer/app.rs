@@ -171,6 +171,15 @@ impl GamepadVisualizerApp {
                 );
             }
         }
+
+        // Mirror Disconnected-event cleanup every frame: gilrs occasionally misses
+        // EventType::Disconnected on unclean Bluetooth/USB-yank disconnects on
+        // Windows WGI, leaving orphaned entries that would slowly leak memory.
+        self.state
+            .gilrs_controllers
+            .retain(|id, _| self.gilrs.connected_gamepad(*id).is_some());
+        self.capture_state
+            .retain(|id, _| self.gilrs.connected_gamepad(*id).is_some());
     }
 
     /// Get count of connected controllers across both backends.
