@@ -487,8 +487,9 @@ async fn prune_unused_drivers(router: &Arc<Router>, new_config: &AppConfig) {
     for name in removed {
         match crate::state::AppKey::from_str(&name) {
             Some(app_key) => state_actor.clear_states_for_app(app_key),
-            None => debug!(
-                "Skipping state purge for unknown driver '{}' (no AppKey mapping)",
+            None => warn!(
+                "Skipping state purge for driver '{}' — no AppKey mapping; \
+                 its app_states will not be reclaimed on this reload",
                 name
             ),
         }

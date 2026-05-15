@@ -32,58 +32,31 @@ fn purge_caches_for_item(
     }
 }
 
-/// Remove all cache entries belonging to a given scene (any source). Called
-/// when an entire scene is removed from OBS.
-fn purge_caches_for_scene(
+/// Remove all cache entries whose key matches `pred`. Used to evict cached
+/// transforms/item-IDs when an OBS scene or source is removed.
+fn purge_caches_where(
     transform_cache: &parking_lot::RwLock<HashMap<String, ObsItemState>>,
     item_id_cache: &parking_lot::RwLock<HashMap<String, i64>>,
-    scene: &str,
+    kind: &str,
+    target: &str,
+    pred: impl Fn(&str) -> bool,
 ) {
-    let prefix = format!("{}::", scene);
-    let mut tc = transform_cache.write();
-    let before_tc = tc.len();
-    tc.retain(|k, _| !k.starts_with(&prefix));
-    let removed_tc = before_tc - tc.len();
-    drop(tc);
-
-    let mut ic = item_id_cache.write();
-    let before_ic = ic.len();
-    ic.retain(|k, _| !k.starts_with(&prefix));
-    let removed_ic = before_ic - ic.len();
-    drop(ic);
-
+    let removed_tc = {
+        let mut tc = transform_cache.write();
+        let before = tc.len();
+        tc.retain(|k, _| !pred(k));
+        before - tc.len()
+    };
+    let removed_ic = {
+        let mut ic = item_id_cache.write();
+        let before = ic.len();
+        ic.retain(|k, _| !pred(k));
+        before - ic.len()
+    };
     if removed_tc > 0 || removed_ic > 0 {
         debug!(
-            "OBS cache purge scene='{}' (transform={}, item_id={})",
-            scene, removed_tc, removed_ic
-        );
-    }
-}
-
-/// Remove all cache entries referencing a given source (any scene). Called
-/// when an input/source is removed at the OBS level.
-fn purge_caches_for_source(
-    transform_cache: &parking_lot::RwLock<HashMap<String, ObsItemState>>,
-    item_id_cache: &parking_lot::RwLock<HashMap<String, i64>>,
-    source: &str,
-) {
-    let suffix = format!("::{}", source);
-    let mut tc = transform_cache.write();
-    let before_tc = tc.len();
-    tc.retain(|k, _| !k.ends_with(&suffix));
-    let removed_tc = before_tc - tc.len();
-    drop(tc);
-
-    let mut ic = item_id_cache.write();
-    let before_ic = ic.len();
-    ic.retain(|k, _| !k.ends_with(&suffix));
-    let removed_ic = before_ic - ic.len();
-    drop(ic);
-
-    if removed_tc > 0 || removed_ic > 0 {
-        debug!(
-            "OBS cache purge source='{}' (transform={}, item_id={})",
-            source, removed_tc, removed_ic
+            "OBS cache purge {}='{}' (transform={}, item_id={})",
+            kind, target, removed_tc, removed_ic
         );
     }
 }
@@ -281,11 +254,17 @@ pub(super) async fn run_event_listener(
                 },
 
                 Event::SceneRemoved { name, .. } => {
-                    purge_caches_for_scene(&transform_cache, &item_id_cache, &name);
+                    let prefix = format!("{}::", name);
+                    purge_caches_where(&transform_cache, &item_id_cache, "scene", &name, |k| {
+                        k.starts_with(&prefix)
+                    });
                 },
 
                 Event::InputRemoved { name } => {
-                    purge_caches_for_source(&transform_cache, &item_id_cache, &name);
+                    let suffix = format!("::{}", name);
+                    purge_caches_where(&transform_cache, &item_id_cache, "source", &name, |k| {
+                        k.ends_with(&suffix)
+                    });
                 },
 
                 _ => {},

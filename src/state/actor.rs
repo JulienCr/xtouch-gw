@@ -31,6 +31,12 @@ pub const ANTI_ECHO_WINDOW_NOTE: u64 = 10; // Note On/Off: buttons are discrete 
 pub const LWW_GRACE_PERIOD_PB: u64 = 300;
 pub const LWW_GRACE_PERIOD_CC: u64 = 50;
 
+/// Bound on the `StateCommand` mpsc channel. Caps memory growth if the actor
+/// can't keep up: queries use `.await` (backpressure), hot-path fire-and-forget
+/// methods use `try_send` (silent drop on overflow). 4096 is generous —
+/// realistic peak load (~1.1k msg/s) gives ~3.7s burst absorption.
+const STATE_COMMAND_CHANNEL_CAPACITY: usize = 4096;
+
 /// Shadow state entry tracking value and timestamp
 ///
 /// Used for anti-echo suppression to track what values were recently sent
@@ -131,10 +137,7 @@ impl StateActor {
     /// let handle = StateActor::spawn(persist_tx);
     /// ```
     pub fn spawn(persistence_tx: mpsc::Sender<PersistenceCommand>) -> StateActorHandle {
-        // Bounded channel for commands - caps memory growth on the hot path.
-        // 4096 is generous: queries use .await (backpressure), and hot-path
-        // fire-and-forget methods use try_send (silently drop on overflow).
-        let (cmd_tx, cmd_rx) = mpsc::channel(4096);
+        let (cmd_tx, cmd_rx) = mpsc::channel(STATE_COMMAND_CHANNEL_CAPACITY);
 
         // Initialize state storage for all known apps
         let mut app_states = HashMap::new();

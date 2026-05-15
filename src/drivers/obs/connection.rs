@@ -4,12 +4,22 @@
 
 use anyhow::{Context, Result};
 use serde_json::Value;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{debug, info};
 
 use super::driver::ObsDriver;
+
+/// RAII releaser for the `reconnecting` single-flight guard. Ensures the
+/// flag is cleared on every exit path including panic unwinds.
+struct ReconnectGuard<'a>(&'a AtomicBool);
+impl Drop for ReconnectGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
 
 impl ObsDriver {
     /// Get the connected OBS client, or an error if not connected
@@ -234,12 +244,11 @@ impl ObsDriver {
     /// (compare_exchange) so multiple sources of "we got disconnected"
     /// (action retry, listener shutdown) cannot stack overlapping
     /// reconnect loops — which would race on `connect()` and could leak
-    /// connections.
+    /// connections. The guard is released via RAII `Drop` so panic unwinding
+    /// (or any future early-return path) cannot leave it stuck `true`.
     pub(super) async fn schedule_reconnect(&self) {
         use std::sync::atomic::Ordering;
 
-        // Single-flight guard. If another reconnect loop is already in
-        // flight, exit immediately.
         if self
             .reconnecting
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -248,52 +257,42 @@ impl ObsDriver {
             debug!("OBS reconnect already in progress, skipping");
             return;
         }
+        let _guard = ReconnectGuard(&self.reconnecting);
 
-        // Ensure we always release the guard on every exit path.
-        // Wrap the loop body so panics also clear the flag.
-        let result: Result<(), ()> = async {
-            loop {
-                if *self.shutdown_flag.lock() {
-                    return Ok(());
-                }
+        loop {
+            if *self.shutdown_flag.lock() {
+                return;
+            }
 
-                let retry_count = {
-                    let mut count = self.reconnect_count.lock();
-                    *count += 1;
-                    *count
-                };
+            let retry_count = {
+                let mut count = self.reconnect_count.lock();
+                *count += 1;
+                *count
+            };
 
-                let delay_ms = std::cmp::min(30_000, 1000 * retry_count);
-                debug!("⏳ OBS reconnect #{} in {}ms", retry_count, delay_ms);
+            let delay_ms = std::cmp::min(30_000, 1000 * retry_count);
+            debug!("⏳ OBS reconnect #{} in {}ms", retry_count, delay_ms);
 
-                // Emit reconnecting status
-                self.emit_status(crate::tray::ConnectionStatus::Reconnecting {
-                    attempt: retry_count,
-                });
+            self.emit_status(crate::tray::ConnectionStatus::Reconnecting {
+                attempt: retry_count,
+            });
 
-                sleep(Duration::from_millis(delay_ms as u64)).await;
+            sleep(Duration::from_millis(delay_ms as u64)).await;
 
-                if *self.shutdown_flag.lock() {
-                    return Ok(());
-                }
+            if *self.shutdown_flag.lock() {
+                return;
+            }
 
-                match self.connect().await {
-                    Ok(_) => {
-                        info!("✅ OBS reconnection successful");
-                        return Ok(());
-                    },
-                    Err(e) => {
-                        debug!("OBS reconnect #{} failed: {}", retry_count, e);
-                        // Continue loop for next attempt
-                    },
-                }
+            match self.connect().await {
+                Ok(_) => {
+                    info!("✅ OBS reconnection successful");
+                    return;
+                },
+                Err(e) => {
+                    debug!("OBS reconnect #{} failed: {}", retry_count, e);
+                },
             }
         }
-        .await;
-
-        // Release the single-flight guard.
-        self.reconnecting.store(false, Ordering::Release);
-        let _ = result;
     }
 
     /// Emit a signal to all indicator subscribers

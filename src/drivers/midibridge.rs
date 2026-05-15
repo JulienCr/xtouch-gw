@@ -19,6 +19,11 @@ use crate::midi::{find_port_by_substring, parse_message, MidiMessage};
 /// Callback type for MIDI feedback from applications
 pub type FeedbackCallback = Arc<dyn Fn(&[u8]) + Send + Sync>;
 
+/// Cap on the per-port reconnect retry counter. Past this point the backoff
+/// delay is already saturated at 10s and further growth only risks overflow
+/// in the delay math or in metrics export.
+const RECONNECT_COUNTER_CAP: usize = 40;
+
 /// Parse a number that might be in hex format (string "0x..." or number)
 fn parse_number_maybe_hex(value: &serde_json::Value, default: u16) -> u16 {
     match value {
@@ -206,94 +211,62 @@ impl MidiBridgeDriver {
         Ok(())
     }
 
-    /// Schedule reconnection for output port
-    ///
-    /// Runs an internal loop until reconnect succeeds or shutdown is requested.
-    /// Using a loop (instead of recursive `Box::pin`) avoids accumulating one
-    /// boxed future per retry, which would leak memory for ports that are
-    /// permanently absent (e.g. `optional: true`).
+    /// Schedule reconnection for output port. See `reconnect_loop`.
     async fn schedule_out_reconnect(&self) {
-        loop {
-            // Check shutdown flag
-            if *self.shutdown_flag.lock() {
-                return;
-            }
-
-            // Increment retry count (capped at 40 so the delay math can't
-            // overflow and the value stays meaningful for metrics export).
-            let retry_count = {
-                let mut count = self.reconnect_count_out.lock();
-                *count = count.saturating_add(1).min(40);
-                *count
-            };
-
-            let delay_ms = std::cmp::min(10_000, 250 * retry_count);
-            debug!(
-                "MIDI Bridge OUT reconnect #{} for '{}' in {}ms",
-                retry_count, self.to_port, delay_ms
-            );
-
-            // Update reconnecting status
-            self.update_status();
-
-            sleep(Duration::from_millis(delay_ms as u64)).await;
-
-            // Check shutdown flag again
-            if *self.shutdown_flag.lock() {
-                return;
-            }
-
-            match self.try_open_out() {
-                Ok(_) => return,
-                Err(e) => {
-                    warn!("MIDI Bridge OUT reconnect failed: {}", e);
-                    // Loop and retry — no recursion, no allocation.
-                },
-            }
-        }
+        self.reconnect_loop("OUT", &self.to_port, &self.reconnect_count_out, |s| {
+            s.try_open_out()
+        })
+        .await;
     }
 
-    /// Schedule reconnection for input port
-    ///
-    /// Runs an internal loop until reconnect succeeds or shutdown is requested.
-    /// See `schedule_out_reconnect` for rationale.
+    /// Schedule reconnection for input port. See `reconnect_loop`.
     async fn schedule_in_reconnect(&self) {
+        self.reconnect_loop("IN", &self.from_port, &self.reconnect_count_in, |s| {
+            s.try_open_in()
+        })
+        .await;
+    }
+
+    /// Generic exponential-backoff reconnect loop shared by IN and OUT.
+    ///
+    /// Uses an iterative loop (not recursive `Box::pin`) so retrying a
+    /// permanently-absent port (`optional: true`) doesn't accumulate boxed
+    /// futures. The retry counter is `saturating_add`-capped so the delay
+    /// math can't overflow and the value stays meaningful for metrics.
+    async fn reconnect_loop(
+        &self,
+        direction: &str,
+        port_name: &str,
+        counter: &Mutex<usize>,
+        try_open: impl Fn(&Self) -> Result<()>,
+    ) {
         loop {
-            // Check shutdown flag
             if *self.shutdown_flag.lock() {
                 return;
             }
 
-            // Increment retry count (capped at 40 so the delay math can't
-            // overflow and the value stays meaningful for metrics export).
             let retry_count = {
-                let mut count = self.reconnect_count_in.lock();
-                *count = count.saturating_add(1).min(40);
+                let mut count = counter.lock();
+                *count = count.saturating_add(1).min(RECONNECT_COUNTER_CAP);
                 *count
             };
 
             let delay_ms = std::cmp::min(10_000, 250 * retry_count);
             debug!(
-                "MIDI Bridge IN reconnect #{} for '{}' in {}ms",
-                retry_count, self.from_port, delay_ms
+                "MIDI Bridge {} reconnect #{} for '{}' in {}ms",
+                direction, retry_count, port_name, delay_ms
             );
 
-            // Update reconnecting status
             self.update_status();
-
             sleep(Duration::from_millis(delay_ms as u64)).await;
 
-            // Check shutdown flag again
             if *self.shutdown_flag.lock() {
                 return;
             }
 
-            match self.try_open_in() {
+            match try_open(self) {
                 Ok(_) => return,
-                Err(e) => {
-                    warn!("MIDI Bridge IN reconnect failed: {}", e);
-                    // Loop and retry — no recursion, no allocation.
-                },
+                Err(e) => warn!("MIDI Bridge {} reconnect failed: {}", direction, e),
             }
         }
     }

@@ -134,14 +134,10 @@ impl Driver for ObsDriver {
     async fn init(&self, ctx: ExecutionContext) -> Result<()> {
         info!("Initializing OBS WebSocket driver");
 
-        // Re-arm shutdown flag in case this driver instance was previously
-        // unregistered (e.g. profile switch away from a profile using OBS).
-        // Without this reset, the background reconnection task spawned below
-        // would observe a stale `true` and exit immediately.
+        // Re-arm shutdown/reconnect guards in case this driver was previously
+        // unregistered (e.g. profile switch): stale `true` values would block
+        // the background reconnect task or all future reconnect attempts.
         *self.shutdown_flag.lock() = false;
-        // Same for the single-flight reconnect guard: a previous shutdown
-        // mid-reconnect could leave this `true` and block all future
-        // reconnect attempts.
         self.reconnecting
             .store(false, std::sync::atomic::Ordering::Release);
 
@@ -178,10 +174,8 @@ impl Driver for ObsDriver {
         if self.client.read().await.is_none() {
             warn!("OBS not connected, action dropped");
 
-            // Trigger reconnect only if no reconnect loop is currently
-            // running. `schedule_reconnect` itself is single-flighted via
-            // `reconnecting`, but checking here avoids spawning a
-            // throwaway task that would immediately bail.
+            // Skip spawning a task if a reconnect loop is already running —
+            // `schedule_reconnect` would bail on its own single-flight guard.
             if !self.reconnecting.load(std::sync::atomic::Ordering::Acquire) {
                 debug!("Triggering background reconnection");
                 let driver_clone = self.clone_for_task();
