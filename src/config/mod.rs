@@ -668,6 +668,29 @@ impl AppConfig {
             }
         }
 
+        // Validate winaudio session-target params (e.g. `pinned:1`,
+        // `discovered:3`, `auto`) at config-load. Typos previously
+        // surfaced only when the user pressed the button (#38).
+        self.validate_winaudio_session_targets()?;
+
+        Ok(())
+    }
+
+    /// Iterate every page (and `pages_global`) for control mappings
+    /// bound to `app: "winaudio"` and a session-target action; parse
+    /// their first param via [`parse_session_target`]. Errors carry
+    /// `page` + `control_id` context so the user can fix the YAML.
+    fn validate_winaudio_session_targets(&self) -> Result<()> {
+        for page in &self.pages {
+            if let Some(controls) = page.controls.as_ref() {
+                validate_winaudio_controls_in(controls, &page.name)?;
+            }
+        }
+        if let Some(global) = self.pages_global.as_ref() {
+            if let Some(controls) = global.controls.as_ref() {
+                validate_winaudio_controls_in(controls, "<global>")?;
+            }
+        }
         Ok(())
     }
 
@@ -778,6 +801,99 @@ impl AppConfig {
 
         Ok(())
     }
+}
+
+/// Driver name that owns Windows audio session control. Duplicated here
+/// (and kept in sync with `drivers::winaudio::DRIVER_NAME`) so the lib
+/// crate can validate session-target YAML without depending on the bin
+/// crate's `drivers` module.
+const WINAUDIO_DRIVER_NAME: &str = "winaudio";
+
+/// Actions on `app: "winaudio"` that consume a session target as their
+/// first param. Used by `validate_winaudio_session_targets` so config-load
+/// rejects typos like `"pined:1"` early (#38).
+const WINAUDIO_SESSION_ACTIONS: &[&str] = &["session_volume", "session_mute"];
+
+/// Validate the session-target param of every winaudio session-action
+/// mapping in `controls`. Errors carry the page/control context.
+fn validate_winaudio_controls_in(
+    controls: &HashMap<String, ControlMapping>,
+    page_name: &str,
+) -> Result<()> {
+    for (control_id, mapping) in controls {
+        if mapping.app != WINAUDIO_DRIVER_NAME {
+            continue;
+        }
+        let Some(action) = mapping.action.as_deref() else {
+            continue;
+        };
+        if !WINAUDIO_SESSION_ACTIONS.contains(&action) {
+            continue;
+        }
+        let params = mapping.params.as_deref().unwrap_or(&[]);
+        parse_winaudio_session_target_str(params).map_err(|e| {
+            anyhow::anyhow!(
+                "page '{}' control '{}' (winaudio.{}): {}",
+                page_name,
+                control_id,
+                action,
+                e
+            )
+        })?;
+    }
+    Ok(())
+}
+
+/// Lightweight mirror of `drivers::winaudio::actions::parse_session_target`
+/// for use at config-validation time (lib-crate, no access to `drivers`).
+/// Keep semantics in sync with the runtime parser — both must accept the
+/// same surface and reject the same typos.
+fn parse_winaudio_session_target_str(params: &[serde_json::Value]) -> Result<()> {
+    let raw = params
+        .first()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "session action requires a target parameter (auto, pinned:N or discovered:N)"
+            )
+        })?
+        .as_str()
+        .ok_or_else(|| {
+            anyhow::anyhow!("session target must be a string (auto, pinned:N or discovered:N)")
+        })?;
+
+    let trimmed = raw.trim();
+    if trimmed.eq_ignore_ascii_case("auto") {
+        return Ok(());
+    }
+
+    let (kind, idx) = trimmed
+        .split_once(':')
+        .ok_or_else(|| anyhow::anyhow!("session target '{}' missing ':' separator", raw))?;
+
+    let n: u8 = idx
+        .trim()
+        .parse()
+        .map_err(|_| anyhow::anyhow!("session target '{}': index '{}' is not a u8", raw, idx))?;
+
+    match kind.trim() {
+        "pinned" => {
+            if !(1..=8).contains(&n) {
+                return Err(anyhow::anyhow!("pinned slot {} must be in 1..=8", n));
+            }
+        },
+        "discovered" => {
+            if n >= 8 {
+                return Err(anyhow::anyhow!("discovered slot {} must be < 8", n));
+            }
+        },
+        other => {
+            return Err(anyhow::anyhow!(
+                "unknown session target kind '{}': expected 'auto', 'pinned' or 'discovered'",
+                other
+            ));
+        },
+    }
+    Ok(())
 }
 
 // Default value functions
@@ -970,5 +1086,110 @@ mod tests {
         cfg.pages[0].controls = Some(controls);
 
         assert!(cfg.references_app("qlc"));
+    }
+
+    // -- #38 — winaudio session-target validation at config-load -------------
+
+    fn winaudio_control(action: &str, param: serde_json::Value) -> ControlMapping {
+        ControlMapping {
+            app: "winaudio".into(),
+            action: Some(action.into()),
+            params: Some(vec![param]),
+            midi: None,
+            indicator: None,
+            overlay: None,
+        }
+    }
+
+    fn cfg_with_winaudio_control(action: &str, param: serde_json::Value) -> AppConfig {
+        let mut cfg = empty_config();
+        let mut controls = HashMap::new();
+        controls.insert("fader1".into(), winaudio_control(action, param));
+        cfg.pages.push(PageConfig {
+            name: "WinAudio".into(),
+            controls: Some(controls),
+            ..PageConfig::default()
+        });
+        cfg
+    }
+
+    #[test]
+    fn validate_winaudio_session_target_accepts_valid_params() {
+        for param in [
+            serde_json::json!("pinned:1"),
+            serde_json::json!("pinned:8"),
+            serde_json::json!("discovered:0"),
+            serde_json::json!("discovered:7"),
+            serde_json::json!("auto"),
+            serde_json::json!("AUTO"),
+        ] {
+            let cfg = cfg_with_winaudio_control("session_volume", param.clone());
+            cfg.validate()
+                .unwrap_or_else(|e| panic!("param {param:?} should be valid, got: {e}"));
+        }
+    }
+
+    #[test]
+    fn validate_winaudio_session_target_rejects_bad_prefix() {
+        let cfg = cfg_with_winaudio_control("session_volume", serde_json::json!("pined:1"));
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("page 'WinAudio'"), "got: {err}");
+        assert!(err.contains("fader1"), "got: {err}");
+        assert!(err.contains("session_volume"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_winaudio_session_target_rejects_out_of_range() {
+        let cfg = cfg_with_winaudio_control("session_mute", serde_json::json!("pinned:9"));
+        assert!(cfg.validate().is_err());
+        let cfg = cfg_with_winaudio_control("session_mute", serde_json::json!("pinned:0"));
+        assert!(cfg.validate().is_err());
+        let cfg = cfg_with_winaudio_control("session_mute", serde_json::json!("discovered:8"));
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_winaudio_session_target_rejects_wrong_type() {
+        // Numeric param where a string is required.
+        let cfg = cfg_with_winaudio_control("session_volume", serde_json::json!(42));
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_winaudio_session_target_ignores_non_session_actions() {
+        // `master_volume` / `master_mute` take no session target — their
+        // params should not be parsed. Even garbage must pass through.
+        let cfg = cfg_with_winaudio_control("master_volume", serde_json::json!("not a target"));
+        cfg.validate().expect("master_volume params not validated");
+    }
+
+    #[test]
+    fn validate_winaudio_session_target_ignores_other_drivers() {
+        // A `voicemeeter` control with a garbage first-param string must
+        // still pass — only winaudio sessions are checked.
+        let mut cfg = empty_config();
+        let mut controls = HashMap::new();
+        controls.insert(
+            "fader1".into(),
+            ControlMapping {
+                app: "voicemeeter".into(),
+                action: Some("session_volume".into()),
+                params: Some(vec![serde_json::json!("pined:1")]),
+                midi: None,
+                indicator: None,
+                overlay: None,
+            },
+        );
+        cfg.midi.apps = Some(vec![MidiAppConfig {
+            name: "voicemeeter".into(),
+            output_port: Some("vm-out".into()),
+            input_port: Some("vm-in".into()),
+        }]);
+        cfg.pages.push(PageConfig {
+            name: "VM".into(),
+            controls: Some(controls),
+            ..PageConfig::default()
+        });
+        cfg.validate().expect("non-winaudio params not validated");
     }
 }
