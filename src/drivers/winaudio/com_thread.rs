@@ -239,6 +239,13 @@ fn run_com_loop(
         }
     });
 
+    // The `Set*Master*` arms below normally rely on the OS callback to
+    // fan out the resulting state (avoiding duplicate events — see #41).
+    // If callback registration failed above, the callback never fires,
+    // so we must keep the legacy synthetic emit path to avoid the
+    // X-Touch fader/LED freezing on local master actions.
+    let master_callback_active = registered.is_some();
+
     // Register the new-session notification so we hear about sessions
     // that appear after init (e.g. an app starts producing audio).
     let new_session_reg = session_mgr.as_ref().and_then(|mgr| {
@@ -290,10 +297,13 @@ fn run_com_loop(
                 if let Some(ep) = endpoint.as_ref() {
                     if let Err(e) = ep.set_volume_scalar(scalar) {
                         warn!("set_volume_scalar({}) failed: {}", scalar, e);
+                    } else if !master_callback_active {
+                        // Callback registration failed at init — fall back
+                        // to the legacy synthetic emit so the X-Touch stays
+                        // in sync. Normal path skips this (see #41).
+                        let mute = ep.get_mute().unwrap_or(false);
+                        let _ = event_tx.try_send(AudioEvent::MasterVolumeChanged { scalar, mute });
                     }
-                    // The OS `IAudioEndpointVolumeCallback::OnNotify` fires
-                    // after `Set*Volume` succeeds — that is the single
-                    // source of truth for `MasterVolumeChanged`. See #41.
                 }
             },
             AudioCmd::ToggleMasterMute => {
@@ -301,9 +311,13 @@ fn run_com_loop(
                     let cur = ep.get_mute().unwrap_or(false);
                     if let Err(e) = ep.set_mute(!cur) {
                         warn!("set_mute failed: {}", e);
+                    } else if !master_callback_active {
+                        // See SetMasterScalar — same fallback when the OS
+                        // callback isn't wired.
+                        let scalar = ep.get_volume_scalar().unwrap_or(0.0);
+                        let _ = event_tx
+                            .try_send(AudioEvent::MasterVolumeChanged { scalar, mute: !cur });
                     }
-                    // OS callback emits the resulting state; no synthetic
-                    // emit needed (avoids duplicate events — see #41).
                 }
             },
             AudioCmd::RefreshMaster => {

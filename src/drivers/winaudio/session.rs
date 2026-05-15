@@ -7,8 +7,6 @@
 
 #![cfg(target_os = "windows")]
 
-use std::cell::RefCell;
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -40,15 +38,6 @@ pub struct SessionInfo {
 
 pub struct SessionManager {
     pub manager: IAudioSessionManager2,
-    /// PID → lowercase exe name cache. Entries survive across
-    /// `enumerate()` calls so we skip the `OpenProcess` +
-    /// `QueryFullProcessImageNameW` round-trip for already-seen PIDs.
-    /// `RefCell` is sound here: `SessionManager` lives only on the
-    /// single STA COM thread (see `com_thread.rs`).
-    /// Stale PIDs are pruned at each enumerate pass when a PID is no
-    /// longer reported by the OS — keeps the map bounded across long
-    /// sessions where many short-lived audio processes come and go.
-    pid_name_cache: RefCell<HashMap<u32, String>>,
 }
 
 impl SessionManager {
@@ -63,49 +52,22 @@ impl SessionManager {
             let manager: IAudioSessionManager2 = device
                 .Activate(CLSCTX_ALL, None)
                 .context("Activate IAudioSessionManager2")?;
-            Ok(Self {
-                manager,
-                pid_name_cache: RefCell::new(HashMap::new()),
-            })
+            Ok(Self { manager })
         }
-    }
-
-    /// Look up the cached lowercase process name for `pid`, falling back
-    /// to a fresh `OpenProcess` + `QueryFullProcessImageNameW` lookup
-    /// (and inserting the result) on a miss. PID is the cache key
-    /// because the OS doesn't recycle PIDs until process death.
-    fn process_name_cached(&self, pid: u32) -> String {
-        if let Some(name) = self.pid_name_cache.borrow().get(&pid) {
-            return name.clone();
-        }
-        let name = process_image_name(pid)
-            .map(|p| {
-                p.file_name()
-                    .map(|s| s.to_string_lossy().to_lowercase())
-                    .unwrap_or_default()
-            })
-            .unwrap_or_default();
-        if !name.is_empty() {
-            self.pid_name_cache.borrow_mut().insert(pid, name.clone());
-        }
-        name
-    }
-
-    /// Drop cache entries for PIDs not present in `seen`. Called at the
-    /// end of every `enumerate()` to prevent unbounded growth across
-    /// long-running gateways.
-    fn prune_pid_cache(&self, seen: &std::collections::HashSet<u32>) {
-        self.pid_name_cache
-            .borrow_mut()
-            .retain(|pid, _| seen.contains(pid));
     }
 
     /// Enumerate all currently active sessions on the default render endpoint.
     /// Skips system sessions (process_id == 0) and sessions whose owning
     /// process can no longer be opened.
+    ///
+    /// No per-PID name cache: Windows recycles PIDs immediately after
+    /// process death, so any cache keyed solely on PID can return the
+    /// previous owner's name. The hot path is already protected by the
+    /// 2 s `sessions_cache` in `com_thread.rs`, which holds whole
+    /// `SessionInfo`s — this function only runs on (re)enumerate, where
+    /// re-resolving each PID's image name is cheap enough.
     pub fn enumerate(&self) -> Result<Vec<SessionInfo>> {
         let mut out = Vec::new();
-        let mut seen_pids: std::collections::HashSet<u32> = std::collections::HashSet::new();
         unsafe {
             let enumerator = self
                 .manager
@@ -138,8 +100,13 @@ impl SessionManager {
                         continue;
                     },
                 };
-                seen_pids.insert(pid);
-                let process_name = self.process_name_cached(pid);
+                let process_name = process_image_name(pid)
+                    .map(|p| {
+                        p.file_name()
+                            .map(|s| s.to_string_lossy().to_lowercase())
+                            .unwrap_or_default()
+                    })
+                    .unwrap_or_default();
                 out.push(SessionInfo {
                     pid,
                     process_name,
@@ -148,7 +115,6 @@ impl SessionManager {
                 });
             }
         }
-        self.prune_pid_cache(&seen_pids);
         Ok(out)
     }
 }
