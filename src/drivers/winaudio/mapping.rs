@@ -23,6 +23,12 @@ use crate::config::PinnedApp;
 use super::session::SessionInfo;
 
 /// Output of a single mapping pass: a concrete fader slot binding.
+///
+/// Currently only consumed by `compute_slots` tests — the production LCD
+/// render path resolves per-fader on demand via `pinned_target` /
+/// `discovered_target` / `derive_label` to avoid an extra Vec allocation.
+/// Kept under `#[cfg(test)]` until a non-test caller materializes.
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub struct SlotBinding {
     /// 1..=8.
@@ -137,6 +143,11 @@ impl DiscoveryState {
 /// process names — owned by the caller (cached on `WinAudioDriver`) so
 /// hot-path callers don't rebuild it per event.
 /// The result has at most 8 entries (one per fader).
+///
+/// Currently only consumed by tests; production code resolves per-fader
+/// on demand to avoid the intermediate Vec. Kept here so the mapping
+/// invariants stay covered by unit tests.
+#[cfg(test)]
 pub fn compute_slots(
     pinned: &[PinnedApp],
     pinned_lc: &HashSet<String>,
@@ -166,14 +177,14 @@ pub fn compute_slots(
         .discovered_order
         .iter()
         .filter(|n| !pinned_lc.contains(*n));
-    for slot_idx in 0..8 {
-        if bindings[slot_idx].is_some() {
+    for (slot_idx, slot) in bindings.iter_mut().enumerate().take(8) {
+        if slot.is_some() {
             continue;
         }
         let Some(name_lc) = discovered_iter.next() else {
             break;
         };
-        bindings[slot_idx] = Some(SlotBinding {
+        *slot = Some(SlotBinding {
             fader: (slot_idx + 1) as u8,
             process_name: Some(name_lc.clone()),
             display_name: derive_label(name_lc),

@@ -43,6 +43,12 @@ pub use actions::{parse_session_target, SessionTarget};
 /// Driver name used for `app: "winaudio"` in YAML control mappings.
 pub const DRIVER_NAME: &str = "winaudio";
 
+/// Item pushed onto the unified feedback channel: `(app_name, raw_midi_bytes)`.
+type FeedbackMsg = (String, Vec<u8>);
+
+/// Optional, post-construction-wired sender for the unified feedback channel.
+type FeedbackSender = Arc<RwLock<Option<mpsc::Sender<FeedbackMsg>>>>;
+
 /// True if at least one control on `page` binds `app: "winaudio"`. Used to
 /// decide whether a page is "winaudio-eligible" for state refresh and
 /// dynamic LCD rendering. Auto-detected so the YAML page name is no
@@ -79,14 +85,14 @@ pub struct WinAudioDriver {
     /// Wired post-construction. The COM event consumer task uses this to
     /// inject synthetic `("winaudio", raw_midi)` feedback into the unified
     /// router feedback path.
-    feedback_tx: Arc<RwLock<Option<mpsc::Sender<(String, Vec<u8>)>>>>,
+    feedback_tx: FeedbackSender,
     /// Stable FIFO of non-pinned process names; never reorders existing entries.
     discovery: Arc<RwLock<mapping::DiscoveryState>>,
     /// Lowercased set of pinned process names. Cached so hot-path
-    /// resolves (`mapping::discovered_target`, `target_for_process`,
-    /// `compute_slots`) read it lock-free instead of rebuilding from
-    /// `config.pinned_apps` per MIDI event. Refreshed by `refresh_pinned_lc`
-    /// on init and on every config-touching path (`sync()`, etc.).
+    /// resolves (`mapping::discovered_target`, `mapping::target_for_process`)
+    /// read it lock-free instead of rebuilding from `config.pinned_apps`
+    /// per MIDI event. Refreshed by `refresh_pinned_lc` on init and on
+    /// every config-touching path (`sync()`, etc.).
     pinned_lc_cache: Arc<ArcSwap<HashSet<String>>>,
     #[cfg(target_os = "windows")]
     com: Arc<RwLock<Option<com_thread::ComThreadHandle>>>,
@@ -133,7 +139,7 @@ impl WinAudioDriver {
     }
 
     /// Wire the driver to the unified feedback channel.
-    pub async fn set_feedback_sender(&self, tx: mpsc::Sender<(String, Vec<u8>)>) {
+    pub async fn set_feedback_sender(&self, tx: mpsc::Sender<FeedbackMsg>) {
         *self.feedback_tx.write().await = Some(tx);
     }
 }

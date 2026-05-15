@@ -6,8 +6,9 @@
 //! Both callbacks fire on a WASAPI-internal thread, so the bodies must
 //! be non-blocking. They communicate back to the COM thread by pushing
 //! events / commands through `mpsc` channels (`try_send`, drop on full).
-
-#![cfg(target_os = "windows")]
+//!
+//! Module is `#[cfg(target_os = "windows")]`-gated at its parent declaration
+//! in `mod.rs`.
 
 use tokio::sync::mpsc;
 use tracing::trace;

@@ -3,8 +3,9 @@
 //! Public API is the [`ComThreadHandle`]: spawn the thread, send commands
 //! over an `mpsc` channel, and shut it down on driver teardown. All COM
 //! interface usage is confined to this thread.
-
-#![cfg(target_os = "windows")]
+//!
+//! Module is `#[cfg(target_os = "windows")]`-gated at its parent declaration
+//! in `mod.rs`.
 
 use std::collections::HashMap;
 use std::sync::Arc;

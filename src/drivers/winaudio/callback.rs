@@ -5,8 +5,9 @@
 //! gateway and drive the motorized fader / mute LED. Runs on the OS
 //! audio thread, so it must be non-blocking — `try_send` and drop on
 //! full.
-
-#![cfg(target_os = "windows")]
+//!
+//! Module is `#[cfg(target_os = "windows")]`-gated at its parent declaration
+//! in `mod.rs`.
 
 use tokio::sync::mpsc;
 use tracing::trace;
