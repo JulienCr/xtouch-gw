@@ -178,6 +178,7 @@ impl FaderSetpoint {
     }
 
     /// Get the current epoch for a channel (for debugging)
+    #[allow(dead_code)] // diagnostics helper; symmetric with `is_epoch_current`
     pub fn get_epoch(&self, channel: u8) -> Option<u32> {
         let channels = self.channels.read().unwrap();
         channels.get(&channel).map(|state| state.epoch)

@@ -86,6 +86,7 @@ impl ActivityTracker {
     /// Get the last activity timestamp for a driver+direction
     ///
     /// Returns None if no activity has been recorded.
+    #[allow(dead_code)] // exercised by unit tests; reserved for tray UI diagnostics
     pub fn last_activity(&self, driver: &str, direction: ActivityDirection) -> Option<Instant> {
         let key = format!("{}:{:?}", driver, direction);
         self.activity_map.get(&key).map(|entry| *entry.value())
@@ -94,16 +95,19 @@ impl ActivityTracker {
     /// Clear all activity records
     ///
     /// Useful for resetting the tracker or cleanup.
+    #[allow(dead_code)] // exercised by unit tests; reserved for tray reset paths
     pub fn clear(&self) {
         self.activity_map.clear();
     }
 
     /// Get the number of tracked activities
+    #[allow(dead_code)] // diagnostics helper; symmetric with `is_empty`
     pub fn len(&self) -> usize {
         self.activity_map.len()
     }
 
     /// Check if the tracker is empty
+    #[allow(dead_code)] // diagnostics helper; symmetric with `len`
     pub fn is_empty(&self) -> bool {
         self.activity_map.is_empty()
     }

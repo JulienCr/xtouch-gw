@@ -149,6 +149,7 @@ impl ObsDriver {
     }
 
     /// Load analog config from gamepad settings
+    #[allow(dead_code)] // reserved for hot-reload of gamepad analog tuning (currently set at init)
     pub fn load_analog_config(&self, gamepad_config: Option<&crate::config::GamepadConfig>) {
         if let Some(gamepad) = gamepad_config {
             if let Some(analog) = &gamepad.analog {

@@ -77,6 +77,7 @@ impl MidiValue {
     }
 
     /// Extract binary data if available
+    #[allow(dead_code)] // mirror of `as_number` for SysEx values; kept for symmetry/external API
     pub fn as_binary(&self) -> Option<&[u8]> {
         match self {
             MidiValue::Binary(b) => Some(b),
@@ -186,6 +187,7 @@ pub fn addr_key(addr: &MidiAddr) -> String {
 }
 
 /// Constructs a key without the port (for X-Touch shadow state)
+#[allow(dead_code)] // helper kept alongside `addr_key`; reserved for callers that don't track port
 pub fn addr_key_without_port(addr: &MidiAddr) -> String {
     format!(
         "{}|{}|{}",

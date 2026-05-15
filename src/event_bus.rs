@@ -37,6 +37,7 @@ pub enum LiveEvent {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[allow(dead_code)] // `Encoder` reserved for future encoder-press hardware events
 pub enum HwEventKind {
     Press,
     Release,

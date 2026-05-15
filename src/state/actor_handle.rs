@@ -3,6 +3,13 @@
 //! Provides an ergonomic async interface for interacting with the StateActor
 //! through message passing. Fire-and-forget methods for hot paths, and
 //! async methods with oneshot channels for queries.
+//!
+//! Several query methods (`get_state`, `list_states`, `should_suppress_lww`,
+//! `hydrate_from_snapshot`, `clear_all_states`, `shutdown`) are part of the
+//! public actor surface but currently have no in-tree caller. They are kept
+//! for future API consumers (REPL, editor, hot-reload) and tests.
+
+#![allow(dead_code)]
 
 use std::collections::HashMap;
 

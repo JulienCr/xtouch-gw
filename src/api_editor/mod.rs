@@ -24,6 +24,8 @@ pub mod validate;
 
 use crate::event_bus::LiveEventTx;
 
+#[allow(unused_imports)]
+// ParamDescriptor/ParamKind are part of the public API used by tests and external callers.
 pub use action_catalog::{ActionDescriptor, ParamDescriptor, ParamKind};
 pub use actions::DriverCatalogs;
 pub use obs_picker::{ObsPickerSource, ObsPickerSourceArc};
@@ -70,6 +72,7 @@ pub struct EditorState {
 impl EditorState {
     /// Build an `EditorState` with just the profile store (used by tests and
     /// callers that wire optional fields incrementally).
+    #[allow(dead_code)] // reserved for tests and incremental wiring of optional fields
     pub fn with_profiles(profiles: Arc<crate::config::profiles::ProfileStore>) -> Self {
         Self {
             profiles,

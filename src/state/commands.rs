@@ -3,6 +3,13 @@
 //! These commands enable message-passing architectures for state management,
 //! separating the hot path (fire-and-forget updates) from request-response
 //! operations that need acknowledgment.
+//!
+//! Some variants (`GetState`, `ListStates`, `CheckSuppressLWW`,
+//! `ClearAllStates`, `Shutdown`) are part of the actor protocol but currently
+//! never constructed in-tree — they're kept to avoid breaking the actor API
+//! surface and for future use by external callers (REPL, tests).
+
+#![allow(dead_code)]
 
 use super::types::{AppKey, MidiAddr, MidiStateEntry, MidiStatus};
 use std::collections::HashMap;

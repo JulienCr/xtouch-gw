@@ -20,6 +20,7 @@ use crate::xtouch::discovery;
 
 /// Direction of MIDI message
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)] // `Output`/`Bidirectional` reserved for future sniffer-emitted/round-trip events
 pub enum Direction {
     Input,
     Output,
