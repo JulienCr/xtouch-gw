@@ -77,7 +77,7 @@ type ShadowMap = HashMap<String, ShadowEntry>;
 /// │                           ▲                                  │
 /// │                           │ commands                         │
 /// │  ┌─────────────────────────────────────────────────────────┐│
-/// │  │              command_rx (UnboundedReceiver)             ││
+/// │  │              command_rx (bounded Receiver)              ││
 /// │  └─────────────────────────────────────────────────────────┘│
 /// └─────────────────────────────────────────────────────────────┘
 /// ```
@@ -95,7 +95,7 @@ pub struct StateActor {
     last_user_action_ts: HashMap<String, u64>,
 
     /// Receiver for incoming commands
-    command_rx: mpsc::UnboundedReceiver<StateCommand>,
+    command_rx: mpsc::Receiver<StateCommand>,
 
     /// Sender for persistence commands
     persistence_tx: mpsc::Sender<PersistenceCommand>,
@@ -131,8 +131,10 @@ impl StateActor {
     /// let handle = StateActor::spawn(persist_tx);
     /// ```
     pub fn spawn(persistence_tx: mpsc::Sender<PersistenceCommand>) -> StateActorHandle {
-        // Create unbounded channel for commands
-        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        // Bounded channel for commands - caps memory growth on the hot path.
+        // 4096 is generous: queries use .await (backpressure), and hot-path
+        // fire-and-forget methods use try_send (silently drop on overflow).
+        let (cmd_tx, cmd_rx) = mpsc::channel(4096);
 
         // Initialize state storage for all known apps
         let mut app_states = HashMap::new();

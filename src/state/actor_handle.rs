@@ -32,13 +32,13 @@ use super::types::{AppKey, MidiAddr, MidiStateEntry, MidiStatus};
 /// - `should_suppress_lww` - Check last-write-wins suppression
 #[derive(Clone)]
 pub struct StateActorHandle {
-    /// Command channel to the StateActor
-    cmd_tx: mpsc::UnboundedSender<StateCommand>,
+    /// Command channel to the StateActor (bounded - see `StateActor::spawn`)
+    cmd_tx: mpsc::Sender<StateCommand>,
 }
 
 impl StateActorHandle {
     /// Create a new StateActorHandle with the given command sender
-    pub fn new(cmd_tx: mpsc::UnboundedSender<StateCommand>) -> Self {
+    pub fn new(cmd_tx: mpsc::Sender<StateCommand>) -> Self {
         Self { cmd_tx }
     }
 
@@ -68,7 +68,9 @@ impl StateActorHandle {
     /// Fire-and-forget: Does not wait for confirmation.
     /// Used in the hot path for MIDI feedback processing.
     pub fn update_state(&self, app: AppKey, entry: MidiStateEntry) {
-        let _ = self.cmd_tx.send(StateCommand::UpdateState { app, entry });
+        let _ = self
+            .cmd_tx
+            .try_send(StateCommand::UpdateState { app, entry });
     }
 
     /// Update shadow state for X-Touch output tracking
@@ -76,7 +78,9 @@ impl StateActorHandle {
     /// Fire-and-forget: Does not wait for confirmation.
     /// Used to track what values were last sent to X-Touch.
     pub fn update_shadow(&self, app: String, entry: MidiStateEntry) {
-        let _ = self.cmd_tx.send(StateCommand::UpdateShadow { app, entry });
+        let _ = self
+            .cmd_tx
+            .try_send(StateCommand::UpdateShadow { app, entry });
     }
 
     /// Mark a user action timestamp for LWW conflict resolution
@@ -84,7 +88,9 @@ impl StateActorHandle {
     /// Fire-and-forget: Does not wait for confirmation.
     /// Records when the user physically touched a control.
     pub fn mark_user_action(&self, key: String, ts: u64) {
-        let _ = self.cmd_tx.send(StateCommand::MarkUserAction { key, ts });
+        let _ = self
+            .cmd_tx
+            .try_send(StateCommand::MarkUserAction { key, ts });
     }
 
     // =========================================================================
@@ -102,7 +108,7 @@ impl StateActorHandle {
             response: response_tx,
         };
 
-        if self.cmd_tx.send(cmd).is_err() {
+        if self.cmd_tx.send(cmd).await.is_err() {
             return None;
         }
 
@@ -129,7 +135,7 @@ impl StateActorHandle {
             response: response_tx,
         };
 
-        if self.cmd_tx.send(cmd).is_err() {
+        if self.cmd_tx.send(cmd).await.is_err() {
             return None;
         }
 
@@ -144,7 +150,7 @@ impl StateActorHandle {
             response: response_tx,
         };
 
-        if self.cmd_tx.send(cmd).is_err() {
+        if self.cmd_tx.send(cmd).await.is_err() {
             return Vec::new();
         }
 
@@ -162,7 +168,7 @@ impl StateActorHandle {
             response: response_tx,
         };
 
-        if self.cmd_tx.send(cmd).is_err() {
+        if self.cmd_tx.send(cmd).await.is_err() {
             return HashMap::new();
         }
 
@@ -185,7 +191,7 @@ impl StateActorHandle {
             response: response_tx,
         };
 
-        if self.cmd_tx.send(cmd).is_err() {
+        if self.cmd_tx.send(cmd).await.is_err() {
             return false;
         }
 
@@ -203,7 +209,7 @@ impl StateActorHandle {
             response: response_tx,
         };
 
-        if self.cmd_tx.send(cmd).is_err() {
+        if self.cmd_tx.send(cmd).await.is_err() {
             return false;
         }
 
@@ -219,7 +225,7 @@ impl StateActorHandle {
     /// Fire-and-forget: Does not wait for confirmation.
     /// Entries are marked as stale until fresh feedback arrives.
     pub fn hydrate_from_snapshot(&self, app: AppKey, entries: Vec<MidiStateEntry>) {
-        let _ = self.cmd_tx.send(StateCommand::HydrateFromSnapshot {
+        let _ = self.cmd_tx.try_send(StateCommand::HydrateFromSnapshot {
             app,
             entries,
             response: None,
@@ -233,11 +239,14 @@ impl StateActorHandle {
     /// is fully loaded before the first page refresh.
     pub async fn hydrate_from_snapshot_and_wait(&self, app: AppKey, entries: Vec<MidiStateEntry>) {
         let (tx, rx) = oneshot::channel();
-        let _ = self.cmd_tx.send(StateCommand::HydrateFromSnapshot {
-            app,
-            entries,
-            response: Some(tx),
-        });
+        let _ = self
+            .cmd_tx
+            .send(StateCommand::HydrateFromSnapshot {
+                app,
+                entries,
+                response: Some(tx),
+            })
+            .await;
         // Wait for actor to process the hydration
         let _ = rx.await;
     }
@@ -246,14 +255,16 @@ impl StateActorHandle {
     ///
     /// Fire-and-forget: Does not wait for confirmation.
     pub fn clear_states_for_app(&self, app: AppKey) {
-        let _ = self.cmd_tx.send(StateCommand::ClearStatesForApp { app });
+        let _ = self
+            .cmd_tx
+            .try_send(StateCommand::ClearStatesForApp { app });
     }
 
     /// Clear all states for all applications
     ///
     /// Fire-and-forget: Does not wait for confirmation.
     pub fn clear_all_states(&self) {
-        let _ = self.cmd_tx.send(StateCommand::ClearAllStates);
+        let _ = self.cmd_tx.try_send(StateCommand::ClearAllStates);
     }
 
     /// Clear all shadow states (for page refresh)
@@ -261,7 +272,7 @@ impl StateActorHandle {
     /// Fire-and-forget: Does not wait for confirmation.
     /// Clears the anti-echo shadow state to allow re-emission during page refresh.
     pub fn clear_shadows(&self) {
-        let _ = self.cmd_tx.send(StateCommand::ClearShadows);
+        let _ = self.cmd_tx.try_send(StateCommand::ClearShadows);
     }
 
     // =========================================================================
@@ -279,7 +290,7 @@ impl StateActorHandle {
     ///
     /// Fire-and-forget: Does not wait for confirmation.
     pub fn shutdown(&self) {
-        let _ = self.cmd_tx.send(StateCommand::Shutdown);
+        let _ = self.cmd_tx.try_send(StateCommand::Shutdown);
     }
 }
 
@@ -295,14 +306,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_is_alive_when_channel_open() {
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = mpsc::channel(16);
         let handle = StateActorHandle::new(tx);
         assert!(handle.is_alive());
     }
 
     #[tokio::test]
     async fn test_is_alive_when_channel_closed() {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(16);
         drop(rx); // Close the receiver
         let handle = StateActorHandle::new(tx);
         assert!(!handle.is_alive());
