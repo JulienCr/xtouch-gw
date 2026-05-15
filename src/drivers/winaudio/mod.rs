@@ -27,8 +27,10 @@ use crate::config::{ControlMapping, PageConfig, WinAudioConfig};
 use crate::drivers::{Driver, ExecutionContext};
 use crate::xtouch::{build_lcd_colors_sysex, build_lcd_strip_sysex};
 use anyhow::Result;
+use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use serde_json::Value;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
@@ -57,12 +59,19 @@ pub struct WinAudioDriver {
     feedback_tx: Arc<RwLock<Option<mpsc::Sender<(String, Vec<u8>)>>>>,
     /// Stable FIFO of non-pinned process names; never reorders existing entries.
     discovery: Arc<RwLock<mapping::DiscoveryState>>,
+    /// Lowercased set of pinned process names. Cached so hot-path
+    /// resolves (`mapping::discovered_target`, `target_for_process`,
+    /// `compute_slots`) read it lock-free instead of rebuilding from
+    /// `config.pinned_apps` per MIDI event. Refreshed by `refresh_pinned_lc`
+    /// on init and on every config-touching path (`sync()`, etc.).
+    pinned_lc_cache: Arc<ArcSwap<HashSet<String>>>,
     #[cfg(target_os = "windows")]
     com: Arc<RwLock<Option<com_thread::ComThreadHandle>>>,
 }
 
 impl WinAudioDriver {
     pub fn new(config: WinAudioConfig) -> Self {
+        let pinned_lc = mapping::pinned_lc_set(&config.pinned_apps);
         Self {
             config: Arc::new(RwLock::new(config)),
             initialized: AtomicBool::new(false),
@@ -70,9 +79,20 @@ impl WinAudioDriver {
             led_tx: Arc::new(RwLock::new(None)),
             feedback_tx: Arc::new(RwLock::new(None)),
             discovery: Arc::new(RwLock::new(mapping::DiscoveryState::default())),
+            pinned_lc_cache: Arc::new(ArcSwap::from_pointee(pinned_lc)),
             #[cfg(target_os = "windows")]
             com: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Rebuild the cached lowercased pinned-set from the current
+    /// `config.pinned_apps`. Cheap (one HashSet construction) but only
+    /// called from cold paths (init, `sync()`).
+    async fn refresh_pinned_lc(&self) {
+        let cfg = self.config.read().await;
+        let new_set = mapping::pinned_lc_set(&cfg.pinned_apps);
+        drop(cfg);
+        self.pinned_lc_cache.store(Arc::new(new_set));
     }
 
     /// Wire the driver to the router so it can push LCD updates.
@@ -104,6 +124,10 @@ impl Driver for WinAudioDriver {
     async fn init(&self, _ctx: ExecutionContext) -> Result<()> {
         info!("WinAudio driver initializing");
 
+        // Cache the lowercased pinned set so hot-path resolves don't
+        // rebuild it per MIDI event. See #40.
+        self.refresh_pinned_lc().await;
+
         // Assign cycle colors to all pinned process names so they share
         // the same 1..=7 cycle as discovered apps. Pinned apps with an
         // explicit YAML `color:` field still take precedence at render
@@ -132,6 +156,7 @@ impl Driver for WinAudioDriver {
                                 event_rx,
                                 feedback,
                                 self.config.clone(),
+                                self.pinned_lc_cache.clone(),
                                 self.discovery.clone(),
                                 self.router.clone(),
                                 self.led_tx.clone(),
@@ -158,16 +183,17 @@ impl Driver for WinAudioDriver {
                     // would otherwise drop the feedback.
                     let com = self.com.clone();
                     let cfg = self.config.clone();
+                    let pinned_lc_cache = self.pinned_lc_cache.clone();
                     let disc = self.discovery.clone();
                     let router = self.router.clone();
                     let led_tx = self.led_tx.clone();
                     tokio::spawn(async move {
                         tokio::time::sleep(std::time::Duration::from_millis(800)).await;
-                        refresh_full_state(&com, &cfg, &disc).await;
+                        refresh_full_state(&com, &pinned_lc_cache, &disc).await;
                         // If the active page is already the winaudio
                         // page at startup (no PageChanged event will
                         // fire to wake the watcher), render the LCD now.
-                        render_lcd_if_active(&router, &led_tx, &cfg, &disc).await;
+                        render_lcd_if_active(&router, &led_tx, &cfg, &pinned_lc_cache, &disc).await;
                     });
                 },
                 Err(e) => {
@@ -222,8 +248,11 @@ impl Driver for WinAudioDriver {
     }
 
     async fn sync(&self) -> Result<()> {
-        // Future: rebuild pinned/discovered mapping from new config.
-        debug!("WinAudio sync requested (no-op for now)");
+        // Refresh the cached pinned-set so a config reload that adds
+        // or removes a pinned app is reflected on the next hot-path
+        // resolve. See #40.
+        self.refresh_pinned_lc().await;
+        debug!("WinAudio sync: pinned_lc cache refreshed");
         Ok(())
     }
 
@@ -331,20 +360,24 @@ impl WinAudioDriver {
         ctx: &ExecutionContext,
         action: &str,
     ) -> Option<String> {
-        let cfg = self.config.read().await;
         match target {
-            SessionTarget::Pinned(fader) => mapping::pinned_target(&cfg.pinned_apps, fader),
+            SessionTarget::Pinned(fader) => {
+                let cfg = self.config.read().await;
+                mapping::pinned_target(&cfg.pinned_apps, fader)
+            },
             SessionTarget::Discovered(slot) => {
+                let pinned_lc = self.pinned_lc_cache.load();
                 let discovery = self.discovery.read().await;
-                mapping::discovered_target(&cfg.pinned_apps, &discovery, slot)
+                mapping::discovered_target(&pinned_lc, &discovery, slot)
             },
             SessionTarget::Auto => {
                 let control_id = ctx.control_id.as_deref()?;
                 let router = self.router.read().await.clone()?;
                 let page = router.get_active_page().await?;
                 let auto_idx = auto_strip_index(&page, action, control_id)?;
+                let pinned_lc = self.pinned_lc_cache.load();
                 let discovery = self.discovery.read().await;
-                mapping::discovered_target(&cfg.pinned_apps, &discovery, auto_idx)
+                mapping::discovered_target(&pinned_lc, &discovery, auto_idx)
             },
         }
     }
@@ -369,6 +402,7 @@ impl WinAudioDriver {
         #[cfg(target_os = "windows")]
         let com = self.com.clone();
         let config = self.config.clone();
+        let pinned_lc_cache = self.pinned_lc_cache.clone();
         let discovery = self.discovery.clone();
         let router_for_render = self.router.clone();
         let led_tx = self.led_tx.clone();
@@ -379,10 +413,16 @@ impl WinAudioDriver {
                         debug!("WinAudio: page activated, refreshing master + sessions");
                         #[cfg(target_os = "windows")]
                         {
-                            refresh_full_state(&com, &config, &discovery).await;
+                            refresh_full_state(&com, &pinned_lc_cache, &discovery).await;
                         }
-                        render_lcd_if_active(&router_for_render, &led_tx, &config, &discovery)
-                            .await;
+                        render_lcd_if_active(
+                            &router_for_render,
+                            &led_tx,
+                            &config,
+                            &pinned_lc_cache,
+                            &discovery,
+                        )
+                        .await;
                     }
                 }
             }
@@ -392,13 +432,7 @@ impl WinAudioDriver {
     #[cfg(target_os = "windows")]
     async fn refresh_discovery_with(&self, handle: &com_thread::ComThreadHandle) {
         let names = handle.enumerate_sessions().await;
-        let cfg = self.config.read().await;
-        let pinned_lc: std::collections::HashSet<String> = cfg
-            .pinned_apps
-            .iter()
-            .map(|p| p.process_name.to_lowercase())
-            .collect();
-        drop(cfg);
+        let pinned_lc = self.pinned_lc_cache.load();
         let mut state = self.discovery.write().await;
         state.observe(&names, &pinned_lc);
         debug!(
@@ -415,7 +449,7 @@ impl WinAudioDriver {
 #[cfg(target_os = "windows")]
 async fn refresh_full_state(
     com: &Arc<RwLock<Option<com_thread::ComThreadHandle>>>,
-    config: &Arc<RwLock<WinAudioConfig>>,
+    pinned_lc_cache: &Arc<ArcSwap<HashSet<String>>>,
     discovery: &Arc<RwLock<mapping::DiscoveryState>>,
 ) {
     let com_guard = com.read().await;
@@ -424,13 +458,7 @@ async fn refresh_full_state(
     };
 
     let names = handle.enumerate_sessions().await;
-    let cfg = config.read().await;
-    let pinned_lc: std::collections::HashSet<String> = cfg
-        .pinned_apps
-        .iter()
-        .map(|p| p.process_name.to_lowercase())
-        .collect();
-    drop(cfg);
+    let pinned_lc = pinned_lc_cache.load();
     {
         let mut state = discovery.write().await;
         state.observe(&names, &pinned_lc);
@@ -516,10 +544,12 @@ struct PendingFeedback {
 /// final value while keeping perceived latency well under the 50 ms
 /// feel threshold.
 #[cfg(target_os = "windows")]
+#[allow(clippy::too_many_arguments)]
 async fn run_event_consumer(
     mut event_rx: mpsc::Receiver<com_thread::AudioEvent>,
     feedback_tx: mpsc::Sender<(String, Vec<u8>)>,
     config: Arc<RwLock<WinAudioConfig>>,
+    pinned_lc_cache: Arc<ArcSwap<HashSet<String>>>,
     discovery: Arc<RwLock<mapping::DiscoveryState>>,
     router: Arc<RwLock<Option<Arc<crate::router::Router>>>>,
     led_tx: Arc<RwLock<Option<mpsc::Sender<Vec<u8>>>>>,
@@ -546,7 +576,15 @@ async fn run_event_consumer(
                     debug!("WinAudio event consumer: source closed");
                     break;
                 };
-                buffer_event(&mut pending, event, &config, &discovery, &router, &led_tx).await;
+                buffer_event(
+                    &mut pending,
+                    event,
+                    &config,
+                    &pinned_lc_cache,
+                    &discovery,
+                    &router,
+                    &led_tx,
+                ).await;
             }
             _ = ticker.tick() => {
                 if pending.is_empty() {
@@ -571,10 +609,12 @@ async fn run_event_consumer(
 /// updates the discovery FIFO + active set and triggers a non-blocking
 /// LCD render in a spawned task so the 50 ms fader flush isn't stalled.
 #[cfg(target_os = "windows")]
+#[allow(clippy::too_many_arguments)]
 async fn buffer_event(
     pending: &mut std::collections::HashMap<FeedbackKey, PendingFeedback>,
     event: com_thread::AudioEvent,
     config: &Arc<RwLock<WinAudioConfig>>,
+    pinned_lc_cache: &Arc<ArcSwap<HashSet<String>>>,
     discovery: &Arc<RwLock<mapping::DiscoveryState>>,
     router: &Arc<RwLock<Option<Arc<crate::router::Router>>>>,
     led_tx: &Arc<RwLock<Option<mpsc::Sender<Vec<u8>>>>>,
@@ -589,8 +629,10 @@ async fn buffer_event(
             mute,
         } => {
             let cfg = config.read().await;
+            let pinned_lc = pinned_lc_cache.load();
             let disc = discovery.read().await;
-            let target = mapping::target_for_process(&cfg.pinned_apps, &disc, &process_name_lc);
+            let target =
+                mapping::target_for_process(&cfg.pinned_apps, &pinned_lc, &disc, &process_name_lc);
             drop(disc);
             drop(cfg);
             let Some(target) = target else {
@@ -612,13 +654,7 @@ async fn buffer_event(
             // Skip the spawn when the active set didn't actually change —
             // session-disconnect cascades fire redundant "changed" events.
             let active_changed = {
-                let cfg = config.read().await;
-                let pinned_lc: std::collections::HashSet<String> = cfg
-                    .pinned_apps
-                    .iter()
-                    .map(|p| p.process_name.to_lowercase())
-                    .collect();
-                drop(cfg);
+                let pinned_lc = pinned_lc_cache.load();
                 let mut state = discovery.write().await;
                 state.observe(&names_lc, &pinned_lc);
                 state.set_active(&names_lc)
@@ -629,9 +665,10 @@ async fn buffer_event(
             let router = router.clone();
             let led_tx = led_tx.clone();
             let config = config.clone();
+            let pinned_lc_cache = pinned_lc_cache.clone();
             let discovery = discovery.clone();
             tokio::spawn(async move {
-                render_lcd_if_active(&router, &led_tx, &config, &discovery).await;
+                render_lcd_if_active(&router, &led_tx, &config, &pinned_lc_cache, &discovery).await;
             });
         },
     }
@@ -816,6 +853,7 @@ async fn render_lcd_if_active(
     router: &Arc<RwLock<Option<Arc<crate::router::Router>>>>,
     led_tx: &Arc<RwLock<Option<mpsc::Sender<Vec<u8>>>>>,
     config: &Arc<RwLock<WinAudioConfig>>,
+    pinned_lc_cache: &Arc<ArcSwap<HashSet<String>>>,
     discovery: &Arc<RwLock<mapping::DiscoveryState>>,
 ) {
     let Some(router_arc) = router.read().await.clone() else {
@@ -831,7 +869,7 @@ async fn render_lcd_if_active(
         debug!("WinAudio render: no led_tx wired, skipping LCD render");
         return;
     };
-    render_winaudio_lcd(&page, &tx, config, discovery).await;
+    render_winaudio_lcd(&page, &tx, config, pinned_lc_cache, discovery).await;
 }
 
 /// Compute and push the 8 LCD strips for the winaudio page. Strips
@@ -846,9 +884,11 @@ async fn render_winaudio_lcd(
     page: &PageConfig,
     led_tx: &mpsc::Sender<Vec<u8>>,
     config: &Arc<RwLock<WinAudioConfig>>,
+    pinned_lc_cache: &Arc<ArcSwap<HashSet<String>>>,
     discovery: &Arc<RwLock<mapping::DiscoveryState>>,
 ) {
     let cfg = config.read().await;
+    let pinned_lc = pinned_lc_cache.load();
     let disc = discovery.read().await;
 
     let mut colors: [u8; 8] = [0; 8];
@@ -856,7 +896,8 @@ async fn render_winaudio_lcd(
 
     for strip_idx in 1u8..=8 {
         let control_id = format!("fader{strip_idx}");
-        let process_lc = resolve_strip_process(&control_id, page, &cfg, &disc, "session_volume");
+        let process_lc =
+            resolve_strip_process(&control_id, page, &cfg, &pinned_lc, &disc, "session_volume");
 
         let Some(process_lc) = process_lc else {
             continue;
@@ -897,6 +938,7 @@ fn resolve_strip_process(
     control_id: &str,
     page: &PageConfig,
     cfg: &WinAudioConfig,
+    pinned_lc: &HashSet<String>,
     disc: &mapping::DiscoveryState,
     action: &str,
 ) -> Option<String> {
@@ -909,10 +951,10 @@ fn resolve_strip_process(
     let target = parse_session_target(params).ok()?;
     match target {
         SessionTarget::Pinned(fader) => mapping::pinned_target(&cfg.pinned_apps, fader),
-        SessionTarget::Discovered(slot) => mapping::discovered_target(&cfg.pinned_apps, disc, slot),
+        SessionTarget::Discovered(slot) => mapping::discovered_target(pinned_lc, disc, slot),
         SessionTarget::Auto => {
             let auto_idx = auto_strip_index(page, action, control_id)?;
-            mapping::discovered_target(&cfg.pinned_apps, disc, auto_idx)
+            mapping::discovered_target(pinned_lc, disc, auto_idx)
         },
     }
 }

@@ -59,6 +59,13 @@ impl SessionManager {
     /// Enumerate all currently active sessions on the default render endpoint.
     /// Skips system sessions (process_id == 0) and sessions whose owning
     /// process can no longer be opened.
+    ///
+    /// No per-PID name cache: Windows recycles PIDs immediately after
+    /// process death, so any cache keyed solely on PID can return the
+    /// previous owner's name. The hot path is already protected by the
+    /// 2 s `sessions_cache` in `com_thread.rs`, which holds whole
+    /// `SessionInfo`s — this function only runs on (re)enumerate, where
+    /// re-resolving each PID's image name is cheap enough.
     pub fn enumerate(&self) -> Result<Vec<SessionInfo>> {
         let mut out = Vec::new();
         unsafe {

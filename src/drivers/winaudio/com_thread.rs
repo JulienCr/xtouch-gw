@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
 use tokio::sync::Mutex;
@@ -22,8 +23,14 @@ use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTME
 
 use super::callback::EndpointVolumeCallback;
 use super::master::MasterEndpoint;
-use super::session::{set_session_volume, toggle_session_mute, SessionManager};
+use super::session::{set_session_volume, toggle_session_mute, SessionInfo, SessionManager};
 use super::session_events::{NewSessionCallback, SessionEventsCallback};
+
+/// Max age for the cached session enumeration before a hot-path access
+/// triggers a fresh re-enumerate. `OnSessionCreated` /
+/// `OnStateChanged(Expired)` proactively invalidate the cache, so this
+/// is a safety net for transient sessions that slipped between events.
+const SESSION_CACHE_TTL: Duration = Duration::from_secs(2);
 
 #[derive(Debug)]
 pub enum AudioCmd {
@@ -232,6 +239,13 @@ fn run_com_loop(
         }
     });
 
+    // The `Set*Master*` arms below normally rely on the OS callback to
+    // fan out the resulting state (avoiding duplicate events — see #41).
+    // If callback registration failed above, the callback never fires,
+    // so we must keep the legacy synthetic emit path to avoid the
+    // X-Touch fader/LED freezing on local master actions.
+    let master_callback_active = registered.is_some();
+
     // Register the new-session notification so we hear about sessions
     // that appear after init (e.g. an app starts producing audio).
     let new_session_reg = session_mgr.as_ref().and_then(|mgr| {
@@ -253,6 +267,13 @@ fn run_com_loop(
     // exactly once per session and can unregister on shutdown.
     let mut session_regs: HashMap<u32, SessionReg> = HashMap::new();
 
+    // Cached session enumeration (live `SessionInfo`s) reused by the
+    // `Set*` / `Toggle*` arms instead of re-enumerating per fader event.
+    // Invalidated by `RefreshSessions` (which `OnSessionCreated` and
+    // session-state callbacks already push) and by the TTL safety net.
+    // See #35.
+    let mut sessions_cache: Option<(Instant, Vec<SessionInfo>)> = None;
+
     // Push initial master state so the X-Touch is in sync immediately.
     if let Some(ep) = endpoint.as_ref() {
         if let (Ok(scalar), Ok(mute)) = (ep.get_volume_scalar(), ep.get_mute()) {
@@ -264,7 +285,8 @@ fn run_com_loop(
     // push their current state. This handles apps that already had
     // audio sessions open when the gateway started.
     if let Some(mgr) = session_mgr.as_ref() {
-        register_session_events_for_all(mgr, &event_tx, &cmd_tx, &mut session_regs);
+        let sessions = register_session_events_for_all(mgr, &event_tx, &cmd_tx, &mut session_regs);
+        sessions_cache = Some((Instant::now(), sessions));
     }
 
     info!("WinAudio COM loop running");
@@ -275,7 +297,10 @@ fn run_com_loop(
                 if let Some(ep) = endpoint.as_ref() {
                     if let Err(e) = ep.set_volume_scalar(scalar) {
                         warn!("set_volume_scalar({}) failed: {}", scalar, e);
-                    } else {
+                    } else if !master_callback_active {
+                        // Callback registration failed at init — fall back
+                        // to the legacy synthetic emit so the X-Touch stays
+                        // in sync. Normal path skips this (see #41).
                         let mute = ep.get_mute().unwrap_or(false);
                         let _ = event_tx.try_send(AudioEvent::MasterVolumeChanged { scalar, mute });
                     }
@@ -286,7 +311,9 @@ fn run_com_loop(
                     let cur = ep.get_mute().unwrap_or(false);
                     if let Err(e) = ep.set_mute(!cur) {
                         warn!("set_mute failed: {}", e);
-                    } else {
+                    } else if !master_callback_active {
+                        // See SetMasterScalar — same fallback when the OS
+                        // callback isn't wired.
                         let scalar = ep.get_volume_scalar().unwrap_or(0.0);
                         let _ = event_tx
                             .try_send(AudioEvent::MasterVolumeChanged { scalar, mute: !cur });
@@ -302,7 +329,9 @@ fn run_com_loop(
             },
             AudioCmd::RefreshSessions => {
                 if let Some(mgr) = session_mgr.as_ref() {
-                    register_session_events_for_all(mgr, &event_tx, &cmd_tx, &mut session_regs);
+                    let sessions =
+                        register_session_events_for_all(mgr, &event_tx, &cmd_tx, &mut session_regs);
+                    sessions_cache = Some((Instant::now(), sessions));
                 }
             },
             AudioCmd::SetSessionScalar {
@@ -310,61 +339,17 @@ fn run_com_loop(
                 scalar,
             } => {
                 if let Some(mgr) = session_mgr.as_ref() {
-                    match mgr.enumerate() {
-                        Ok(sessions) => {
-                            if let Some(s) =
-                                super::mapping::find_session(&sessions, &process_name_lc)
-                            {
-                                if let Err(e) = set_session_volume(s, scalar) {
-                                    warn!(
-                                        "SetSessionVolume({}, {}) failed: {}",
-                                        process_name_lc, scalar, e
-                                    );
-                                }
-                            } else {
-                                trace!(
-                                    "No active session for '{}'; ignoring volume command",
-                                    process_name_lc
-                                );
-                            }
-                        },
-                        Err(e) => warn!("session enumerate failed: {}", e),
-                    }
+                    handle_set_session_scalar(mgr, &mut sessions_cache, &process_name_lc, scalar);
                 }
             },
             AudioCmd::ToggleSessionMute { process_name_lc } => {
-                // Sessions have no callback equivalent to
-                // `IAudioEndpointVolumeCallback`, so the mute LED would
-                // never refresh unless we push a snapshot here ourselves.
                 if let Some(mgr) = session_mgr.as_ref() {
-                    match mgr.enumerate() {
-                        Ok(sessions) => {
-                            if let Some(s) =
-                                super::mapping::find_session(&sessions, &process_name_lc)
-                            {
-                                match toggle_session_mute(s) {
-                                    Ok(()) => {
-                                        let scalar =
-                                            unsafe { s.volume.GetMasterVolume().unwrap_or(0.0) };
-                                        let mute = unsafe {
-                                            s.volume.GetMute().map(|b| b.as_bool()).unwrap_or(false)
-                                        };
-                                        let _ =
-                                            event_tx.try_send(AudioEvent::SessionVolumeSnapshot {
-                                                process_name_lc: process_name_lc.clone(),
-                                                scalar,
-                                                mute,
-                                            });
-                                    },
-                                    Err(e) => warn!(
-                                        "ToggleSessionMute({}) failed: {}",
-                                        process_name_lc, e
-                                    ),
-                                }
-                            }
-                        },
-                        Err(e) => warn!("session enumerate failed: {}", e),
-                    }
+                    handle_toggle_session_mute(
+                        mgr,
+                        &mut sessions_cache,
+                        &process_name_lc,
+                        &event_tx,
+                    );
                 }
             },
             AudioCmd::EnumerateSessions { reply } => {
@@ -372,11 +357,13 @@ fn run_com_loop(
                     .as_ref()
                     .and_then(|m| m.enumerate().ok())
                     .map(|sessions| {
-                        sessions
-                            .into_iter()
-                            .map(|s| s.process_name)
+                        let names = sessions
+                            .iter()
+                            .map(|s| s.process_name.clone())
                             .filter(|n| !n.is_empty())
-                            .collect::<Vec<_>>()
+                            .collect::<Vec<_>>();
+                        sessions_cache = Some((Instant::now(), sessions));
+                        names
                     })
                     .unwrap_or_default();
                 let _ = reply.send(names);
@@ -425,17 +412,20 @@ fn run_com_loop(
 /// already-registered sessions are skipped (looked up by PID), and PIDs
 /// that have disappeared since the previous pass are unregistered to
 /// prevent the `session_regs` map from growing unbounded.
+///
+/// Returns the freshly enumerated `SessionInfo`s so callers can populate
+/// the cache used by hot-path `Set*` / `Toggle*` arms (#35).
 fn register_session_events_for_all(
     mgr: &SessionManager,
     event_tx: &mpsc::Sender<AudioEvent>,
     cmd_tx: &mpsc::Sender<AudioCmd>,
     session_regs: &mut HashMap<u32, SessionReg>,
-) {
+) -> Vec<SessionInfo> {
     let sessions = match mgr.enumerate() {
         Ok(s) => s,
         Err(e) => {
             warn!("session enumerate failed: {}", e);
-            return;
+            return Vec::new();
         },
     };
 
@@ -443,7 +433,7 @@ fn register_session_events_for_all(
     let mut active_pids: std::collections::HashSet<u32> =
         std::collections::HashSet::with_capacity(sessions.len());
 
-    for s in sessions {
+    for s in &sessions {
         if s.process_name.is_empty() {
             continue;
         }
@@ -471,6 +461,9 @@ fn register_session_events_for_all(
         let cb_impl =
             SessionEventsCallback::new(event_tx.clone(), cmd_tx.clone(), s.process_name.clone());
         let events: IAudioSessionEvents = cb_impl.into();
+        // Cloning a COM interface bumps the refcount; the registration
+        // map then holds an independent reference to the same control
+        // object that we also keep in the cache.
         match unsafe { s.control.RegisterAudioSessionNotification(&events) } {
             Ok(()) => {
                 debug!(
@@ -480,7 +473,7 @@ fn register_session_events_for_all(
                 session_regs.insert(
                     s.pid,
                     SessionReg {
-                        control: s.control,
+                        control: s.control.clone(),
                         events,
                     },
                 );
@@ -517,4 +510,89 @@ fn register_session_events_for_all(
     let _ = event_tx.try_send(AudioEvent::ActiveSessionsChanged {
         names_lc: active_names,
     });
+
+    sessions
+}
+
+/// Return a reference to a cached session matching `process_name_lc`,
+/// re-enumerating once if the cache is missing/expired or the name
+/// isn't found (handles the race where a transient session disappeared
+/// after the last refresh). The returned reference borrows from
+/// `sessions_cache`, which is updated in place on a refresh. Returns
+/// `None` if no matching session exists after the refresh.
+fn cached_session<'a>(
+    mgr: &SessionManager,
+    sessions_cache: &'a mut Option<(Instant, Vec<SessionInfo>)>,
+    process_name_lc: &str,
+) -> Option<&'a SessionInfo> {
+    let needs_refresh = match sessions_cache.as_ref() {
+        None => true,
+        Some((ts, sessions)) => {
+            ts.elapsed() > SESSION_CACHE_TTL
+                || super::mapping::find_session(sessions, process_name_lc).is_none()
+        },
+    };
+    if needs_refresh {
+        match mgr.enumerate() {
+            Ok(sessions) => {
+                *sessions_cache = Some((Instant::now(), sessions));
+            },
+            Err(e) => {
+                warn!("session enumerate failed (cache refresh): {}", e);
+                return None;
+            },
+        }
+    }
+    let sessions = &sessions_cache.as_ref()?.1;
+    super::mapping::find_session(sessions, process_name_lc)
+}
+
+/// Apply `scalar` to the cached session matching `process_name_lc`,
+/// refreshing the cache on miss/TTL expiry. See #35.
+fn handle_set_session_scalar(
+    mgr: &SessionManager,
+    sessions_cache: &mut Option<(Instant, Vec<SessionInfo>)>,
+    process_name_lc: &str,
+    scalar: f32,
+) {
+    let Some(s) = cached_session(mgr, sessions_cache, process_name_lc) else {
+        trace!(
+            "No active session for '{}'; ignoring volume command",
+            process_name_lc
+        );
+        return;
+    };
+    if let Err(e) = set_session_volume(s, scalar) {
+        warn!(
+            "SetSessionVolume({}, {}) failed: {}",
+            process_name_lc, scalar, e
+        );
+    }
+}
+
+/// Toggle mute on the cached session matching `process_name_lc` and
+/// emit the resulting state. Sessions have no callback equivalent to
+/// `IAudioEndpointVolumeCallback`, so the mute LED would never refresh
+/// unless we push a snapshot here ourselves. See #35.
+fn handle_toggle_session_mute(
+    mgr: &SessionManager,
+    sessions_cache: &mut Option<(Instant, Vec<SessionInfo>)>,
+    process_name_lc: &str,
+    event_tx: &mpsc::Sender<AudioEvent>,
+) {
+    let Some(s) = cached_session(mgr, sessions_cache, process_name_lc) else {
+        return;
+    };
+    match toggle_session_mute(s) {
+        Ok(()) => {
+            let scalar = unsafe { s.volume.GetMasterVolume().unwrap_or(0.0) };
+            let mute = unsafe { s.volume.GetMute().map(|b| b.as_bool()).unwrap_or(false) };
+            let _ = event_tx.try_send(AudioEvent::SessionVolumeSnapshot {
+                process_name_lc: process_name_lc.to_string(),
+                scalar,
+                mute,
+            });
+        },
+        Err(e) => warn!("ToggleSessionMute({}) failed: {}", process_name_lc, e),
+    }
 }

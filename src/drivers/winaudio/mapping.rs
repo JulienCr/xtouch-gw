@@ -133,12 +133,18 @@ impl DiscoveryState {
 }
 
 /// Compute the static mapping fader_slot → app from config and current
-/// discovery order. The result has at most 8 entries (one per fader).
-pub fn compute_slots(pinned: &[PinnedApp], discovery: &DiscoveryState) -> Vec<SlotBinding> {
+/// discovery order. `pinned_lc` must be the lowercased set of pinned
+/// process names — owned by the caller (cached on `WinAudioDriver`) so
+/// hot-path callers don't rebuild it per event.
+/// The result has at most 8 entries (one per fader).
+pub fn compute_slots(
+    pinned: &[PinnedApp],
+    pinned_lc: &HashSet<String>,
+    discovery: &DiscoveryState,
+) -> Vec<SlotBinding> {
     let mut bindings: Vec<Option<SlotBinding>> = (0..8).map(|_| None).collect();
 
     // 1. Pinned slots take priority.
-    let mut pinned_lc: HashSet<String> = HashSet::new();
     for pin in pinned {
         if !(1..=8).contains(&pin.fader) {
             continue;
@@ -150,10 +156,9 @@ pub fn compute_slots(pinned: &[PinnedApp], discovery: &DiscoveryState) -> Vec<Sl
             .unwrap_or_else(|| derive_label(&pin.process_name));
         bindings[(pin.fader - 1) as usize] = Some(SlotBinding {
             fader: pin.fader,
-            process_name: Some(name_lc.clone()),
+            process_name: Some(name_lc),
             display_name: display,
         });
-        pinned_lc.insert(name_lc);
     }
 
     // 2. Discovered sessions fill remaining slots in stable order.
@@ -178,6 +183,15 @@ pub fn compute_slots(pinned: &[PinnedApp], discovery: &DiscoveryState) -> Vec<Sl
     bindings.into_iter().flatten().collect()
 }
 
+/// Build the lowercased pinned process-name set from a `PinnedApp` slice.
+/// Used by `WinAudioDriver` to refresh its cached set on init / reload.
+pub fn pinned_lc_set(pinned: &[PinnedApp]) -> HashSet<String> {
+    pinned
+        .iter()
+        .map(|p| p.process_name.to_lowercase())
+        .collect()
+}
+
 /// Resolve a `pinned:N` slot to its configured process name.
 pub fn pinned_target(pinned: &[PinnedApp], fader: u8) -> Option<String> {
     pinned
@@ -188,10 +202,12 @@ pub fn pinned_target(pinned: &[PinnedApp], fader: u8) -> Option<String> {
 
 /// Reverse of [`pinned_target`] / [`discovered_target`]: given a session's
 /// process name, return the YAML target string (`"pinned:N"` or
-/// `"discovered:N"`) that pages bind to. Returns `None` if the session
-/// is neither pinned nor in the discovery FIFO.
+/// `"discovered:N"`) that pages bind to. `pinned_lc` is the cached
+/// lowercased pinned set (see `pinned_lc_set`). Returns `None` if the
+/// session is neither pinned nor in the discovery FIFO.
 pub fn target_for_process(
     pinned: &[PinnedApp],
+    pinned_lc: &HashSet<String>,
     discovery: &DiscoveryState,
     process_name_lc: &str,
 ) -> Option<String> {
@@ -201,10 +217,6 @@ pub fn target_for_process(
     {
         return Some(format!("pinned:{}", pin.fader));
     }
-    let pinned_lc: HashSet<String> = pinned
-        .iter()
-        .map(|p| p.process_name.to_lowercase())
-        .collect();
     discovery
         .discovered_order
         .iter()
@@ -214,16 +226,13 @@ pub fn target_for_process(
 }
 
 /// Resolve a `discovered:N` slot to its current process name (according
-/// to `discovery`), skipping pinned names.
+/// to `discovery`), skipping pinned names. `pinned_lc` is the cached
+/// lowercased pinned set (see `pinned_lc_set`).
 pub fn discovered_target(
-    pinned: &[PinnedApp],
+    pinned_lc: &HashSet<String>,
     discovery: &DiscoveryState,
     slot: u8,
 ) -> Option<String> {
-    let pinned_lc: HashSet<String> = pinned
-        .iter()
-        .map(|p| p.process_name.to_lowercase())
-        .collect();
     discovery
         .discovered_order
         .iter()
@@ -288,16 +297,26 @@ mod tests {
     #[test]
     fn pinned_keeps_their_slots() {
         let pinned = vec![pin(2, "Spotify.exe"), pin(5, "Discord.exe")];
+        let pinned_lc = pinned_lc_set(&pinned);
         let discovery = DiscoveryState {
             discovered_order: vec!["firefox.exe".into()],
             ..Default::default()
         };
-        let bindings = compute_slots(&pinned, &discovery);
+        let bindings = compute_slots(&pinned, &pinned_lc, &discovery);
         let by_slot: std::collections::HashMap<_, _> =
             bindings.iter().map(|b| (b.fader, b.clone())).collect();
         assert_eq!(by_slot[&2].process_name.as_deref(), Some("spotify.exe"));
         assert_eq!(by_slot[&5].process_name.as_deref(), Some("discord.exe"));
         assert_eq!(by_slot[&1].process_name.as_deref(), Some("firefox.exe"));
+    }
+
+    #[test]
+    fn pinned_lc_set_lowercases_names() {
+        let pinned = vec![pin(1, "Discord.exe"), pin(2, "SPOTIFY.exe")];
+        let set = pinned_lc_set(&pinned);
+        assert!(set.contains("discord.exe"));
+        assert!(set.contains("spotify.exe"));
+        assert!(!set.contains("Discord.exe"));
     }
 
     #[test]
@@ -316,45 +335,50 @@ mod tests {
     #[test]
     fn target_for_process_resolves_pinned_and_discovered() {
         let pinned = vec![pin(1, "Discord.exe"), pin(3, "Spotify.exe")];
+        let pinned_lc = pinned_lc_set(&pinned);
         let discovery = DiscoveryState {
             discovered_order: vec!["firefox.exe".into(), "msedge.exe".into()],
             ..Default::default()
         };
         assert_eq!(
-            target_for_process(&pinned, &discovery, "discord.exe"),
+            target_for_process(&pinned, &pinned_lc, &discovery, "discord.exe"),
             Some("pinned:1".into())
         );
         assert_eq!(
-            target_for_process(&pinned, &discovery, "spotify.exe"),
+            target_for_process(&pinned, &pinned_lc, &discovery, "spotify.exe"),
             Some("pinned:3".into())
         );
         assert_eq!(
-            target_for_process(&pinned, &discovery, "firefox.exe"),
+            target_for_process(&pinned, &pinned_lc, &discovery, "firefox.exe"),
             Some("discovered:0".into())
         );
         assert_eq!(
-            target_for_process(&pinned, &discovery, "msedge.exe"),
+            target_for_process(&pinned, &pinned_lc, &discovery, "msedge.exe"),
             Some("discovered:1".into())
         );
-        assert_eq!(target_for_process(&pinned, &discovery, "unknown.exe"), None);
+        assert_eq!(
+            target_for_process(&pinned, &pinned_lc, &discovery, "unknown.exe"),
+            None
+        );
     }
 
     #[test]
     fn discovered_target_resolves_in_order() {
         let pinned = vec![pin(1, "Discord.exe")];
+        let pinned_lc = pinned_lc_set(&pinned);
         let discovery = DiscoveryState {
             discovered_order: vec!["spotify.exe".into(), "firefox.exe".into()],
             ..Default::default()
         };
         assert_eq!(
-            discovered_target(&pinned, &discovery, 0),
+            discovered_target(&pinned_lc, &discovery, 0),
             Some("spotify.exe".into())
         );
         assert_eq!(
-            discovered_target(&pinned, &discovery, 1),
+            discovered_target(&pinned_lc, &discovery, 1),
             Some("firefox.exe".into())
         );
-        assert_eq!(discovered_target(&pinned, &discovery, 2), None);
+        assert_eq!(discovered_target(&pinned_lc, &discovery, 2), None);
     }
 
     #[test]
@@ -458,6 +482,7 @@ mod tests {
     #[test]
     fn discovered_target_indexes_discovery_filtered_of_pinned() {
         let pinned = vec![pin(1, "Discord.exe")];
+        let pinned_lc = pinned_lc_set(&pinned);
         let discovery = DiscoveryState {
             discovered_order: vec![
                 "spotify.exe".into(),
@@ -467,17 +492,17 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            discovered_target(&pinned, &discovery, 0),
+            discovered_target(&pinned_lc, &discovery, 0),
             Some("spotify.exe".into())
         );
         assert_eq!(
-            discovered_target(&pinned, &discovery, 1),
+            discovered_target(&pinned_lc, &discovery, 1),
             Some("firefox.exe".into())
         );
         assert_eq!(
-            discovered_target(&pinned, &discovery, 2),
+            discovered_target(&pinned_lc, &discovery, 2),
             Some("steam.exe".into())
         );
-        assert_eq!(discovered_target(&pinned, &discovery, 3), None);
+        assert_eq!(discovered_target(&pinned_lc, &discovery, 3), None);
     }
 }
