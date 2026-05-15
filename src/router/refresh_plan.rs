@@ -357,6 +357,27 @@ impl super::Router {
         })
     }
 
+    /// Resolve a note's control mapping for the current page, guarded by app
+    /// ownership.
+    ///
+    /// Shared preamble (issue #29) for `try_cc_to_note_transform` and
+    /// `try_direct_note_lookup`: O(1) reverse-map lookup, then page/global
+    /// config resolution, then app guard.
+    fn resolve_note_control(
+        page: &PageConfig,
+        global_config: &crate::config::AppConfig,
+        app: &AppKey,
+        note: u8,
+        note_map: &HashMap<u8, String>,
+    ) -> Option<(String, crate::config::ControlMapping)> {
+        let control_id = note_map.get(&note)?.clone();
+        let control_config = Self::get_control_config(page, global_config, &control_id)?;
+        if control_config.app != app.as_str() {
+            return None;
+        }
+        Some((control_id, control_config))
+    }
+
     /// Try to transform CC value to Note for page refresh (reverse transformation)
     async fn try_cc_to_note_transform(
         &self,
@@ -366,11 +387,8 @@ impl super::Router {
         note: u8,
         note_map: &HashMap<u8, String>,
     ) -> Option<MidiStateEntry> {
-        let control_id = note_map.get(&note)?.clone();
-        let control_config = Self::get_control_config(page, global_config, &control_id)?;
-        if control_config.app != app.as_str() {
-            return None;
-        }
+        let (control_id, control_config) =
+            Self::resolve_note_control(page, global_config, app, note, note_map)?;
 
         let (cc_entry, cc_value) = self.get_cc_value_for_control(app, &control_config).await?;
         let velocity: u8 = if cc_value > 0 { 127 } else { 0 };
@@ -408,11 +426,7 @@ impl super::Router {
         note: u8,
         note_map: &HashMap<u8, String>,
     ) -> Option<MidiStateEntry> {
-        let control_id = note_map.get(&note)?.clone();
-        let control_config = Self::get_control_config(page, global_config, &control_id)?;
-        if control_config.app != app.as_str() {
-            return None;
-        }
+        Self::resolve_note_control(page, global_config, app, note, note_map)?;
 
         self.state_actor
             .get_known_latest(*app, MidiStatus::Note, Some(1), Some(note))
