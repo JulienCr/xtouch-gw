@@ -134,37 +134,14 @@ impl ObsDriver {
         Ok(())
     }
 
-    /// Spawn background task to listen to OBS events
+    /// Spawn background task to listen to OBS events.
+    ///
+    /// Hands the listener a cheap `clone_for_task` of the driver so it can
+    /// reuse [`ObsDriver::emit_signal`] and access shared state (caches,
+    /// scene cells, shutdown flag) without re-passing every Arc field.
     pub(super) fn spawn_event_listener(&self) {
-        let client = Arc::clone(&self.client);
-        let studio_mode = Arc::clone(&self.studio_mode);
-        let program_scene = Arc::clone(&self.program_scene);
-        let preview_scene = Arc::clone(&self.preview_scene);
-        let emitters = Arc::clone(&self.indicator_emitters);
-        let last_selected = Arc::clone(&self.last_selected_sent);
-        let shutdown_flag = Arc::clone(&self.shutdown_flag);
-        let activity_tracker = Arc::clone(&self.activity_tracker);
-        let camera_control_config = Arc::clone(&self.camera_control_config);
-        let camera_control_state = Arc::clone(&self.camera_control_state);
-        let transform_cache = Arc::clone(&self.transform_cache);
-        let item_id_cache = Arc::clone(&self.item_id_cache);
-        let driver_for_reconnect = self.clone_for_task();
-
-        tokio::spawn(super::event_listener::run_event_listener(
-            client,
-            studio_mode,
-            program_scene,
-            preview_scene,
-            emitters,
-            last_selected,
-            shutdown_flag,
-            activity_tracker,
-            camera_control_config,
-            camera_control_state,
-            transform_cache,
-            item_id_cache,
-            driver_for_reconnect,
-        ));
+        let driver = self.clone_for_task();
+        tokio::spawn(super::event_listener::run_event_listener(driver));
     }
 
     /// Static helper to emit selectedScene with debouncing
