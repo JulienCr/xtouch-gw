@@ -8,7 +8,7 @@
 //! - Simplifies testing through message inspection
 
 use super::actor_handle::StateActorHandle;
-use super::commands::{StateCommand, SubscriberFn};
+use super::commands::StateCommand;
 use super::persistence_actor::PersistenceCommand;
 use super::types::{addr_key, AppKey, MidiAddr, MidiStateEntry, MidiStatus, Origin};
 use std::collections::HashMap;
@@ -73,7 +73,6 @@ type ShadowMap = HashMap<String, ShadowEntry>;
 /// │  │ app_states: HashMap<AppKey, HashMap<String, Entry>>     ││
 /// │  │ app_shadows: HashMap<String, HashMap<String, Shadow>>   ││
 /// │  │ last_user_action_ts: HashMap<String, u64>               ││
-/// │  │ subscribers: Vec<SubscriberFn>                          ││
 /// │  └─────────────────────────────────────────────────────────┘│
 /// │                           ▲                                  │
 /// │                           │ commands                         │
@@ -94,9 +93,6 @@ pub struct StateActor {
     /// Timestamps of last user actions for Last-Write-Wins
     /// Key: shadow_key, Value: timestamp in milliseconds
     last_user_action_ts: HashMap<String, u64>,
-
-    /// Subscribers to state change notifications
-    subscribers: Vec<SubscriberFn>,
 
     /// Receiver for incoming commands
     command_rx: mpsc::UnboundedReceiver<StateCommand>,
@@ -149,7 +145,6 @@ impl StateActor {
             app_states,
             app_shadows: HashMap::new(),
             last_user_action_ts: HashMap::new(),
-            subscribers: Vec::new(),
             command_rx: cmd_rx,
             persistence_tx,
             update_count: 0,
@@ -260,12 +255,6 @@ impl StateActor {
                     self.app_shadows.clear();
                     debug!("Cleared all shadow states");
                 },
-                StateCommand::Subscribe { listener, response } => {
-                    self.subscribers.push(listener);
-                    let id = self.subscribers.len() - 1;
-                    let _ = response.send(id);
-                    debug!(subscriber_id = id, "Added subscriber");
-                },
                 StateCommand::Shutdown => {
                     info!("StateActor received shutdown command");
                     break;
@@ -281,7 +270,7 @@ impl StateActor {
 
     /// Handle a state update command
     ///
-    /// Updates the state for a given application and notifies subscribers.
+    /// Updates the state for a given application.
     ///
     /// # Arguments
     ///
@@ -314,9 +303,6 @@ impl StateActor {
             value = ?stored.value,
             "State updated"
         );
-
-        // Notify subscribers
-        self.notify_subscribers(&stored, app);
     }
 
     /// Handle a get state query
@@ -616,18 +602,6 @@ impl StateActor {
             }
         }
         debug!(?app, "Hydrated state from snapshot");
-    }
-
-    /// Notify all subscribers of a state change
-    ///
-    /// # Arguments
-    ///
-    /// * `entry` - The state entry that changed
-    /// * `app` - The application key
-    fn notify_subscribers(&self, entry: &MidiStateEntry, app: AppKey) {
-        for subscriber in &self.subscribers {
-            subscriber(entry, app);
-        }
     }
 
     /// Get current timestamp in milliseconds since epoch
