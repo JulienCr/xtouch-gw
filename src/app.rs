@@ -476,11 +476,23 @@ async fn handle_tray_command(
 
 /// Unregister any driver the new config no longer references. Stops
 /// background work (OBS reconnection loop, MIDI bridge readers, WinAudio
-/// COM thread) so dropped profiles don't keep polling.
+/// COM thread) so dropped profiles don't keep polling. Also purges the
+/// `app_states` entries owned by removed drivers so memory doesn't grow
+/// unbounded across repeated profile reloads.
 async fn prune_unused_drivers(router: &Arc<Router>, new_config: &AppConfig) {
-    router
+    let removed = router
         .unregister_drivers_not_in(&new_config.referenced_apps())
         .await;
+    let state_actor = router.get_state_actor();
+    for name in removed {
+        match crate::state::AppKey::from_str(&name) {
+            Some(app_key) => state_actor.clear_states_for_app(app_key),
+            None => debug!(
+                "Skipping state purge for unknown driver '{}' (no AppKey mapping)",
+                name
+            ),
+        }
+    }
 }
 
 /// Publish the current profiles list + active profile to the tray UI.

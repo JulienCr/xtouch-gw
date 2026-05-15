@@ -555,7 +555,13 @@ async fn test_unregister_drivers_not_in_keeps_needed_and_drops_rest() {
         ["voicemeeter".to_string(), "winaudio".to_string()]
             .into_iter()
             .collect();
-    router.unregister_drivers_not_in(&needed).await;
+    let removed = router.unregister_drivers_not_in(&needed).await;
+
+    assert_eq!(
+        removed,
+        vec!["obs".to_string()],
+        "obs should be reported as removed"
+    );
 
     let remaining: std::collections::HashSet<String> =
         router.list_drivers().await.into_iter().collect();
@@ -579,10 +585,18 @@ async fn test_unregister_drivers_not_in_with_empty_needed_drops_all() {
         .await
         .unwrap();
 
-    router
+    let removed = router
         .unregister_drivers_not_in(&std::collections::HashSet::new())
         .await;
 
+    let removed_set: std::collections::HashSet<String> = removed.into_iter().collect();
+    let expected: std::collections::HashSet<String> = ["obs".to_string(), "winaudio".to_string()]
+        .into_iter()
+        .collect();
+    assert_eq!(
+        removed_set, expected,
+        "all registered drivers should be reported as removed"
+    );
     assert!(router.list_drivers().await.is_empty());
 }
 
@@ -597,8 +611,13 @@ async fn test_unregister_drivers_not_in_is_idempotent() {
         .unwrap();
 
     let needed: std::collections::HashSet<String> = ["obs".to_string()].into_iter().collect();
-    router.unregister_drivers_not_in(&needed).await;
-    router.unregister_drivers_not_in(&needed).await;
+    let first = router.unregister_drivers_not_in(&needed).await;
+    let second = router.unregister_drivers_not_in(&needed).await;
 
+    assert!(first.is_empty(), "nothing to remove on first call");
+    assert!(
+        second.is_empty(),
+        "nothing to remove on second call (idempotent)"
+    );
     assert_eq!(router.list_drivers().await, vec!["obs".to_string()]);
 }
