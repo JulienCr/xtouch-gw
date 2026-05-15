@@ -210,8 +210,9 @@ mod tests {
 
     #[test]
     fn test_button_conversion() {
+        use crate::input::gamepad::DEFAULT_GAMEPAD_SLOT;
         // Press A button
-        let events = convert_xinput_buttons(None, button_flags::A, "gamepad1");
+        let events = convert_xinput_buttons(None, button_flags::A, DEFAULT_GAMEPAD_SLOT);
         assert_eq!(events.len(), 1);
         match &events[0] {
             GamepadEvent::Button {
@@ -227,15 +228,18 @@ mod tests {
 
     #[test]
     fn test_button_no_change() {
+        use crate::input::gamepad::DEFAULT_GAMEPAD_SLOT;
         // Same state, no events
-        let events = convert_xinput_buttons(Some(button_flags::A), button_flags::A, "gamepad1");
+        let events =
+            convert_xinput_buttons(Some(button_flags::A), button_flags::A, DEFAULT_GAMEPAD_SLOT);
         assert_eq!(events.len(), 0);
     }
 
     #[test]
     fn test_dpad_format() {
+        use crate::input::gamepad::DEFAULT_GAMEPAD_SLOT;
         // D-Pad uses different format
-        let events = convert_xinput_buttons(None, button_flags::DPAD_UP, "gamepad1");
+        let events = convert_xinput_buttons(None, button_flags::DPAD_UP, DEFAULT_GAMEPAD_SLOT);
         assert_eq!(events.len(), 1);
         match &events[0] {
             GamepadEvent::Button { control_id, .. } => {

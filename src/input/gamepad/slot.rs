@@ -7,6 +7,7 @@
 //! - Per-slot analog configuration
 
 use super::hybrid_id::HybridControllerId;
+use super::GAMEPAD_PREFIX;
 use crate::config::AnalogConfig;
 use gilrs::Gilrs;
 use std::time::Instant;
@@ -61,7 +62,7 @@ impl GamepadSlot {
 
     /// Get control ID prefix for this slot (e.g., "gamepad1", "gamepad2")
     pub fn control_id_prefix(&self) -> String {
-        format!("gamepad{}", self.slot_index + 1)
+        format!("{}{}", GAMEPAD_PREFIX, self.slot_index + 1)
     }
 
     /// Connect a gamepad to this slot

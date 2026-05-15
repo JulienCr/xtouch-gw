@@ -133,12 +133,14 @@ mod tests {
 
     #[test]
     fn test_control_id_generation() {
+        use crate::input::gamepad::DEFAULT_GAMEPAD_SLOT;
+
         assert_eq!(
-            gilrs_button_to_control_id(Button::East, "gamepad1"),
+            gilrs_button_to_control_id(Button::East, DEFAULT_GAMEPAD_SLOT),
             Some("gamepad1.btn.a".to_string())
         );
         assert_eq!(
-            gilrs_button_to_control_id(Button::DPadUp, "gamepad1"),
+            gilrs_button_to_control_id(Button::DPadUp, DEFAULT_GAMEPAD_SLOT),
             Some("gamepad1.dpad.up".to_string())
         );
     }

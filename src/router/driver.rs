@@ -1,6 +1,7 @@
 //! Driver registration and lifecycle management
 
 use crate::drivers::{Driver, ExecutionContext};
+use crate::input::gamepad::{extract_gamepad_slot, GAMEPAD_PREFIX};
 use anyhow::{anyhow, Result};
 use serde_json::Value;
 use std::sync::Arc;
@@ -254,13 +255,16 @@ impl super::Router {
             return Ok(raw_params);
         }
 
-        // Extract gamepad slot from control_id (e.g., "gamepad1" from "gamepad1.axis.lx")
-        let gamepad_slot = control_id.split('.').next().unwrap_or("");
-
-        if !gamepad_slot.starts_with("gamepad") {
-            // Not a gamepad control, return unchanged
+        // Discriminate gamepad vs non-gamepad controls by inspecting the raw
+        // control_id. We can't use `extract_gamepad_slot` for the check
+        // because its non-gamepad fallback returns `DEFAULT_GAMEPAD_SLOT`
+        // (which always starts with `GAMEPAD_PREFIX`), masking the original
+        // intent. Once we've confirmed gamepad-ness, the helper is safe to
+        // use for the slot prefix.
+        if !control_id.starts_with(GAMEPAD_PREFIX) {
             return Ok(raw_params);
         }
+        let gamepad_slot = extract_gamepad_slot(control_id);
 
         let config = self.config.read().await;
 
@@ -272,7 +276,7 @@ impl super::Router {
             .and_then(|slots| {
                 // Determine slot index from gamepad_slot (gamepad1 -> index 0, gamepad2 -> index 1)
                 let slot_num: usize = gamepad_slot
-                    .strip_prefix("gamepad")
+                    .strip_prefix(GAMEPAD_PREFIX)
                     .and_then(|n| n.parse().ok())
                     .unwrap_or(1);
                 slots.get(slot_num.saturating_sub(1))
