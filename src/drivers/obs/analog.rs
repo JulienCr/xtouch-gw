@@ -129,6 +129,7 @@ impl ObsDriver {
         let rates = Arc::clone(&self.analog_rates);
         let last_tick = Arc::clone(&self.last_analog_tick);
         let timer_active = Arc::clone(&self.analog_timer_active);
+        let shutdown_flag = Arc::clone(&self.shutdown_flag);
         let driver_self = Arc::new(self.clone_for_task());
 
         tokio::spawn(async move {
@@ -137,6 +138,15 @@ impl ObsDriver {
 
             loop {
                 interval.tick().await;
+
+                // Honor driver shutdown immediately. Without this, a tick
+                // already in flight (or with active analog rates) could keep
+                // the task alive for seconds after `Driver::shutdown()`.
+                if *shutdown_flag.lock() {
+                    *timer_active.lock() = false;
+                    debug!("OBS analog timer stopped (shutdown)");
+                    break;
+                }
 
                 // Check if timer should stop
                 if !*timer_active.lock() {
