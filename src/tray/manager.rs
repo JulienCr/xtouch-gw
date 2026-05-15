@@ -3,7 +3,6 @@
 //! Runs on a dedicated OS thread to handle Win32 message loop.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use tracing::{debug, trace, warn};
 
 use super::{ActivityDirection, ConnectionStatus, TrayCommand, TrayUpdate};
@@ -91,11 +90,11 @@ impl TrayManager {
         tray_icon.set_menu(Some(Box::new(menu.clone())));
         debug!("Menu attached to tray icon");
 
-        // Store menu for later updates
-        let menu = Arc::new(parking_lot::Mutex::new(menu));
-
-        // Clone for event handler
-        let menu_clone = Arc::clone(&menu);
+        // Store menu for later updates. The tray manager's event loop is
+        // single-threaded (Windows message pump) so a plain `Mutex` is
+        // sufficient — no `Arc` needed (the previous wrapper triggered
+        // `clippy::arc_with_non_send_sync` because `muda::Menu` is `!Sync`).
+        let menu_cell = parking_lot::Mutex::new(menu);
 
         // Get menu event receiver
         let menu_channel = muda::MenuEvent::receiver();
@@ -142,7 +141,7 @@ impl TrayManager {
                         // Rebuild menu to reflect new setting
                         if let Ok(new_menu) = self.build_menu_with_all_statuses() {
                             tray_icon.set_menu(Some(Box::new(new_menu.clone())));
-                            *menu_clone.lock() = new_menu;
+                            *menu_cell.lock() = new_menu;
                         }
                     },
                     "toggle_connection_status" => {
@@ -160,7 +159,7 @@ impl TrayManager {
                         // Rebuild menu to reflect new setting
                         if let Ok(new_menu) = self.build_menu_with_all_statuses() {
                             tray_icon.set_menu(Some(Box::new(new_menu.clone())));
-                            *menu_clone.lock() = new_menu;
+                            *menu_cell.lock() = new_menu;
                         }
                     },
                     "about" => {
@@ -231,7 +230,7 @@ impl TrayManager {
                     if let Ok(new_menu) = self.build_menu_with_all_statuses() {
                         let item_count = new_menu.items().len();
                         tray_icon.set_menu(Some(Box::new(new_menu.clone())));
-                        *menu_clone.lock() = new_menu;
+                        *menu_cell.lock() = new_menu;
                         trace!("Menu rebuilt with {} items", item_count);
                     }
                 },
@@ -250,7 +249,7 @@ impl TrayManager {
                     if new_hash != self.last_menu_hash {
                         if let Ok(new_menu) = self.build_menu_with_all_statuses() {
                             tray_icon.set_menu(Some(Box::new(new_menu.clone())));
-                            *menu_clone.lock() = new_menu;
+                            *menu_cell.lock() = new_menu;
                             self.last_menu_hash = new_hash;
                             trace!(
                                 "Menu rebuilt (hash changed: {} -> {})",
@@ -270,7 +269,7 @@ impl TrayManager {
                     self.active_profile = active;
                     if let Ok(new_menu) = self.build_menu_with_all_statuses() {
                         tray_icon.set_menu(Some(Box::new(new_menu.clone())));
-                        *menu_clone.lock() = new_menu;
+                        *menu_cell.lock() = new_menu;
                         self.last_menu_hash = self.calculate_menu_hash();
                     }
                 },
