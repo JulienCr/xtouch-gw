@@ -3,6 +3,7 @@
   import PickerField from '../PickerField.svelte';
   import { inputCls, labelCls } from '$lib/styles';
   import type { ActionParam } from '$lib/api';
+  import { profile } from '$lib/stores/profile';
 
   export let param: ActionParam;
   export let value: unknown;
@@ -13,29 +14,36 @@
 
   const dispatch = createEventDispatcher<{ change: unknown }>();
 
-  // Static target list for the winaudio session_volume / session_mute params.
-  // Pinned slots map 1..=8 to `winaudio.pinned_apps[i].fader`. Discovered
-  // slots 0..=7 are the legacy FIFO indices; `auto` is the modern form
-  // (driver picks the next free detected app at runtime).
-  const winaudioTargetOpts: { value: string; label: string }[] = [
-    { value: 'auto', label: 'auto (any detected app)' },
-    { value: 'pinned:1', label: 'pinned:1' },
-    { value: 'pinned:2', label: 'pinned:2' },
-    { value: 'pinned:3', label: 'pinned:3' },
-    { value: 'pinned:4', label: 'pinned:4' },
-    { value: 'pinned:5', label: 'pinned:5' },
-    { value: 'pinned:6', label: 'pinned:6' },
-    { value: 'pinned:7', label: 'pinned:7' },
-    { value: 'pinned:8', label: 'pinned:8' },
-    { value: 'discovered:0', label: 'discovered:0 (legacy)' },
-    { value: 'discovered:1', label: 'discovered:1 (legacy)' },
-    { value: 'discovered:2', label: 'discovered:2 (legacy)' },
-    { value: 'discovered:3', label: 'discovered:3 (legacy)' },
-    { value: 'discovered:4', label: 'discovered:4 (legacy)' },
-    { value: 'discovered:5', label: 'discovered:5 (legacy)' },
-    { value: 'discovered:6', label: 'discovered:6 (legacy)' },
-    { value: 'discovered:7', label: 'discovered:7 (legacy)' }
-  ];
+  // Target list for the winaudio session_volume / session_mute params.
+  // - `auto`: driver picks the next free detected app at runtime.
+  // - `pinned:N` (1..=8): the fader slot configured in `winaudio.pinned_apps`;
+  //   when a process_name is set we surface it inline so the user doesn't have
+  //   to cross-reference YAML.
+  // - `discovered:N` (0..=7): legacy FIFO indices kept for backward compat.
+  $: pinnedApps = (() => {
+    const apps = ($profile.parsed as { winaudio?: { pinned_apps?: Array<{ fader: number; process_name?: string; display_name?: string }> } } | null)
+      ?.winaudio?.pinned_apps ?? [];
+    const byFader = new Map<number, string>();
+    for (const p of apps) {
+      const label = p.display_name?.trim() || p.process_name?.trim() || '';
+      if (label) byFader.set(p.fader, label);
+    }
+    return byFader;
+  })();
+
+  $: winaudioTargetOpts = (() => {
+    const opts: { value: string; label: string }[] = [
+      { value: 'auto', label: 'auto (any detected app)' }
+    ];
+    for (let n = 1; n <= 8; n++) {
+      const app = pinnedApps.get(n);
+      opts.push({ value: `pinned:${n}`, label: app ? `pinned:${n} (${app})` : `pinned:${n}` });
+    }
+    for (let n = 0; n < 8; n++) {
+      opts.push({ value: `discovered:${n}`, label: `discovered:${n} (legacy)` });
+    }
+    return opts;
+  })();
 
   $: pickerOpts =
     param.picker === 'obs.scene'

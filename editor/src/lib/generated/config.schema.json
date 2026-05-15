@@ -857,7 +857,8 @@
           "description": "Fader slot 1..=8.",
           "type": "integer",
           "format": "uint8",
-          "minimum": 0.0
+          "maximum": 8.0,
+          "minimum": 1.0
         },
         "process_name": {
           "description": "Process executable name (e.g. \"Discord.exe\"). Match is case-insensitive.",

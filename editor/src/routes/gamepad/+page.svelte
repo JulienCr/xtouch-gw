@@ -12,9 +12,16 @@
     ?.gamepad?.gamepads ?? []) as Array<{ product_match?: string }>;
   $: slotCount = Math.max(1, gamepads.length);
   $: slotOptions = Array.from({ length: slotCount }, (_, i) => i + 1);
+  // Clamp currentSlot when the profile reload shrinks the gamepad list.
+  $: if (currentSlot > slotCount) currentSlot = slotCount;
   $: cfg = gamepads[currentSlot - 1];
   $: autoVariant = detectVariant(cfg?.product_match);
   $: variant = (manualOverride || autoVariant) as GamepadVariant;
+
+  function slotLabel(n: number): string {
+    const match = gamepads[n - 1]?.product_match;
+    return match ? `${n} — ${match}` : String(n);
+  }
 </script>
 
 <div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
@@ -30,7 +37,7 @@
               class="bg-white border border-slate-300 text-slate-900 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-200 rounded text-xs px-1.5 py-0.5"
             >
               {#each slotOptions as n}
-                <option value={n}>{n}{cfg && n === currentSlot && cfg.product_match ? ` — ${cfg.product_match}` : ''}</option>
+                <option value={n}>{slotLabel(n)}</option>
               {/each}
             </select>
           </label>

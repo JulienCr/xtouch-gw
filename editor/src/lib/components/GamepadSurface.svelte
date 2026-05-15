@@ -37,13 +37,16 @@
   let loaded = false;
   let loadedSrc = '';
   let loadedSlot = 0;
+  // Monotonic token: bumps for each load() call; stale fetches are dropped.
+  let loadToken = 0;
 
   // Indicators created in remap() that follow live stick axes.
   let leftStickIndicator: SVGCircleElement | null = null;
   let rightStickIndicator: SVGCircleElement | null = null;
   let leftStickCenter = { x: 0, y: 0 };
   let rightStickCenter = { x: 0, y: 0 };
-  let stickRadiusSvg = 0;
+  let leftStickRadiusSvg = 0;
+  let rightStickRadiusSvg = 0;
 
   $: src =
     variant === 'switch2pro'
@@ -52,18 +55,22 @@
 
   async function load(): Promise<void> {
     if (!host) return;
-    const res = await fetch(src);
+    const token = ++loadToken;
+    const reqSrc = src;
+    const reqSlot = slot;
+    const res = await fetch(reqSrc);
     const text = await res.text();
-    if (!host) return;
+    // Discard the result if another load() superseded us mid-flight,
+    // or if the host was torn down.
+    if (!host || token !== loadToken || reqSrc !== src || reqSlot !== slot) return;
     host.innerHTML = text;
     svgEl = host.querySelector('svg');
     if (svgEl) {
       svgEl.setAttribute('class', 'w-full h-auto select-none');
       svgEl.removeAttribute('width');
-      // Keep the SVG style attribute (some assets bake width/margins) but strip
-      // the inline width so it scales with the container.
-      const style = svgEl.getAttribute('style') ?? '';
-      svgEl.setAttribute('style', style.replace(/width:[^;]+;?/i, ''));
+      // Strip the baked-in inline width so the SVG scales with its container,
+      // while preserving any other inline style declarations (margins, etc.).
+      svgEl.style.removeProperty('width');
       remap(svgEl);
       attach(svgEl);
     }
@@ -87,19 +94,19 @@
         (el.id === 'leftStick' || el.id === 'leftStickClick') &&
         el.tagName.toLowerCase() === 'circle'
       ) {
-        leftStickIndicator = makeStickIndicator(el as SVGCircleElement);
         const c = el as SVGCircleElement;
+        leftStickIndicator = makeStickIndicator(c);
         leftStickCenter = { x: parseFloat(c.getAttribute('cx') ?? '0'), y: parseFloat(c.getAttribute('cy') ?? '0') };
-        stickRadiusSvg = parseFloat(c.getAttribute('r') ?? '0');
+        leftStickRadiusSvg = parseFloat(c.getAttribute('r') ?? '0');
       }
       if (
         (el.id === 'rightStick' || el.id === 'rightStickClick') &&
         el.tagName.toLowerCase() === 'circle'
       ) {
-        rightStickIndicator = makeStickIndicator(el as SVGCircleElement);
         const c = el as SVGCircleElement;
+        rightStickIndicator = makeStickIndicator(c);
         rightStickCenter = { x: parseFloat(c.getAttribute('cx') ?? '0'), y: parseFloat(c.getAttribute('cy') ?? '0') };
-        stickRadiusSvg = parseFloat(c.getAttribute('r') ?? '0');
+        rightStickRadiusSvg = parseFloat(c.getAttribute('r') ?? '0');
       }
     });
   }
@@ -136,18 +143,19 @@
     const ly = cur[`gamepad${slot}.axis.ly`] ?? 0;
     const rx = cur[`gamepad${slot}.axis.rx`] ?? 0;
     const ry = cur[`gamepad${slot}.axis.ry`] ?? 0;
-    moveStick(leftStickIndicator, leftStickCenter, lx, ly);
-    moveStick(rightStickIndicator, rightStickCenter, rx, ry);
+    moveStick(leftStickIndicator, leftStickCenter, leftStickRadiusSvg, lx, ly);
+    moveStick(rightStickIndicator, rightStickCenter, rightStickRadiusSvg, rx, ry);
   }
 
   function moveStick(
     dot: SVGCircleElement | null,
     center: { x: number; y: number },
+    radius: number,
     x: number,
     y: number
   ): void {
     if (!dot) return;
-    const travel = stickRadiusSvg * 0.55;
+    const travel = radius * 0.55;
     const cx = center.x + Math.max(-1, Math.min(1, x)) * travel;
     const cy = center.y + Math.max(-1, Math.min(1, y)) * travel;
     dot.setAttribute('cx', cx.toFixed(2));
@@ -178,16 +186,28 @@
     return new Set(Object.keys(cfg?.pages_global?.controls ?? {}));
   })();
 
+  // Last-applied signature per class, so reactive ticks triggered by unrelated
+  // store updates (live axes, lastTouched) don't re-walk the DOM. The signature
+  // is slot-scoped because slot changes also need to re-apply.
+  let lastMappingSig: Record<string, string> = {};
+
   function applyMappingClass(keys: Set<string>, cls: string): void {
     if (!svgEl) return;
+    const scoped = [...keys].filter((k) => k.startsWith(`gamepad${slot}.`)).sort();
+    const sig = `${slot}|${scoped.join('|')}`;
+    if (lastMappingSig[cls] === sig) return;
+    lastMappingSig[cls] = sig;
     svgEl.querySelectorAll<SVGElement>(`.${cls}`).forEach((el) => el.classList.remove(cls));
-    for (const k of keys) {
-      if (!k.startsWith(`gamepad${slot}.`)) continue;
+    for (const k of scoped) {
       svgEl
         .querySelectorAll<SVGElement>(`[data-control="${CSS.escape(k)}"]`)
         .forEach((el) => el.classList.add(cls));
     }
   }
+
+  // Reset the mapping signature whenever the SVG is reloaded (slot or src
+  // change) so the freshly-built DOM gets the classes re-applied.
+  $: if (loadedSrc || loadedSlot) lastMappingSig = {};
 
   $: if (svgEl) applyMappingClass(pageMappedKeys, 'is-mapped');
   $: if (svgEl) applyMappingClass(globalMappedKeys, 'is-global-mapped');
