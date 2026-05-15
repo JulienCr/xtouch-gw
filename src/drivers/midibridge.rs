@@ -207,90 +207,92 @@ impl MidiBridgeDriver {
     }
 
     /// Schedule reconnection for output port
+    ///
+    /// Runs an internal loop until reconnect succeeds or shutdown is requested.
+    /// Using a loop (instead of recursive `Box::pin`) avoids accumulating one
+    /// boxed future per retry, which would leak memory for ports that are
+    /// permanently absent (e.g. `optional: true`).
     async fn schedule_out_reconnect(&self) {
-        // Check shutdown flag
-        {
+        loop {
+            // Check shutdown flag
             if *self.shutdown_flag.lock() {
                 return;
             }
-        }
 
-        // Increment retry count
-        let retry_count = {
-            let mut count = self.reconnect_count_out.lock();
-            *count += 1;
-            *count
-        };
+            // Increment retry count
+            let retry_count = {
+                let mut count = self.reconnect_count_out.lock();
+                *count += 1;
+                *count
+            };
 
-        let delay_ms = std::cmp::min(10_000, 250 * retry_count);
-        debug!(
-            "MIDI Bridge OUT reconnect #{} for '{}' in {}ms",
-            retry_count, self.to_port, delay_ms
-        );
+            let delay_ms = std::cmp::min(10_000, 250 * retry_count);
+            debug!(
+                "MIDI Bridge OUT reconnect #{} for '{}' in {}ms",
+                retry_count, self.to_port, delay_ms
+            );
 
-        // Update reconnecting status
-        self.update_status();
+            // Update reconnecting status
+            self.update_status();
 
-        sleep(Duration::from_millis(delay_ms as u64)).await;
+            sleep(Duration::from_millis(delay_ms as u64)).await;
 
-        // Check shutdown flag again
-        {
+            // Check shutdown flag again
             if *self.shutdown_flag.lock() {
                 return;
             }
-        }
 
-        match self.try_open_out() {
-            Ok(_) => {},
-            Err(e) => {
-                warn!("MIDI Bridge OUT reconnect failed: {}", e);
-                // Schedule another retry using Box::pin for recursive async
-                Box::pin(self.schedule_out_reconnect()).await;
-            },
+            match self.try_open_out() {
+                Ok(_) => return,
+                Err(e) => {
+                    warn!("MIDI Bridge OUT reconnect failed: {}", e);
+                    // Loop and retry — no recursion, no allocation.
+                },
+            }
         }
     }
 
     /// Schedule reconnection for input port
+    ///
+    /// Runs an internal loop until reconnect succeeds or shutdown is requested.
+    /// See `schedule_out_reconnect` for rationale.
     async fn schedule_in_reconnect(&self) {
-        // Check shutdown flag
-        {
+        loop {
+            // Check shutdown flag
             if *self.shutdown_flag.lock() {
                 return;
             }
-        }
 
-        // Increment retry count
-        let retry_count = {
-            let mut count = self.reconnect_count_in.lock();
-            *count += 1;
-            *count
-        };
+            // Increment retry count
+            let retry_count = {
+                let mut count = self.reconnect_count_in.lock();
+                *count += 1;
+                *count
+            };
 
-        let delay_ms = std::cmp::min(10_000, 250 * retry_count);
-        debug!(
-            "MIDI Bridge IN reconnect #{} for '{}' in {}ms",
-            retry_count, self.from_port, delay_ms
-        );
+            let delay_ms = std::cmp::min(10_000, 250 * retry_count);
+            debug!(
+                "MIDI Bridge IN reconnect #{} for '{}' in {}ms",
+                retry_count, self.from_port, delay_ms
+            );
 
-        // Update reconnecting status
-        self.update_status();
+            // Update reconnecting status
+            self.update_status();
 
-        sleep(Duration::from_millis(delay_ms as u64)).await;
+            sleep(Duration::from_millis(delay_ms as u64)).await;
 
-        // Check shutdown flag again
-        {
+            // Check shutdown flag again
             if *self.shutdown_flag.lock() {
                 return;
             }
-        }
 
-        match self.try_open_in() {
-            Ok(_) => {},
-            Err(e) => {
-                warn!("MIDI Bridge IN reconnect failed: {}", e);
-                // Schedule another retry using Box::pin for recursive async
-                Box::pin(self.schedule_in_reconnect()).await;
-            },
+            match self.try_open_in() {
+                Ok(_) => return,
+                Err(e) => {
+                    warn!("MIDI Bridge IN reconnect failed: {}", e);
+                    // Loop and retry — no recursion, no allocation.
+                },
+            }
         }
     }
 
