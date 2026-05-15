@@ -147,6 +147,14 @@ impl HybridProviderState {
         // Check gilrs disconnections
         manager.check_gilrs_disconnections(&self.gilrs);
 
+        // Mirror gilrs disconnect cleanup for axis/stick maps: gilrs may miss
+        // EventType::Disconnected for unclean Bluetooth/USB-yank disconnects on
+        // Windows WGI, so prune entries for any ID no longer reported as connected.
+        self.last_gilrs_axis_values
+            .retain(|(id, _), _| self.gilrs.connected_gamepad(*id).is_some());
+        self.gilrs_stick_buffer
+            .retain(|(id, _), _| self.gilrs.connected_gamepad(*id).is_some());
+
         // Check XInput disconnections
         let mut active_indices = Vec::new();
         if let Some(ref handle) = self.xinput_handle {
