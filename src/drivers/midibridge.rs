@@ -219,10 +219,11 @@ impl MidiBridgeDriver {
                 return;
             }
 
-            // Increment retry count
+            // Increment retry count (capped at 40 so the delay math can't
+            // overflow and the value stays meaningful for metrics export).
             let retry_count = {
                 let mut count = self.reconnect_count_out.lock();
-                *count += 1;
+                *count = count.saturating_add(1).min(40);
                 *count
             };
 
@@ -263,10 +264,11 @@ impl MidiBridgeDriver {
                 return;
             }
 
-            // Increment retry count
+            // Increment retry count (capped at 40 so the delay math can't
+            // overflow and the value stays meaningful for metrics export).
             let retry_count = {
                 let mut count = self.reconnect_count_in.lock();
-                *count += 1;
+                *count = count.saturating_add(1).min(40);
                 *count
             };
 
