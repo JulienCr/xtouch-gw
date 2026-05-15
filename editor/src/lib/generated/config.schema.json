@@ -67,6 +67,17 @@
         }
       ]
     },
+    "winaudio": {
+      "description": "Windows audio (master + per-app session) configuration.",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/WinAudioConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "xtouch": {
       "anyOf": [
         {
@@ -816,6 +827,45 @@
         }
       }
     },
+    "PinnedApp": {
+      "description": "A pinned audio session: a process name fixed on a specific fader slot.",
+      "type": "object",
+      "required": [
+        "fader",
+        "process_name"
+      ],
+      "properties": {
+        "color": {
+          "description": "Optional explicit LCD color. When unset, the driver assigns a color from the same 1..=7 cycle as discovered apps.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LcdColor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "display_name": {
+          "description": "Optional friendly label rendered on the LCD; falls back to process_name.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fader": {
+          "description": "Fader slot 1..=8.",
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 8.0,
+          "minimum": 1.0
+        },
+        "process_name": {
+          "description": "Process executable name (e.g. \"Discord.exe\"). Match is case-insensitive.",
+          "type": "string"
+        }
+      }
+    },
     "SplitConfig": {
       "description": "Split scene configuration",
       "type": "object",
@@ -885,6 +935,20 @@
           "type": "integer",
           "format": "uint64",
           "minimum": 0.0
+        }
+      }
+    },
+    "WinAudioConfig": {
+      "description": "Windows audio driver configuration.",
+      "type": "object",
+      "properties": {
+        "pinned_apps": {
+          "description": "Apps pinned to specific fader slots. Faders 1..=8.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PinnedApp"
+          }
         }
       }
     },

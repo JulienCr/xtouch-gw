@@ -45,6 +45,7 @@ pub struct WinAudioConfig {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct PinnedApp {
     /// Fader slot 1..=8.
+    #[schemars(range(min = 1, max = 8))]
     pub fader: u8,
     /// Process executable name (e.g. "Discord.exe"). Match is case-insensitive.
     pub process_name: String,

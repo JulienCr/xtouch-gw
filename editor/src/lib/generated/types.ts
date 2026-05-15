@@ -47,6 +47,10 @@ export interface AppConfig {
   pages_global?: GlobalPageDefaults | null;
   paging?: PagingConfig | null;
   tray?: TrayConfig | null;
+  /**
+   * Windows audio (master + per-app session) configuration.
+   */
+  winaudio?: WinAudioConfig | null;
   xtouch?: XTouchConfig | null;
   [k: string]: unknown;
 }
@@ -301,6 +305,38 @@ export interface TrayConfig {
   show_activity_leds?: boolean;
   show_connection_status?: boolean;
   status_poll_interval_ms?: number;
+  [k: string]: unknown;
+}
+/**
+ * Windows audio driver configuration.
+ */
+export interface WinAudioConfig {
+  /**
+   * Apps pinned to specific fader slots. Faders 1..=8.
+   */
+  pinned_apps?: PinnedApp[];
+  [k: string]: unknown;
+}
+/**
+ * A pinned audio session: a process name fixed on a specific fader slot.
+ */
+export interface PinnedApp {
+  /**
+   * Optional explicit LCD color. When unset, the driver assigns a color from the same 1..=7 cycle as discovered apps.
+   */
+  color?: LcdColor | null;
+  /**
+   * Optional friendly label rendered on the LCD; falls back to process_name.
+   */
+  display_name?: string | null;
+  /**
+   * Fader slot 1..=8.
+   */
+  fader: number;
+  /**
+   * Process executable name (e.g. "Discord.exe"). Match is case-insensitive.
+   */
+  process_name: string;
   [k: string]: unknown;
 }
 /**

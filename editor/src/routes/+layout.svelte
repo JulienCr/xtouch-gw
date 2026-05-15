@@ -12,6 +12,7 @@
 
   const links = [
     { href: '/surface', label: 'Surface' },
+    { href: '/gamepad', label: 'Gamepad' },
     { href: '/list', label: 'List' },
     { href: '/settings', label: 'Settings' },
     { href: '/profiles', label: 'Profiles' },

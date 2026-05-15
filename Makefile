@@ -3,7 +3,8 @@
 
 .PHONY: help build release run test check clean fmt clippy watch docs \
         ts-run ts-test ts-sniff compare setup install-deps bench profile \
-        dev sniffer web-sniffer all ci installer installer-fast
+        dev sniffer web-sniffer all ci installer installer-fast schema \
+        editor editor-build
 
 # Default target
 .DEFAULT_GOAL := help
@@ -65,6 +66,25 @@ installer-fast:
 	@echo Building installer (skip cargo + Stream Deck)...
 	@powershell -ExecutionPolicy Bypass -File .\installer\build-installer.ps1 -SkipBuild -SkipStreamDeck
 	@echo Installer written to dist\
+
+## schema: Regenerate the editor's JSON Schema + TypeScript types from AppConfig
+schema:
+	@echo Exporting JSON schema from AppConfig...
+	@$(CARGO) run --quiet --bin export-schema
+	@echo Regenerating editor TypeScript types...
+	@cd editor && $(PNPM) gen:types
+	@echo Schema + types regenerated.
+
+## editor: Run the editor SPA dev server (vite, hot-reload at http://localhost:5173)
+editor:
+	@echo Starting editor dev server (vite) at http://localhost:5173 ...
+	@cd editor && $(PNPM) install --silent && $(PNPM) dev
+
+## editor-build: Build the editor SPA into editor/build/ for release embedding
+editor-build:
+	@echo Building editor SPA...
+	@cd editor && $(PNPM) install --silent && $(PNPM) build
+	@echo Editor built into editor/build/
 
 ## run: Run with example config
 run: build

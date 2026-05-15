@@ -3,6 +3,7 @@
   import PickerField from '../PickerField.svelte';
   import { inputCls, labelCls } from '$lib/styles';
   import type { ActionParam } from '$lib/api';
+  import { profile } from '$lib/stores/profile';
 
   export let param: ActionParam;
   export let value: unknown;
@@ -13,6 +14,37 @@
 
   const dispatch = createEventDispatcher<{ change: unknown }>();
 
+  // Target list for the winaudio session_volume / session_mute params.
+  // - `auto`: driver picks the next free detected app at runtime.
+  // - `pinned:N` (1..=8): the fader slot configured in `winaudio.pinned_apps`;
+  //   when a process_name is set we surface it inline so the user doesn't have
+  //   to cross-reference YAML.
+  // - `discovered:N` (0..=7): legacy FIFO indices kept for backward compat.
+  $: pinnedApps = (() => {
+    const apps = ($profile.parsed as { winaudio?: { pinned_apps?: Array<{ fader: number; process_name?: string; display_name?: string }> } } | null)
+      ?.winaudio?.pinned_apps ?? [];
+    const byFader = new Map<number, string>();
+    for (const p of apps) {
+      const label = p.display_name?.trim() || p.process_name?.trim() || '';
+      if (label) byFader.set(p.fader, label);
+    }
+    return byFader;
+  })();
+
+  $: winaudioTargetOpts = (() => {
+    const opts: { value: string; label: string }[] = [
+      { value: 'auto', label: 'auto (any detected app)' }
+    ];
+    for (let n = 1; n <= 8; n++) {
+      const app = pinnedApps.get(n);
+      opts.push({ value: `pinned:${n}`, label: app ? `pinned:${n} (${app})` : `pinned:${n}` });
+    }
+    for (let n = 0; n < 8; n++) {
+      opts.push({ value: `discovered:${n}`, label: `discovered:${n} (legacy)` });
+    }
+    return opts;
+  })();
+
   $: pickerOpts =
     param.picker === 'obs.scene'
       ? sceneOpts
@@ -20,7 +52,9 @@
         ? inputOpts
         : param.picker === 'obs.source'
           ? sourceOpts
-          : null;
+          : param.picker === 'winaudio.target'
+            ? winaudioTargetOpts
+            : null;
 
   $: pickerPlaceholder =
     param.picker === 'obs.scene'
@@ -29,7 +63,9 @@
         ? 'input…'
         : param.picker === 'obs.source'
           ? 'source…'
-          : '';
+          : param.picker === 'winaudio.target'
+            ? 'auto, pinned:N, discovered:N'
+            : '';
 
   $: label =
     param.picker === 'obs.source' ? `${param.name} (in ${sceneContext || 'any scene'})` : param.name;
