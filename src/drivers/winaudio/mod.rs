@@ -41,9 +41,30 @@ pub use actions::{parse_session_target, SessionTarget};
 /// Driver name used for `app: "winaudio"` in YAML control mappings.
 pub const DRIVER_NAME: &str = "winaudio";
 
-/// YAML page name on which the dynamic LCD render is applied. Hard-coded
-/// for now; documented hors-scope in the plan.
-const WINAUDIO_PAGE_NAME: &str = "Windows Audio";
+/// True if at least one control on `page` binds `app: "winaudio"`. Used to
+/// decide whether a page is "winaudio-eligible" for state refresh and
+/// dynamic LCD rendering. Auto-detected so the YAML page name is no
+/// longer load-bearing — renaming `"Windows Audio"` to anything else
+/// keeps the driver wired (#39).
+fn page_uses_winaudio(page: &PageConfig) -> bool {
+    page.controls
+        .as_ref()
+        .is_some_and(|c| c.values().any(|m| m.app == DRIVER_NAME))
+}
+
+/// True if the page at `index` in the router's current config uses the
+/// winaudio driver. Lock-friendly: takes a single short read on
+/// `Router::config`.
+async fn page_eligible_at_index(
+    router_arc: &Arc<RwLock<Option<Arc<crate::router::Router>>>>,
+    index: usize,
+) -> bool {
+    let Some(router) = router_arc.read().await.clone() else {
+        return false;
+    };
+    let cfg = router.config.read().await;
+    cfg.pages.get(index).is_some_and(page_uses_winaudio)
+}
 
 pub struct WinAudioDriver {
     config: Arc<RwLock<WinAudioConfig>>,
@@ -175,7 +196,8 @@ impl Driver for WinAudioDriver {
                     *self.com.write().await = Some(handle);
 
                     // Subscribe to page changes so we re-emit master state
-                    // every time "Windows Audio" becomes active.
+                    // every time a winaudio-eligible page becomes active
+                    // (auto-detected — see `page_uses_winaudio`).
                     self.spawn_page_watcher().await;
 
                     // Initial state push, after a short delay so the active
@@ -383,11 +405,13 @@ impl WinAudioDriver {
     }
 
     /// Spawn a background task that re-emits master + per-session state
-    /// whenever the "Windows Audio" page becomes active. Necessary
-    /// because the `IAudioEndpointVolumeCallback` only fires on actual
-    /// volume *changes*, never on page activation — so without this
-    /// the X-Touch fader stays at its old position the first time
-    /// the user switches to the Windows Audio page.
+    /// whenever a winaudio-eligible page becomes active (auto-detected
+    /// via [`page_uses_winaudio`] — no hardcoded page name).
+    ///
+    /// Necessary because `IAudioEndpointVolumeCallback` only fires on
+    /// actual volume *changes*, never on page activation — so without
+    /// this the X-Touch fader stays at its old position the first time
+    /// the user switches to a winaudio page.
     async fn spawn_page_watcher(&self) {
         let router_arc = self.router.read().await.clone();
         let Some(router) = router_arc else {
@@ -408,23 +432,25 @@ impl WinAudioDriver {
         let led_tx = self.led_tx.clone();
         tokio::spawn(async move {
             while let Ok(event) = rx.recv().await {
-                if let crate::event_bus::LiveEvent::PageChanged { name, .. } = event {
-                    if name == WINAUDIO_PAGE_NAME {
-                        debug!("WinAudio: page activated, refreshing master + sessions");
-                        #[cfg(target_os = "windows")]
-                        {
-                            refresh_full_state(&com, &pinned_lc_cache, &discovery).await;
-                        }
-                        render_lcd_if_active(
-                            &router_for_render,
-                            &led_tx,
-                            &config,
-                            &pinned_lc_cache,
-                            &discovery,
-                        )
-                        .await;
-                    }
+                let crate::event_bus::LiveEvent::PageChanged { index, .. } = event else {
+                    continue;
+                };
+                if !page_eligible_at_index(&router_for_render, index).await {
+                    continue;
                 }
+                debug!("WinAudio: page activated, refreshing master + sessions");
+                #[cfg(target_os = "windows")]
+                {
+                    refresh_full_state(&com, &pinned_lc_cache, &discovery).await;
+                }
+                render_lcd_if_active(
+                    &router_for_render,
+                    &led_tx,
+                    &config,
+                    &pinned_lc_cache,
+                    &discovery,
+                )
+                .await;
             }
         });
     }
@@ -445,7 +471,7 @@ impl WinAudioDriver {
 
 /// Re-enumerate discovery so newly opened apps land in the FIFO order,
 /// then trigger master + per-session feedback emission. Used both at
-/// startup and on every "Windows Audio" page activation.
+/// startup and on every winaudio-eligible page activation.
 #[cfg(target_os = "windows")]
 async fn refresh_full_state(
     com: &Arc<RwLock<Option<com_thread::ComThreadHandle>>>,
@@ -862,7 +888,7 @@ async fn render_lcd_if_active(
     let Some(page) = router_arc.get_active_page().await else {
         return;
     };
-    if page.name != WINAUDIO_PAGE_NAME {
+    if !page_uses_winaudio(&page) {
         return;
     }
     let Some(tx) = led_tx.read().await.clone() else {
