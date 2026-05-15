@@ -72,8 +72,14 @@ impl StickTrail {
 pub enum ControllerBackend {
     /// XInput controller (Xbox, etc.)
     XInput { user_index: u32, packet_number: u32 },
-    /// HID controller via gilrs
-    Gilrs { gamepad_id: GamepadId, name: String },
+    /// HID controller via gilrs. `gamepad_id` is the gilrs handle (carried
+    /// here so the visualizer UI can render it on hover); `name` is the
+    /// friendly product name shown in the controller header.
+    Gilrs {
+        #[allow(dead_code)]
+        gamepad_id: GamepadId,
+        name: String,
+    },
 }
 
 /// State for all controllers being visualized

@@ -220,7 +220,7 @@ mod tests {
                 pressed,
             } => {
                 assert_eq!(control_id, "gamepad1.btn.a");
-                assert_eq!(*pressed, true);
+                assert!(*pressed);
             },
             _ => panic!("Expected button event"),
         }

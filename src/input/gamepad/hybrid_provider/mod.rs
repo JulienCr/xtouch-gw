@@ -37,7 +37,12 @@ pub enum GamepadEvent {
         control_id: String, // Full ID: "gamepad1.axis.lx"
         value: f32,
         analog_config: Option<AnalogConfig>, // Per-slot config
-        /// Monotonic sequence number for ordering (prevents race conditions under CPU load)
+        /// Monotonic sequence number for ordering. The current consumer
+        /// (`mapper::spawn_event_processor`) processes events in receive
+        /// order so the field is currently unused; retained on the wire
+        /// so out-of-order consumers (e.g. a future parallel dispatcher)
+        /// can reorder without a breaking change.
+        #[allow(dead_code)]
         sequence: u64,
     },
 }

@@ -154,6 +154,7 @@ impl SlotManager {
     }
 
     /// Get all slots (immutable)
+    #[allow(dead_code)] // Public introspection API kept for the diagnostic CLI.
     pub fn slots(&self) -> &[GamepadSlot] {
         &self.slots
     }
@@ -259,11 +260,13 @@ impl SlotManager {
     }
 
     /// Get the number of slots
+    #[allow(dead_code)] // Collection-style introspection kept for diagnostic / test code.
     pub fn len(&self) -> usize {
         self.slots.len()
     }
 
     /// Check if there are no slots
+    #[allow(dead_code)] // Collection-style introspection kept for diagnostic / test code.
     pub fn is_empty(&self) -> bool {
         self.slots.is_empty()
     }

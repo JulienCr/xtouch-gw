@@ -5,6 +5,7 @@
 //! to manage controllers from both sources uniformly.
 
 use gilrs::GamepadId;
+use std::fmt;
 
 /// Unified controller identifier across backends
 ///
@@ -35,16 +36,18 @@ impl HybridControllerId {
     pub fn from_xinput(user_index: usize) -> Self {
         Self::XInput(user_index)
     }
+}
 
-    /// Get a stable string identifier for logging and debugging
-    ///
-    /// # Examples
-    /// - Gilrs: "gilrs:0"
-    /// - XInput: "xinput:0"
-    pub fn to_string(&self) -> String {
+/// Stable string formatting for logging and debugging.
+///
+/// # Examples
+/// - Gilrs: "gilrs:0"
+/// - XInput: "xinput:0"
+impl fmt::Display for HybridControllerId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Gilrs(id) => format!("gilrs:{:?}", id),
-            Self::XInput(idx) => format!("xinput:{}", idx),
+            Self::Gilrs(id) => write!(f, "gilrs:{:?}", id),
+            Self::XInput(idx) => write!(f, "xinput:{}", idx),
         }
     }
 }

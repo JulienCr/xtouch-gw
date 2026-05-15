@@ -10,6 +10,10 @@ use tracing::info;
 ///
 /// This is useful for troubleshooting gamepad detection issues,
 /// especially for Bluetooth controllers that may have non-obvious names.
+///
+/// Currently uncalled — kept as a CLI/REPL diagnostic tool. Wire to a
+/// `diag` subcommand when needed.
+#[allow(dead_code)]
 pub fn print_gamepad_diagnostics() {
     info!("=== Hybrid Gamepad Diagnostics ===");
     info!("Platform: {}", std::env::consts::OS);

@@ -29,6 +29,9 @@ use super::session::SessionInfo;
 /// `discovered_target` / `derive_label` to avoid an extra Vec allocation.
 /// Kept under `#[cfg(test)]` until a non-test caller materializes.
 #[cfg(test)]
+#[allow(dead_code)]
+// `display_name` is part of the planned non-test API surface;
+// currently only `fader` + `process_name` are asserted in tests.
 #[derive(Debug, Clone)]
 pub struct SlotBinding {
     /// 1..=8.
