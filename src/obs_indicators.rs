@@ -65,6 +65,12 @@ pub fn build_indicator_callback(
 ///
 /// Evaluates which controls should be lit, sends LED updates, and handles
 /// scene change broadcasts for the Stream Deck API.
+//
+// Args are the full set of dependencies needed to fan out to LED, scene-
+// broadcast and auto-target side-effects from one OBS signal. Bundling
+// them into a context struct would just move the boilerplate to the
+// single call site, so keep the wide signature and silence clippy.
+#[allow(clippy::too_many_arguments)]
 async fn handle_indicator_signal(
     router: &Router,
     control_db: &ControlMappingDB,
@@ -97,14 +103,12 @@ fn send_led_updates(
     led_tx: &mpsc::Sender<Vec<u8>>,
 ) {
     for (control_id, should_be_lit) in lit_controls.iter() {
-        if let Some(midi_spec) = control_db.get_midi_spec(control_id, is_mcu_mode) {
-            if let MidiSpec::Note { note } = midi_spec {
-                let velocity = if *should_be_lit { 127 } else { 0 };
-                let midi_msg = vec![0x90, note, velocity]; // Note On, channel 1
+        if let Some(MidiSpec::Note { note }) = control_db.get_midi_spec(control_id, is_mcu_mode) {
+            let velocity = if *should_be_lit { 127 } else { 0 };
+            let midi_msg = vec![0x90, note, velocity]; // Note On, channel 1
 
-                if let Err(e) = led_tx.try_send(midi_msg) {
-                    warn!("Failed to send LED update to channel: {}", e);
-                }
+            if let Err(e) = led_tx.try_send(midi_msg) {
+                warn!("Failed to send LED update to channel: {}", e);
             }
         }
     }

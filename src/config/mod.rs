@@ -540,7 +540,10 @@ impl AppConfig {
         Ok(config)
     }
 
-    /// Save configuration to file
+    /// Save configuration to file. Currently uncalled; kept as the
+    /// canonical YAML serializer for the upcoming editor write path
+    /// (the legacy editor goes through `config::profiles` instead).
+    #[allow(dead_code)]
     pub async fn save(&self, path: &str) -> Result<()> {
         let yaml = serde_yaml::to_string(self).context("Failed to serialize config to YAML")?;
 
