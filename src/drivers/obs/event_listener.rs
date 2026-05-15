@@ -3,12 +3,90 @@
 //! Handles scene changes, studio mode transitions, and ViewMode synchronization.
 
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, warn};
 
 use super::camera::ViewMode;
 use super::driver::ObsDriver;
+use super::transform::ObsItemState;
+
+/// Remove cache entries for a given `"{scene}::{source}"` key from both the
+/// transform cache and the item-id cache. Keeps the OBS driver caches in sync
+/// with the live OBS session — preventing slow growth from removed items.
+fn purge_caches_for_item(
+    transform_cache: &parking_lot::RwLock<HashMap<String, ObsItemState>>,
+    item_id_cache: &parking_lot::RwLock<HashMap<String, i64>>,
+    scene: &str,
+    source: &str,
+) {
+    let key = format!("{}::{}", scene, source);
+    let removed_transform = transform_cache.write().remove(&key).is_some();
+    let removed_item_id = item_id_cache.write().remove(&key).is_some();
+    if removed_transform || removed_item_id {
+        debug!(
+            "OBS cache purge: '{}' (transform={}, item_id={})",
+            key, removed_transform, removed_item_id
+        );
+    }
+}
+
+/// Remove all cache entries belonging to a given scene (any source). Called
+/// when an entire scene is removed from OBS.
+fn purge_caches_for_scene(
+    transform_cache: &parking_lot::RwLock<HashMap<String, ObsItemState>>,
+    item_id_cache: &parking_lot::RwLock<HashMap<String, i64>>,
+    scene: &str,
+) {
+    let prefix = format!("{}::", scene);
+    let mut tc = transform_cache.write();
+    let before_tc = tc.len();
+    tc.retain(|k, _| !k.starts_with(&prefix));
+    let removed_tc = before_tc - tc.len();
+    drop(tc);
+
+    let mut ic = item_id_cache.write();
+    let before_ic = ic.len();
+    ic.retain(|k, _| !k.starts_with(&prefix));
+    let removed_ic = before_ic - ic.len();
+    drop(ic);
+
+    if removed_tc > 0 || removed_ic > 0 {
+        debug!(
+            "OBS cache purge scene='{}' (transform={}, item_id={})",
+            scene, removed_tc, removed_ic
+        );
+    }
+}
+
+/// Remove all cache entries referencing a given source (any scene). Called
+/// when an input/source is removed at the OBS level.
+fn purge_caches_for_source(
+    transform_cache: &parking_lot::RwLock<HashMap<String, ObsItemState>>,
+    item_id_cache: &parking_lot::RwLock<HashMap<String, i64>>,
+    source: &str,
+) {
+    let suffix = format!("::{}", source);
+    let mut tc = transform_cache.write();
+    let before_tc = tc.len();
+    tc.retain(|k, _| !k.ends_with(&suffix));
+    let removed_tc = before_tc - tc.len();
+    drop(tc);
+
+    let mut ic = item_id_cache.write();
+    let before_ic = ic.len();
+    ic.retain(|k, _| !k.ends_with(&suffix));
+    let removed_ic = before_ic - ic.len();
+    drop(ic);
+
+    if removed_tc > 0 || removed_ic > 0 {
+        debug!(
+            "OBS cache purge source='{}' (transform={}, item_id={})",
+            source, removed_tc, removed_ic
+        );
+    }
+}
 
 /// Sync ViewMode from a scene name using camera control config
 fn sync_view_mode(
@@ -82,6 +160,7 @@ fn emit_and_debounce(
 }
 
 /// Run the OBS event listener loop (spawned as a tokio task)
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn run_event_listener(
     client: Arc<tokio::sync::RwLock<Option<obws::Client>>>,
     studio_mode: Arc<parking_lot::RwLock<bool>>,
@@ -93,6 +172,8 @@ pub(super) async fn run_event_listener(
     activity_tracker: Arc<parking_lot::RwLock<Option<Arc<crate::tray::ActivityTracker>>>>,
     camera_control_config: Arc<parking_lot::RwLock<Option<crate::config::CameraControlConfig>>>,
     camera_control_state: Arc<parking_lot::RwLock<super::camera::CameraControlState>>,
+    transform_cache: Arc<parking_lot::RwLock<HashMap<String, ObsItemState>>>,
+    item_id_cache: Arc<parking_lot::RwLock<HashMap<String, i64>>>,
     driver_for_reconnect: ObsDriver,
 ) {
     loop {
@@ -193,6 +274,18 @@ pub(super) async fn run_event_listener(
                         &emitters,
                         &last_selected,
                     );
+                },
+
+                Event::SceneItemRemoved { scene, source, .. } => {
+                    purge_caches_for_item(&transform_cache, &item_id_cache, &scene, &source);
+                },
+
+                Event::SceneRemoved { name, .. } => {
+                    purge_caches_for_scene(&transform_cache, &item_id_cache, &name);
+                },
+
+                Event::InputRemoved { name } => {
+                    purge_caches_for_source(&transform_cache, &item_id_cache, &name);
                 },
 
                 _ => {},

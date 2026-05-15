@@ -105,6 +105,12 @@ impl ObsDriver {
         *self.client.write().await = Some(client);
         *self.reconnect_count.lock() = 0;
 
+        // Fresh session: caches from the previous (possibly different) OBS
+        // session may reference scene items that no longer exist. Drop them
+        // so we never serve stale item IDs / transforms across reconnects.
+        self.transform_cache.write().clear();
+        self.item_id_cache.write().clear();
+
         // Refresh initial state
         self.refresh_state().await?;
 
@@ -130,6 +136,8 @@ impl ObsDriver {
         let activity_tracker = Arc::clone(&self.activity_tracker);
         let camera_control_config = Arc::clone(&self.camera_control_config);
         let camera_control_state = Arc::clone(&self.camera_control_state);
+        let transform_cache = Arc::clone(&self.transform_cache);
+        let item_id_cache = Arc::clone(&self.item_id_cache);
         let driver_for_reconnect = self.clone_for_task();
 
         tokio::spawn(super::event_listener::run_event_listener(
@@ -143,6 +151,8 @@ impl ObsDriver {
             activity_tracker,
             camera_control_config,
             camera_control_state,
+            transform_cache,
+            item_id_cache,
             driver_for_reconnect,
         ));
     }
