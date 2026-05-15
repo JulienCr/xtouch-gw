@@ -200,9 +200,16 @@ impl Driver for WinAudioDriver {
                     // (auto-detected — see `page_uses_winaudio`).
                     self.spawn_page_watcher().await;
 
-                    // Initial state push, after a short delay so the active
-                    // page settles before we emit; the router's page filter
-                    // would otherwise drop the feedback.
+                    // Initial state push, gated on the `ProfileLoaded`
+                    // live event so the active page is fully settled
+                    // before we emit (the router's page filter would
+                    // otherwise drop the feedback). Replaces the legacy
+                    // 800 ms sleep (#36). 2 s timeout is a safety net
+                    // for the no-subscriber edge case.
+                    let live_rx = match self.router.read().await.as_ref() {
+                        Some(r) => r.live_tx_snapshot().await.map(|tx| tx.subscribe()),
+                        None => None,
+                    };
                     let com = self.com.clone();
                     let cfg = self.config.clone();
                     let pinned_lc_cache = self.pinned_lc_cache.clone();
@@ -210,11 +217,11 @@ impl Driver for WinAudioDriver {
                     let router = self.router.clone();
                     let led_tx = self.led_tx.clone();
                     tokio::spawn(async move {
-                        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+                        wait_for_profile_loaded(live_rx).await;
                         refresh_full_state(&com, &pinned_lc_cache, &disc).await;
-                        // If the active page is already the winaudio
-                        // page at startup (no PageChanged event will
-                        // fire to wake the watcher), render the LCD now.
+                        // If the active page already maps winaudio at
+                        // startup (no PageChanged event will fire to wake
+                        // the watcher), render the LCD now.
                         render_lcd_if_active(&router, &led_tx, &cfg, &pinned_lc_cache, &disc).await;
                     });
                 },
@@ -504,6 +511,35 @@ async fn refresh_full_state(
 /// reading.
 fn normalize_fader_value(v: f64) -> f32 {
     ((v / 16383.0) as f32).clamp(0.0, 1.0)
+}
+
+/// Block until the startup profile is marked loaded (config parsed,
+/// router wired, drivers registered) — or until the 2 s safety timeout
+/// elapses. Replaces the legacy 800 ms post-init sleep (#36).
+///
+/// If `live_rx` is `None` (live bus not wired in tests, unusual prod
+/// path), fall straight through.
+async fn wait_for_profile_loaded(
+    live_rx: Option<tokio::sync::broadcast::Receiver<crate::event_bus::LiveEvent>>,
+) {
+    const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+    let Some(mut rx) = live_rx else {
+        debug!("WinAudio init: live bus unavailable, skipping ProfileLoaded await");
+        return;
+    };
+    let fut = async {
+        while let Ok(event) = rx.recv().await {
+            if matches!(event, crate::event_bus::LiveEvent::ProfileLoaded { .. }) {
+                return;
+            }
+        }
+    };
+    if tokio::time::timeout(TIMEOUT, fut).await.is_err() {
+        debug!(
+            "WinAudio init: ProfileLoaded not received within {:?}, proceeding with refresh anyway",
+            TIMEOUT
+        );
+    }
 }
 
 #[cfg(test)]

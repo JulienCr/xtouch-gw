@@ -33,6 +33,15 @@ pub enum LiveEvent {
     ConfigReloaded { ts: u64 },
     /// The active page changed (X-Touch buttons, REPL, or editor request).
     PageChanged { index: usize, name: String, ts: u64 },
+    /// The startup profile finished loading: config parsed + router built +
+    /// drivers registered. Emitted exactly once per process. Used by
+    /// late-starting drivers (winaudio) to know when the active page is
+    /// settled and refresh feedback won't be dropped by the page filter.
+    ProfileLoaded {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        profile_name: Option<String>,
+        ts: u64,
+    },
 }
 
 #[derive(Clone, Debug, Serialize)]
