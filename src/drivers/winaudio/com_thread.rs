@@ -275,10 +275,10 @@ fn run_com_loop(
                 if let Some(ep) = endpoint.as_ref() {
                     if let Err(e) = ep.set_volume_scalar(scalar) {
                         warn!("set_volume_scalar({}) failed: {}", scalar, e);
-                    } else {
-                        let mute = ep.get_mute().unwrap_or(false);
-                        let _ = event_tx.try_send(AudioEvent::MasterVolumeChanged { scalar, mute });
                     }
+                    // The OS `IAudioEndpointVolumeCallback::OnNotify` fires
+                    // after `Set*Volume` succeeds — that is the single
+                    // source of truth for `MasterVolumeChanged`. See #41.
                 }
             },
             AudioCmd::ToggleMasterMute => {
@@ -286,11 +286,9 @@ fn run_com_loop(
                     let cur = ep.get_mute().unwrap_or(false);
                     if let Err(e) = ep.set_mute(!cur) {
                         warn!("set_mute failed: {}", e);
-                    } else {
-                        let scalar = ep.get_volume_scalar().unwrap_or(0.0);
-                        let _ = event_tx
-                            .try_send(AudioEvent::MasterVolumeChanged { scalar, mute: !cur });
                     }
+                    // OS callback emits the resulting state; no synthetic
+                    // emit needed (avoids duplicate events — see #41).
                 }
             },
             AudioCmd::RefreshMaster => {
