@@ -1,8 +1,8 @@
 [package]
 name = "xtouch-gw"
-version = "1.7.0"
+version = "1.8.0"
 edition = "2021"
-authors = ["XTouch GW Team"]
+authors = ["Julien Cruau <julien.cruau@gmail.com>"]
 description = "Gateway to control Voicemeeter, QLC+, and OBS from Behringer X-Touch"
 license = "MPL-2.0"
 repository = "https://github.com/yourusername/xtouch-gw-v3"
