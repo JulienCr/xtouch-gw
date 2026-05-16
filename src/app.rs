@@ -230,6 +230,16 @@ pub async fn run_app(
     // switches; receiver lives in the main loop until shutdown.
     debug!("All drivers registered and initialized");
 
+    // Notify late-starting drivers that the startup profile is fully
+    // settled (config parsed, router built, all drivers registered).
+    // The winaudio driver awaits this to refresh master + session state
+    // without racing the page filter. Best-effort: failing to broadcast
+    // (no subscribers) just means no one was listening yet.
+    let _ = live_tx.send(crate::event_bus::LiveEvent::ProfileLoaded {
+        profile_name: None,
+        ts: crate::event_bus::now_ms(),
+    });
+
     // Spawn Stream Deck API server task
     let api_port = api::DEFAULT_API_PORT;
     tokio::spawn({
