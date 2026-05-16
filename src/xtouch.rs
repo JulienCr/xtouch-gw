@@ -477,109 +477,65 @@ impl XTouchDriver {
         self.send(&MidiMessage::SysEx { data }).await
     }
 
-    /// Set 7-segment display text (timecode display)
+    /// Update the 2-character ASSIGNMENT display (the small block to the
+    /// left of the timecode, visually separated on the X-Touch).
     ///
-    /// Matches TypeScript setSevenSegmentText() from api-lcd.ts
-    pub async fn set_seven_segment_text(&self, text: &str) -> Result<()> {
-        // Center text to 12 characters
-        let centered = Self::center_to_length(text, 12);
+    /// CCs used: `0x4B` (left digit), `0x4A` (right digit).
+    pub async fn set_assignment_text(&self, text: &str) -> Result<()> {
+        self.write_seven_seg_region(text, 0x4A, 2).await
+    }
 
-        // Convert each character to 7-segment encoding
-        let segs: Vec<u8> = centered
+    /// Update the 10-character TIMECODE display (the wide block on the
+    /// right of the X-Touch).
+    ///
+    /// CCs used: `0x49` (left digit) down to `0x40` (right digit).
+    pub async fn set_timecode_text(&self, text: &str) -> Result<()> {
+        self.write_seven_seg_region(text, 0x40, 10).await
+    }
+
+    /// Send `width` characters of `text` to the X-Touch's 7-segment block
+    /// starting at CC `first_cc` (the rightmost digit of the region).
+    ///
+    /// Uses the standard Mackie Control protocol: one CC per digit, CCs
+    /// `0x40..=0x4B` on channel 1, value = 6-bit ASCII (the device does
+    /// its own segment decoding). Digit order is right-to-left, so we
+    /// emit the LAST character to `first_cc` and walk up to the left.
+    ///
+    /// CC value encoding:
+    ///   - bit 7 always 0
+    ///   - bit 6 = decimal-point on/off (always off here)
+    ///   - bits 5..0 = char code: ASCII 64..95 (`@A..Z[\]^_`) folded to
+    ///     CC value 0..31; ASCII 32..63 (space, digits, punctuation) sent
+    ///     as-is; anything else falls back to space.
+    async fn write_seven_seg_region(&self, text: &str, first_cc: u8, width: usize) -> Result<()> {
+        let padded: String = text
+            .to_ascii_uppercase()
             .chars()
-            .take(12)
-            .map(Self::seven_seg_for_char)
+            .chain(std::iter::repeat(' '))
+            .take(width)
             .collect();
 
-        // Dots (disabled by default)
-        let dots1 = 0x00;
-        let dots2 = 0x00;
-
-        // Send to both device IDs (0x14 and 0x15)
-        for device_id in [0x14, 0x15] {
-            let mut data = vec![0x00, 0x20, 0x32, device_id, 0x37];
-            data.extend_from_slice(&segs);
-            data.push(dots1);
-            data.push(dots2);
-
-            self.send(&MidiMessage::SysEx { data }).await?;
+        for (i, ch) in padded.chars().enumerate() {
+            let cc = first_cc + (width as u8 - 1 - i as u8);
+            let value = Self::encode_seven_seg_cc(ch);
+            self.send(&MidiMessage::ControlChange {
+                channel: 0,
+                cc,
+                value,
+            })
+            .await?;
         }
 
         Ok(())
     }
 
-    /// Center text to specific length (for 7-segment display)
-    fn center_to_length(text: &str, length: usize) -> String {
-        if text.len() >= length {
-            text.chars().take(length).collect()
-        } else {
-            let padding = length - text.len();
-            let left_pad = padding / 2;
-            let right_pad = padding - left_pad;
-
-            format!("{}{}{}", " ".repeat(left_pad), text, " ".repeat(right_pad))
-        }
-    }
-
-    /// Convert character to 7-segment display encoding.
-    ///
-    /// Bit layout (each digit = 1 byte, 7 active bits + dot):
-    ///   0x01 top, 0x02 top-right, 0x04 bottom-right, 0x08 bottom,
-    ///   0x10 bottom-left, 0x20 top-left, 0x40 middle.
-    ///
-    /// Characters that have no honest 7-segment rendering (M, W, K, V, X)
-    /// fall back to underscore so the limitation is visible.
-    pub(crate) fn seven_seg_for_char(ch: char) -> u8 {
-        match ch {
-            // Digits
-            '0' => 0x3F,
-            '1' => 0x06,
-            '2' => 0x5B,
-            '3' => 0x4F,
-            '4' => 0x66,
-            '5' => 0x6D,
-            '6' => 0x7D,
-            '7' => 0x07,
-            '8' => 0x7F,
-            '9' => 0x6F,
-
-            // Letters (Mackie-style; some are case-folded approximations)
-            'A' | 'a' => 0x77,
-            'B' | 'b' => 0x7C,
-            'C' => 0x39,
-            'c' => 0x58,
-            'D' | 'd' => 0x5E,
-            'E' | 'e' => 0x79,
-            'F' | 'f' => 0x71,
-            'G' | 'g' => 0x3D,
-            'H' => 0x76,
-            'h' => 0x74,
-            'I' | 'i' => 0x30,
-            'J' | 'j' => 0x1E,
-            'L' | 'l' => 0x38,
-            'N' | 'n' => 0x54,
-            'O' | 'o' => 0x3F,
-            'P' | 'p' => 0x73,
-            'Q' | 'q' => 0x67,
-            'R' | 'r' => 0x50,
-            'S' | 's' => 0x6D,
-            'T' | 't' => 0x78,
-            'U' | 'u' => 0x3E,
-            // V has no canonical 7-segment shape; reuse U for visual proximity.
-            'V' | 'v' => 0x3E,
-            'Y' | 'y' => 0x6E,
-            'Z' | 'z' => 0x5B,
-
-            // Symbols
-            '-' => 0x40,
-            '_' => 0x08,
-            '=' => 0x48,
-            '\'' => 0x20,
-            '"' => 0x22,
-            ' ' => 0x00,
-
-            // M, W, K, X: no honest rendering -> underscore
-            _ => 0x08,
+    /// Encode one character into the 6-bit Mackie 7-seg CC value.
+    fn encode_seven_seg_cc(ch: char) -> u8 {
+        let code = ch as u32;
+        match code {
+            64..=95 => (code - 64) as u8, // '@'..'_' -> 0..31
+            32..=63 => code as u8,        // ' '..'?' -> 32..63
+            _ => 32,                      // fallback: space
         }
     }
 
@@ -594,8 +550,9 @@ impl XTouchDriver {
         let black_colors = [0u8; 8];
         self.set_lcd_colors(&black_colors).await?;
 
-        // Clear 7-segment display
-        self.set_seven_segment_text("").await?;
+        // Clear both 7-segment regions
+        self.set_assignment_text("").await?;
+        self.set_timecode_text("").await?;
 
         Ok(())
     }

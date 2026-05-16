@@ -134,10 +134,10 @@ pub async fn run_app(
     // Create LED update channel for indicator system (bounded to prevent unbounded growth)
     let (led_tx, mut led_rx) = mpsc::channel::<Vec<u8>>(64);
 
-    // Channel for the 7-segment timecode display. The ticker task computes
-    // animation frames off the main loop and forwards rendered text here;
-    // the main loop is the only owner of the !Sync `Arc<XTouchDriver>`.
-    let (seven_seg_tx, mut seven_seg_rx) = mpsc::channel::<String>(16);
+    // Channel for the 7-segment displays. The ticker task computes
+    // animation frames off the main loop and forwards per-region updates
+    // here; the main loop is the only owner of the !Sync `Arc<XTouchDriver>`.
+    let (seven_seg_tx, mut seven_seg_rx) = mpsc::channel::<SevenSegUpdate>(32);
     tokio::spawn(seven_segment_ticker(Arc::clone(&router), seven_seg_tx));
 
     // Create OBS driver and API state, then register
@@ -337,10 +337,14 @@ pub async fn run_app(
                 }
             }
 
-            // Handle 7-segment timecode display updates from the ticker task
-            Some(text) = seven_seg_rx.recv() => {
-                if let Err(e) = xtouch.set_seven_segment_text(&text).await {
-                    warn!("Failed to update 7-segment display: {}", e);
+            // Handle 7-segment display updates from the ticker task
+            Some(update) = seven_seg_rx.recv() => {
+                let result = match &update {
+                    SevenSegUpdate::Assignment(text) => xtouch.set_assignment_text(text).await,
+                    SevenSegUpdate::Timecode(text) => xtouch.set_timecode_text(text).await,
+                };
+                if let Err(e) = result {
+                    warn!("Failed to update 7-segment display ({:?}): {}", update, e);
                 }
             }
 
@@ -760,17 +764,25 @@ async fn handle_config_reload(
     }
 }
 
-/// Drives the 7-segment timecode display.
+/// Per-region update message sent from the ticker to the main loop.
+#[derive(Debug)]
+enum SevenSegUpdate {
+    Assignment(String),
+    Timecode(String),
+}
+
+/// Drives the X-Touch's two 7-segment displays (assignment + timecode).
 ///
 /// Polls `router.page_epoch` on each 50ms tick: when the epoch changes
 /// (page switched or refreshed) the renderer is rebuilt from the new
-/// page's `seven_segment` config (or falls back to the page name). For
-/// animated effects, each tick advances the state and pushes the new
-/// frame to the main loop via `update_tx`. Static frames emit once.
+/// page's `seven_segment` config (or falls back to the page name on the
+/// timecode block). Each tick advances animation state and pushes
+/// per-region updates to the main loop via `update_tx`. Static frames
+/// emit once.
 ///
 /// The main loop owns the only `Arc<XTouchDriver>` (it is `!Sync`), so
 /// this task can never send MIDI directly — hence the channel handoff.
-async fn seven_segment_ticker(router: Arc<Router>, update_tx: mpsc::Sender<String>) {
+async fn seven_segment_ticker(router: Arc<Router>, update_tx: mpsc::Sender<SevenSegUpdate>) {
     use crate::xtouch::seven_segment::SevenSegmentRenderer;
     use std::time::{Duration, Instant};
     use tokio::time::{interval, MissedTickBehavior};
@@ -792,6 +804,12 @@ async fn seven_segment_ticker(router: Arc<Router>, update_tx: mpsc::Sender<Strin
             let page = router.get_active_page().await;
             let cfg = page.as_ref().and_then(|p| p.seven_segment.as_ref());
             let name = page.as_ref().map(|p| p.name.as_str()).unwrap_or("");
+            debug!(
+                "7-segment ticker: rebuilding for page '{}' (has_cfg={}, epoch={})",
+                name,
+                cfg.is_some(),
+                epoch
+            );
             renderer = Some(SevenSegmentRenderer::from_config(cfg, name, now));
         }
 
@@ -799,13 +817,16 @@ async fn seven_segment_ticker(router: Arc<Router>, update_tx: mpsc::Sender<Strin
             continue;
         };
 
-        if let Some(text) = r.render(now) {
-            // Drop frames on backpressure rather than stalling the ticker —
-            // animation is cosmetic, dropped frames just mean briefly stale
-            // visuals. The next tick will produce a fresh frame.
-            if update_tx.try_send(text).is_err() {
-                trace!("7-segment update channel full or closed");
-            }
+        let frame = r.render(now);
+
+        // Drop frames on backpressure rather than stalling the ticker —
+        // animation is cosmetic, dropped frames just mean briefly stale
+        // visuals. The next tick will produce a fresh frame.
+        if let Some(text) = frame.assignment {
+            let _ = update_tx.try_send(SevenSegUpdate::Assignment(text));
+        }
+        if let Some(text) = frame.timecode {
+            let _ = update_tx.try_send(SevenSegUpdate::Timecode(text));
         }
 
         if update_tx.is_closed() {

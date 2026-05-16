@@ -294,14 +294,35 @@ pub struct PageConfig {
     pub seven_segment: Option<SevenSegmentConfig>,
 }
 
-/// 7-segment timecode display effect.
+/// 7-segment display configuration.
 ///
-/// Drives the X-Touch's 12-character timecode display on the right of the
-/// console. Selects between a static label, a scrolling marquee, blink/pulse
-/// patterns, a spinner, or a horizontal progress bar.
+/// The X-Touch exposes TWO physically separated digit groups on the right
+/// side of the surface:
+///
+/// - **Assignment** — 2 digits, leftmost block (visually framed off).
+/// - **Timecode** — 10 digits, the wide block to its right.
+///
+/// Each region can carry its own independent effect. Words sent across
+/// the visible gap look ugly, so the schema makes you pick a side.
+///
+/// When `assignment` is `None`, the assignment block is blanked. When
+/// `timecode` is `None`, the timecode block falls back to the current
+/// page name (truncated to 10 chars).
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Default)]
+pub struct SevenSegmentConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assignment: Option<SevenSegmentEffect>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timecode: Option<SevenSegmentEffect>,
+}
+
+/// One effect targeting a single 7-segment region.
+///
+/// Variants: static label, scrolling marquee, blink, spinner, slow pulse,
+/// or horizontal progress bar.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum SevenSegmentConfig {
+pub enum SevenSegmentEffect {
     /// Fixed text shown until the page changes.
     Static { text: String },
     /// Horizontally scrolling text. `speed_ms` defaults to 200.
@@ -333,8 +354,8 @@ pub enum SevenSegmentConfig {
         #[serde(skip_serializing_if = "Option::is_none")]
         period_ms: Option<u64>,
     },
-    /// Horizontal progress bar of width `width` (defaults to 8). `value`
-    /// is in [0.0, 1.0]; `prefix` is optional.
+    /// Horizontal progress bar. `width` defaults to the full region width;
+    /// `value` is clamped to [0.0, 1.0]; `prefix` is optional.
     Progress {
         value: f32,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -1036,6 +1057,70 @@ mod tests {
 
         let win = parsed.winaudio.as_ref().expect("winaudio block expected");
         assert_eq!(win.pinned_apps.len(), 3);
+    }
+
+    /// YAML round-trip for every `seven_segment` effect variant on both
+    /// regions. Catches schema regressions independently of any bundled
+    /// user profile (those live under `profiles/`, which is gitignored).
+    #[test]
+    fn seven_segment_all_variants_parse() {
+        let yaml = r#"
+midi:
+  input_port: "X-Touch"
+  output_port: "X-Touch"
+pages:
+  - name: fallback
+  - name: static_only
+    seven_segment:
+      timecode: { type: static, text: "OBS LIVE" }
+  - name: two_regions
+    seven_segment:
+      assignment: { type: static, text: "01" }
+      timecode:   { type: marquee, text: "RECORDING SESSION", speed_ms: 200 }
+  - name: blink_and_pulse
+    seven_segment:
+      assignment: { type: pulse, text: "BL", period_ms: 1500 }
+      timecode:   { type: blink, text: "STANDBY", period_ms: 800 }
+  - name: spinner
+    seven_segment:
+      timecode:
+        type: spinner
+        prefix: "LOAD "
+        frames: ["/", "-", "\\", "|"]
+        speed_ms: 150
+  - name: progress
+    seven_segment:
+      timecode: { type: progress, value: 0.62, width: 10 }
+"#;
+        let parsed: AppConfig = serde_yaml::from_str(yaml).expect("YAML parse failed");
+        parsed.validate().expect("config validation failed");
+
+        fn tag(e: &SevenSegmentEffect) -> &'static str {
+            match e {
+                SevenSegmentEffect::Static { .. } => "static",
+                SevenSegmentEffect::Marquee { .. } => "marquee",
+                SevenSegmentEffect::Blink { .. } => "blink",
+                SevenSegmentEffect::Spinner { .. } => "spinner",
+                SevenSegmentEffect::Pulse { .. } => "pulse",
+                SevenSegmentEffect::Progress { .. } => "progress",
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        for page in &parsed.pages {
+            if let Some(cfg) = &page.seven_segment {
+                if let Some(e) = &cfg.assignment {
+                    seen.insert(tag(e));
+                }
+                if let Some(e) = &cfg.timecode {
+                    seen.insert(tag(e));
+                }
+            }
+        }
+        for required in ["static", "marquee", "blink", "spinner", "pulse", "progress"] {
+            assert!(seen.contains(required), "missing variant: {}", required);
+        }
+        // Fallback page (no seven_segment block) parses without complaint.
+        assert!(parsed.pages[0].seven_segment.is_none());
     }
 
     fn empty_config() -> AppConfig {
