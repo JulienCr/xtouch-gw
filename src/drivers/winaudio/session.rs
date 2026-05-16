@@ -4,8 +4,9 @@
 //! sessions to their owning process via `IAudioSessionControl2::GetProcessId`
 //! plus `QueryFullProcessImageNameW`. Volume changes use `ISimpleAudioVolume`
 //! (which every session control instance can be cast to).
-
-#![cfg(target_os = "windows")]
+//!
+//! Module is `#[cfg(target_os = "windows")]`-gated at its parent declaration
+//! in `mod.rs`.
 
 use std::path::PathBuf;
 

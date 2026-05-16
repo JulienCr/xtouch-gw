@@ -91,6 +91,12 @@ pub fn normalize_stick_radial(raw_x: i16, raw_y: i16, deadzone: f32) -> (f32, f3
 pub enum GilrsNormMode {
     /// No transformation - pass through raw values, only clamp if magnitude > 1.
     /// Use if raw values already form a circle.
+    //
+    // Allowed dead variant: `GILRS_NORM_MODE` is currently fixed to
+    // `SquareToCircle`. These variants exist so the const can be flipped
+    // for empirical stick-shape testing without re-introducing the
+    // experiment branches.
+    #[allow(dead_code)]
     RadialClamp,
 
     /// Square to circle - shrink diagonals. Use if raw values form a square
@@ -101,6 +107,7 @@ pub enum GilrsNormMode {
     /// Astroid/diamond to circle - expand diagonals. Use if raw values form
     /// a concave diamond (diagonals pulled inward, magnitude < 1).
     /// Scales up diagonal values to reach magnitude 1.0.
+    #[allow(dead_code)]
     AstroidToCircle,
 }
 

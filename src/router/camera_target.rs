@@ -115,12 +115,16 @@ impl CameraTargetState {
         targets.get(gamepad_slot).cloned()
     }
 
-    /// Get all current camera targets
+    /// Get all current camera targets. Reserved for the upcoming
+    /// `/api/cameras/targets` HTTP endpoint and the Stream Deck
+    /// "current target per slot" view.
+    #[allow(dead_code)]
     pub fn get_all_targets(&self) -> HashMap<String, String> {
         self.targets.read().clone()
     }
 
     /// Clear the camera target for a gamepad slot
+    #[allow(dead_code)] // Exercised by `tests::test_clear_target`.
     pub fn clear_target(&self, gamepad_slot: &str) -> Result<()> {
         // Remove from in-memory state
         {

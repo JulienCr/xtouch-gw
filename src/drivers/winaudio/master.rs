@@ -4,8 +4,9 @@
 //! default audio render endpoint (eRender, eConsole). All methods are
 //! synchronous and must be invoked on a thread that has called
 //! `CoInitializeEx(COINIT_APARTMENTTHREADED)`.
-
-#![cfg(target_os = "windows")]
+//!
+//! Module is `#[cfg(target_os = "windows")]`-gated at its parent declaration
+//! in `mod.rs`.
 
 use anyhow::{Context, Result};
 use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;

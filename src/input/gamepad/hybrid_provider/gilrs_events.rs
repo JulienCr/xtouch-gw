@@ -10,7 +10,7 @@ use crate::input::gamepad::axis::gilrs_axis_to_control_id;
 use crate::input::gamepad::hybrid_id::HybridControllerId;
 use crate::input::gamepad::hybrid_provider::GamepadEvent;
 use crate::input::gamepad::normalize::normalize_gilrs_stick;
-use crate::input::gamepad::stick_buffer::{StickBuffer, StickId};
+use crate::input::gamepad::stick_buffer::StickId;
 use crate::input::gamepad::GAMEPAD_PREFIX;
 
 impl HybridProviderState {
@@ -102,10 +102,7 @@ impl HybridProviderState {
         use gilrs::Axis;
 
         let buffer_key = (id, stick);
-        let buffer = self
-            .gilrs_stick_buffer
-            .entry(buffer_key)
-            .or_insert_with(StickBuffer::default);
+        let buffer = self.gilrs_stick_buffer.entry(buffer_key).or_default();
 
         match axis {
             Axis::LeftStickX | Axis::RightStickX => buffer.x = value,

@@ -8,8 +8,9 @@
 //! caller can pass the borrowed `Option` straight from the loop without
 //! re-checking. Callbacks emit `AudioEvent`s through the shared
 //! `event_tx`.
-
-#![cfg(target_os = "windows")]
+//!
+//! Module is `#[cfg(target_os = "windows")]`-gated at its parent declaration
+//! in `mod.rs`.
 
 use std::collections::HashMap;
 use std::time::Instant;
