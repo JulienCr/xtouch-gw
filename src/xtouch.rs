@@ -3,8 +3,11 @@
 //! Handles MIDI communication with the X-Touch control surface.
 
 pub mod fader_setpoint;
+pub mod fader_touch;
 pub mod pitch_bend_squelch;
+pub mod seven_segment;
 
+use fader_touch::FaderTouchTracker;
 use pitch_bend_squelch::PitchBendSquelch;
 
 use anyhow::{bail, Context, Result};
@@ -51,6 +54,11 @@ pub struct XTouchDriver {
 
     /// Pitch bend squelch for preventing feedback loops
     pb_squelch: PitchBendSquelch,
+
+    /// Per-channel fader touch tracker (MCU touch detection).
+    /// Used to skip squelch + motor writes while the user is actively
+    /// holding a fader, preventing dropped PB messages and motor-fight.
+    touch_tracker: FaderTouchTracker,
 }
 
 impl XTouchDriver {
@@ -73,6 +81,7 @@ impl XTouchDriver {
             input_port_name: config.midi.input_port.clone(),
             output_port_name: config.midi.output_port.clone(),
             pb_squelch: PitchBendSquelch::new(),
+            touch_tracker: FaderTouchTracker::new(),
         })
     }
 
@@ -159,6 +168,7 @@ impl XTouchDriver {
         let event_tx = self.event_tx.clone();
 
         let pb_squelch = self.pb_squelch.clone(); // Clone for callback
+        let touch_tracker = self.touch_tracker.clone(); // Clone for callback
 
         let input_conn = midi_in
             .connect(
@@ -167,16 +177,28 @@ impl XTouchDriver {
                 move |_timestamp, data, _| {
                     let timestamp = Instant::now();
 
+                    // Update touch state from MCU touch notes (104-112 on
+                    // channel 0). Done BEFORE the squelch check so that a
+                    // touch note arriving in the same burst as the first
+                    // PB already disarms the per-channel squelch override.
+                    touch_tracker.observe_raw(data);
+
                     // Check if this is a pitch bend message
                     if !data.is_empty() {
                         let status = data[0];
                         let message_type_nibble = (status & 0xF0) >> 4;
                         let is_pitch_bend = message_type_nibble == 0xE; // 0xE0-0xEF
 
-                        // Suppress pitch bend if squelched
+                        // Suppress pitch bend if squelched, UNLESS the
+                        // corresponding fader is currently touched by the
+                        // user (the squelch exists to filter motor-induced
+                        // PB, not real user input — see fader_touch.rs).
                         if is_pitch_bend && pb_squelch.is_squelched() {
-                            debug!("Suppressing squelched pitch bend: {:02X?}", data);
-                            return; // Don't forward message
+                            let pb_channel = (status & 0x0F) + 1;
+                            if !touch_tracker.is_touched(pb_channel) {
+                                debug!("Suppressing squelched pitch bend: {:02X?}", data);
+                                return; // Don't forward message
+                            }
                         }
                     }
 
@@ -362,6 +384,12 @@ impl XTouchDriver {
         self.pb_squelch.squelch(duration_ms);
     }
 
+    /// True if the given router channel (1..=9) currently has its fader
+    /// touched by the user (per MCU touch detection notes 104-112).
+    pub fn is_fader_touched(&self, channel: u8) -> bool {
+        self.touch_tracker.is_touched(channel)
+    }
+
     /// Set button LED state
     pub async fn set_button_led(&self, note: u8, on: bool) -> Result<()> {
         // Always use NoteOn - velocity 0 turns LED off, velocity 127 turns it on
@@ -493,11 +521,17 @@ impl XTouchDriver {
         }
     }
 
-    /// Convert character to 7-segment display encoding
-    fn seven_seg_for_char(ch: char) -> u8 {
-        // Basic 7-segment encoding for common characters
-        // This is a simplified version - full implementation in TypeScript seg7.ts
+    /// Convert character to 7-segment display encoding.
+    ///
+    /// Bit layout (each digit = 1 byte, 7 active bits + dot):
+    ///   0x01 top, 0x02 top-right, 0x04 bottom-right, 0x08 bottom,
+    ///   0x10 bottom-left, 0x20 top-left, 0x40 middle.
+    ///
+    /// Characters that have no honest 7-segment rendering (M, W, K, V, X)
+    /// fall back to underscore so the limitation is visible.
+    pub(crate) fn seven_seg_for_char(ch: char) -> u8 {
         match ch {
+            // Digits
             '0' => 0x3F,
             '1' => 0x06,
             '2' => 0x5B,
@@ -508,21 +542,44 @@ impl XTouchDriver {
             '7' => 0x07,
             '8' => 0x7F,
             '9' => 0x6F,
+
+            // Letters (Mackie-style; some are case-folded approximations)
             'A' | 'a' => 0x77,
             'B' | 'b' => 0x7C,
-            'C' | 'c' => 0x39,
+            'C' => 0x39,
+            'c' => 0x58,
             'D' | 'd' => 0x5E,
             'E' | 'e' => 0x79,
             'F' | 'f' => 0x71,
-            'H' | 'h' => 0x76,
+            'G' | 'g' => 0x3D,
+            'H' => 0x76,
+            'h' => 0x74,
+            'I' | 'i' => 0x30,
+            'J' | 'j' => 0x1E,
             'L' | 'l' => 0x38,
+            'N' | 'n' => 0x54,
             'O' | 'o' => 0x3F,
             'P' | 'p' => 0x73,
+            'Q' | 'q' => 0x67,
+            'R' | 'r' => 0x50,
+            'S' | 's' => 0x6D,
+            'T' | 't' => 0x78,
             'U' | 'u' => 0x3E,
+            // V has no canonical 7-segment shape; reuse U for visual proximity.
+            'V' | 'v' => 0x3E,
+            'Y' | 'y' => 0x6E,
+            'Z' | 'z' => 0x5B,
+
+            // Symbols
             '-' => 0x40,
             '_' => 0x08,
+            '=' => 0x48,
+            '\'' => 0x20,
+            '"' => 0x22,
             ' ' => 0x00,
-            _ => 0x00, // Unknown chars = blank
+
+            // M, W, K, X: no honest rendering -> underscore
+            _ => 0x08,
         }
     }
 
@@ -543,14 +600,17 @@ impl XTouchDriver {
         Ok(())
     }
 
-    /// Apply LCD configuration for active page
+    /// Apply LCD strip labels and colors for the active page.
     ///
-    /// Matches TypeScript applyLcdForActivePage() from ui/lcd.ts
+    /// The 7-segment timecode display is intentionally NOT touched here —
+    /// it is owned by the seven-segment ticker task (see
+    /// `xtouch::seven_segment` and the `seven_seg_rx` arm in `app.rs`)
+    /// which handles both the page-name fallback and the configured
+    /// effects (static, marquee, blink, spinner, pulse, progress).
     pub async fn apply_lcd_for_page(
         &self,
         labels: Option<&Vec<crate::config::LcdLabel>>,
         colors: Option<&Vec<u8>>,
-        page_name: &str,
     ) -> Result<()> {
         // Clear all strips first to avoid leaks from previous pages
         for i in 0..8 {
@@ -586,9 +646,6 @@ impl XTouchDriver {
             let black_colors = [0u8; 8];
             self.set_lcd_colors(&black_colors).await?;
         }
-
-        // Display page name on 7-segment display
-        self.set_seven_segment_text(page_name).await?;
 
         Ok(())
     }

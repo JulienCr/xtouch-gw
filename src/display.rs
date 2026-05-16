@@ -19,28 +19,22 @@ use crate::xtouch::XTouchDriver;
 /// prev/next navigation LEDs. It reads the active page and paging config
 /// from the router at call time, so it always reflects the latest state.
 pub async fn update_xtouch_display(router: &Router, xtouch: &Arc<XTouchDriver>) {
-    // Read config once to extract all needed fields
-    let (active_page, active_page_name, paging_channel, paging) = {
+    // Read config once to extract all needed fields. The 7-segment display
+    // is handled by the seven-segment ticker, so we don't need the page name.
+    let (active_page, paging_channel, paging) = {
         let config = router.config.read().await;
         let index = *router.active_page_index.read().await;
         let page = config.pages.get(index).cloned();
-        let name = page
-            .as_ref()
-            .map(|p| p.name.clone())
-            .unwrap_or_else(|| "(none)".to_string());
         let paging_channel = config.paging.as_ref().map(|p| p.channel).unwrap_or(1);
         let paging = config.paging.clone();
-        (page, name, paging_channel, paging)
+        (page, paging_channel, paging)
     };
 
     if let Some(page) = &active_page {
         let labels = page.lcd.as_ref().and_then(|lcd| lcd.labels.as_ref());
         let colors_u8 = convert_lcd_colors(page);
 
-        if let Err(e) = xtouch
-            .apply_lcd_for_page(labels, colors_u8.as_ref(), &active_page_name)
-            .await
-        {
+        if let Err(e) = xtouch.apply_lcd_for_page(labels, colors_u8.as_ref()).await {
             warn!("Failed to apply LCD for page: {}", e);
         }
     }

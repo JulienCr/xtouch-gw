@@ -948,8 +948,9 @@ async fn render_lcd_if_active(
 /// cycle color from `assigned_color` is used.
 ///
 /// Emits raw SysEx via `led_tx` rather than calling
-/// `apply_lcd_for_page`: keeps the 7-segment display untouched and
-/// avoids needing a non-Sync `Arc<XTouchDriver>` reference.
+/// `apply_lcd_for_page`: avoids needing a non-Sync `Arc<XTouchDriver>`
+/// reference. The 7-segment display has its own owner (the seven-segment
+/// ticker), so we never touch it from here either.
 async fn render_winaudio_lcd(
     page: &PageConfig,
     led_tx: &mpsc::Sender<Vec<u8>>,

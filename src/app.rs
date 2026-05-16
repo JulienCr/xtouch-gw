@@ -134,6 +134,12 @@ pub async fn run_app(
     // Create LED update channel for indicator system (bounded to prevent unbounded growth)
     let (led_tx, mut led_rx) = mpsc::channel::<Vec<u8>>(64);
 
+    // Channel for the 7-segment timecode display. The ticker task computes
+    // animation frames off the main loop and forwards rendered text here;
+    // the main loop is the only owner of the !Sync `Arc<XTouchDriver>`.
+    let (seven_seg_tx, mut seven_seg_rx) = mpsc::channel::<String>(16);
+    tokio::spawn(seven_segment_ticker(Arc::clone(&router), seven_seg_tx));
+
     // Create OBS driver and API state, then register
     let obs_driver: Option<Arc<ObsDriver>> = config
         .obs
@@ -305,11 +311,19 @@ pub async fn run_app(
             Some(cmd) = setpoint_apply_rx.recv() => {
                 let setpoint = router.get_fader_setpoint();
                 if setpoint.is_epoch_current(cmd.channel, cmd.epoch) {
-                    debug!("Applying setpoint: ch={} value={} epoch={}", cmd.channel, cmd.value14, cmd.epoch);
-                    let fader_num = cmd.channel - 1;
-                    if let Err(_e) = xtouch.set_fader(fader_num, cmd.value14).await {
-                        trace!("Setpoint apply failed, requeueing: ch={} value={}", cmd.channel, cmd.value14);
+                    // Anti motor-fight: never override the user's hand. If
+                    // the fader is currently touched (MCU touch detection),
+                    // defer the motor write until release.
+                    if xtouch.is_fader_touched(cmd.channel) {
+                        trace!("Setpoint apply deferred (fader touched): ch={} value={}", cmd.channel, cmd.value14);
                         setpoint.schedule(cmd.channel, cmd.value14, Some(120));
+                    } else {
+                        debug!("Applying setpoint: ch={} value={} epoch={}", cmd.channel, cmd.value14, cmd.epoch);
+                        let fader_num = cmd.channel - 1;
+                        if let Err(_e) = xtouch.set_fader(fader_num, cmd.value14).await {
+                            trace!("Setpoint apply failed, requeueing: ch={} value={}", cmd.channel, cmd.value14);
+                            setpoint.schedule(cmd.channel, cmd.value14, Some(120));
+                        }
                     }
                 } else {
                     trace!("Setpoint apply skipped (obsolete): ch={} epoch={}", cmd.channel, cmd.epoch);
@@ -320,6 +334,13 @@ pub async fn run_app(
             Some(midi_msg) = led_rx.recv() => {
                 if let Err(e) = xtouch.send_raw(&midi_msg).await {
                     warn!("Failed to send LED update: {}", e);
+                }
+            }
+
+            // Handle 7-segment timecode display updates from the ticker task
+            Some(text) = seven_seg_rx.recv() => {
+                if let Err(e) = xtouch.set_seven_segment_text(&text).await {
+                    warn!("Failed to update 7-segment display: {}", e);
                 }
             }
 
@@ -736,5 +757,59 @@ async fn handle_config_reload(
         Err(e) => {
             warn!("Failed to reload config (keeping old config): {}", e);
         },
+    }
+}
+
+/// Drives the 7-segment timecode display.
+///
+/// Polls `router.page_epoch` on each 50ms tick: when the epoch changes
+/// (page switched or refreshed) the renderer is rebuilt from the new
+/// page's `seven_segment` config (or falls back to the page name). For
+/// animated effects, each tick advances the state and pushes the new
+/// frame to the main loop via `update_tx`. Static frames emit once.
+///
+/// The main loop owns the only `Arc<XTouchDriver>` (it is `!Sync`), so
+/// this task can never send MIDI directly — hence the channel handoff.
+async fn seven_segment_ticker(router: Arc<Router>, update_tx: mpsc::Sender<String>) {
+    use crate::xtouch::seven_segment::SevenSegmentRenderer;
+    use std::time::{Duration, Instant};
+    use tokio::time::{interval, MissedTickBehavior};
+
+    let mut ticker = interval(Duration::from_millis(50));
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+    let mut current_epoch: u64 = u64::MAX; // forces rebuild on first tick
+    let mut renderer: Option<SevenSegmentRenderer> = None;
+
+    loop {
+        ticker.tick().await;
+
+        let now = Instant::now();
+        let epoch = router.get_page_epoch();
+
+        if epoch != current_epoch || renderer.is_none() {
+            current_epoch = epoch;
+            let page = router.get_active_page().await;
+            let cfg = page.as_ref().and_then(|p| p.seven_segment.as_ref());
+            let name = page.as_ref().map(|p| p.name.as_str()).unwrap_or("");
+            renderer = Some(SevenSegmentRenderer::from_config(cfg, name, now));
+        }
+
+        let Some(r) = renderer.as_mut() else {
+            continue;
+        };
+
+        if let Some(text) = r.render(now) {
+            // Drop frames on backpressure rather than stalling the ticker —
+            // animation is cosmetic, dropped frames just mean briefly stale
+            // visuals. The next tick will produce a fresh frame.
+            if update_tx.try_send(text).is_err() {
+                trace!("7-segment update channel full or closed");
+            }
+        }
+
+        if update_tx.is_closed() {
+            return;
+        }
     }
 }

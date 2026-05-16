@@ -288,6 +288,69 @@ pub struct PageConfig {
     pub passthrough: Option<PassthroughConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub passthroughs: Option<Vec<PassthroughConfig>>,
+    /// Optional configuration for the right-side 7-segment timecode display.
+    /// When unset, the display falls back to the page name (legacy behavior).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seven_segment: Option<SevenSegmentConfig>,
+}
+
+/// 7-segment timecode display effect.
+///
+/// Drives the X-Touch's 12-character timecode display on the right of the
+/// console. Selects between a static label, a scrolling marquee, blink/pulse
+/// patterns, a spinner, or a horizontal progress bar.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SevenSegmentConfig {
+    /// Fixed text shown until the page changes.
+    Static { text: String },
+    /// Horizontally scrolling text. `speed_ms` defaults to 200.
+    Marquee {
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        speed_ms: Option<u64>,
+    },
+    /// Blink the text on/off. `period_ms` is the full cycle; defaults to 800.
+    Blink {
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        period_ms: Option<u64>,
+    },
+    /// Spinning indicator. `frames` defaults to `["/", "-", "\\", "|"]`,
+    /// `speed_ms` defaults to 150, `prefix` is optional.
+    Spinner {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        prefix: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        frames: Option<SpinnerFramesSpec>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        speed_ms: Option<u64>,
+    },
+    /// Slow breath-style blink. Distinct variant so the default cadence
+    /// (`period_ms` = 1500) can stay slower than `blink`.
+    Pulse {
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        period_ms: Option<u64>,
+    },
+    /// Horizontal progress bar of width `width` (defaults to 8). `value`
+    /// is in [0.0, 1.0]; `prefix` is optional.
+    Progress {
+        value: f32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        width: Option<usize>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        prefix: Option<String>,
+    },
+}
+
+/// Spinner frames container — kept as a named newtype so JSON schema and
+/// validation stay tidy as the spec evolves (e.g. future support for named
+/// presets).
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum SpinnerFramesSpec {
+    List(Vec<String>),
 }
 
 /// LED indicator configuration
