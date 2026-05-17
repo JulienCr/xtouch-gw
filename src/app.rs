@@ -299,6 +299,16 @@ pub async fn run_app(
     // Main event loop
     tokio::pin!(shutdown);
 
+    // Periodic snapshot timer. Must live outside the loop: `tokio::time::sleep`
+    // inside `select!` was rebuilt every iteration, so any other branch firing
+    // cancelled and rearmed it from zero — under continuous MIDI traffic the
+    // 5 s deadline was never reached. `MissedTickBehavior::Skip` keeps a heavy
+    // burst from queueing catch-up saves.
+    let mut snapshot_tick = tokio::time::interval(std::time::Duration::from_secs(5));
+    snapshot_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Consume the immediate first tick so we don't snapshot at t=0.
+    snapshot_tick.tick().await;
+
     loop {
         tokio::select! {
             // Apply fader setpoints (from FaderSetpoint async tasks)
@@ -380,7 +390,7 @@ pub async fn run_app(
             }
 
             // Periodic state snapshot save (every 5 seconds, debounced by persistence actor)
-            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
+            _ = snapshot_tick.tick() => {
                 if let Err(e) = router.save_state_snapshot().await {
                     warn!("Failed to save state snapshot: {}", e);
                 }
