@@ -55,8 +55,7 @@ pub struct Router {
     /// Fader setpoint scheduler (motor position tracking)
     pub(crate) fader_setpoint: Arc<FaderSetpoint>,
     /// Receiver for setpoint apply commands (stored for retrieval)
-    pub(crate) setpoint_rx:
-        Arc<tokio::sync::Mutex<Option<mpsc::UnboundedReceiver<ApplySetpointCmd>>>>,
+    pub(crate) setpoint_rx: Arc<tokio::sync::Mutex<Option<mpsc::Receiver<ApplySetpointCmd>>>>,
     /// Pending MIDI messages to send to X-Touch (e.g., from page refresh)
     pub(crate) pending_midi_messages: Arc<tokio::sync::Mutex<Vec<Vec<u8>>>>,
     /// Activity tracker for tray UI LED visualization
@@ -242,9 +241,7 @@ impl Router {
     }
 
     /// Take the setpoint apply receiver (should only be called once by main loop)
-    pub async fn take_setpoint_receiver(
-        &self,
-    ) -> Option<mpsc::UnboundedReceiver<ApplySetpointCmd>> {
+    pub async fn take_setpoint_receiver(&self) -> Option<mpsc::Receiver<ApplySetpointCmd>> {
         let mut rx_guard = self.setpoint_rx.lock().await;
         rx_guard.take()
     }
