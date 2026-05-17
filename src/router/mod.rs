@@ -296,6 +296,25 @@ impl Router {
 
         info!("🔄 Updating configuration (hot-reload)...");
 
+        // Audit #55: purge state for apps removed by this reload. Previously
+        // this lived only in `app.rs::prune_unused_drivers`, so any caller
+        // that drove `update_config` directly (REPL `reload`, future API
+        // paths, `router/tests.rs`) leaked `app_states` entries forever for
+        // apps dropped from the new config. Centralising it here means every
+        // caller gets the cleanup.
+        let new_referenced = new_config.referenced_apps();
+        let dropped = self.unregister_drivers_not_in(&new_referenced).await;
+        for name in dropped {
+            match crate::state::AppKey::from_str(&name) {
+                Some(app_key) => self.state_actor.clear_states_for_app(app_key),
+                None => warn!(
+                    "Skipping state purge for driver '{}' — no AppKey mapping; \
+                     its app_states will not be reclaimed on this reload",
+                    name
+                ),
+            }
+        }
+
         // Update config
         *self.config.write().await = new_config;
 
