@@ -1,4 +1,4 @@
-//! Command enums for StateStore actor and persistence actor
+//! Command enums for state actor and persistence actor
 //!
 //! These commands enable message-passing architectures for state management,
 //! separating the hot path (fire-and-forget updates) from request-response
@@ -19,7 +19,7 @@ use tokio::sync::oneshot;
 // StateCommand
 // ============================================================================
 
-/// Commands for the StateStore actor
+/// Commands for the state actor
 ///
 /// Commands are divided into two categories:
 /// - **Hot path** (no response): Fire-and-forget updates that don't block the sender

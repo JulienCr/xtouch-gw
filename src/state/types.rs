@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Type of MIDI event supported by the StateStore
+/// Type of MIDI event supported by the state actor
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MidiStatus {
@@ -86,7 +86,7 @@ impl MidiValue {
     }
 }
 
-/// MIDI state entry with metadata, stored in the StateStore
+/// MIDI state entry with metadata, owned by the state actor
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MidiStateEntry {
     /// Logical address
