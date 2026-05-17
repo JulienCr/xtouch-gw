@@ -206,6 +206,7 @@ pub async fn run_app(
         current_on_air_camera: Arc::new(parking_lot::RwLock::new(None)),
         obs_driver: obs_driver.clone(),
         editor: editor_state,
+        api_port: api::DEFAULT_API_PORT,
     });
 
     if let Some(obs_driver) = obs_driver.as_ref() {

@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::{
+    extract::DefaultBodyLimit,
     routing::{get, post},
     Router,
 };
@@ -86,6 +87,12 @@ impl EditorState {
     }
 }
 
+/// 1 MB cap on JSON bodies accepted by editor endpoints. Profile YAML
+/// fits comfortably; anything larger is rejected with 413 *before* the
+/// JSON / YAML parser sees it (audit #72). Without this, axum has no
+/// default body limit and a 1 GB body would OOM the gateway.
+const EDITOR_BODY_LIMIT_BYTES: usize = 1024 * 1024;
+
 /// Build the editor data routes (everything under `/api`).
 pub fn routes() -> Router<Arc<EditorState>> {
     Router::new()
@@ -131,6 +138,7 @@ pub fn routes() -> Router<Arc<EditorState>> {
         .route("/api/drivers/:name/actions", get(actions::driver_actions))
         // active page (read / set)
         .route("/api/page", get(page::active).post(page::set_active))
+        .layer(DefaultBodyLimit::max(EDITOR_BODY_LIMIT_BYTES))
 }
 
 /// Build the SPA routes mounted under `/editor`.
