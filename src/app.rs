@@ -206,6 +206,7 @@ pub async fn run_app(
         current_on_air_camera: Arc::new(parking_lot::RwLock::new(None)),
         obs_driver: obs_driver.clone(),
         editor: editor_state,
+        api_port: api::DEFAULT_API_PORT,
     });
 
     if let Some(obs_driver) = obs_driver.as_ref() {
@@ -299,6 +300,16 @@ pub async fn run_app(
     // Main event loop
     tokio::pin!(shutdown);
 
+    // Periodic snapshot timer. Must live outside the loop: `tokio::time::sleep`
+    // inside `select!` was rebuilt every iteration, so any other branch firing
+    // cancelled and rearmed it from zero — under continuous MIDI traffic the
+    // 5 s deadline was never reached. `MissedTickBehavior::Skip` keeps a heavy
+    // burst from queueing catch-up saves.
+    let mut snapshot_tick = tokio::time::interval(std::time::Duration::from_secs(5));
+    snapshot_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Consume the immediate first tick so we don't snapshot at t=0.
+    snapshot_tick.tick().await;
+
     loop {
         tokio::select! {
             // Apply fader setpoints (from FaderSetpoint async tasks)
@@ -380,7 +391,7 @@ pub async fn run_app(
             }
 
             // Periodic state snapshot save (every 5 seconds, debounced by persistence actor)
-            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
+            _ = snapshot_tick.tick() => {
                 if let Err(e) = router.save_state_snapshot().await {
                     warn!("Failed to save state snapshot: {}", e);
                 }
@@ -493,28 +504,6 @@ async fn handle_tray_command(
             info!("Shutdown requested from tray");
             true
         },
-    }
-}
-
-/// Unregister any driver the new config no longer references. Stops
-/// background work (OBS reconnection loop, MIDI bridge readers, WinAudio
-/// COM thread) so dropped profiles don't keep polling. Also purges the
-/// `app_states` entries owned by removed drivers so memory doesn't grow
-/// unbounded across repeated profile reloads.
-async fn prune_unused_drivers(router: &Arc<Router>, new_config: &AppConfig) {
-    let removed = router
-        .unregister_drivers_not_in(&new_config.referenced_apps())
-        .await;
-    let state_actor = router.get_state_actor();
-    for name in removed {
-        match crate::state::AppKey::from_str(&name) {
-            Some(app_key) => state_actor.clear_states_for_app(app_key),
-            None => warn!(
-                "Skipping state purge for driver '{}' — no AppKey mapping; \
-                 its app_states will not be reclaimed on this reload",
-                name
-            ),
-        }
     }
 }
 
@@ -687,9 +676,9 @@ async fn handle_config_reload(
         }
     }
 
-    // Stop background tasks for drivers the new profile no longer uses.
-    // Done before update_config so the post-swap refresh skips them.
-    prune_unused_drivers(router, &new_config).await;
+    // Stale-driver cleanup (unregister + clear app_states) is handled inside
+    // `Router::update_config` itself — see audit #55. Anyone calling it
+    // directly (REPL, future direct API paths) now gets the same hygiene.
 
     match router.update_config(new_config).await {
         Ok(()) => {
@@ -729,6 +718,16 @@ async fn handle_config_reload(
             // Update API state gamepad slots
             *api_state.gamepad_slots.write() =
                 helpers::build_gamepad_slot_infos_from_config(&new_gamepad_config);
+
+            // Refresh API-visible camera list. `ApiState.available_cameras`
+            // is otherwise built once at startup (audit #56); after a profile
+            // change that adds/removes entries under `obs.camera_control.cameras`,
+            // `GET /api/cameras` and `set_camera_target` would otherwise
+            // operate on the stale list (rejecting new IDs with 400).
+            {
+                let cfg = router.config.read().await;
+                *api_state.available_cameras.write() = helpers::build_camera_infos(&cfg);
+            }
 
             // Clear the display_needs_update flag (we just handled it)
             router.check_and_clear_display_update().await;

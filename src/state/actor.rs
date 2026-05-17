@@ -669,6 +669,13 @@ pub fn make_shadow_key(status: MidiStatus, channel: u8, data1: u8) -> String {
 ///
 /// Convenience function that extracts fields from an entry.
 ///
+/// For SysEx, `addr.channel` and `addr.data1` are always `None` and
+/// `value.as_number()` returns 0 — every SysEx would collide on
+/// `"sysex|0|0"` and the value-equality check would always succeed
+/// inside the 60 ms window, silently suppressing every fast SysEx feedback.
+/// Discriminate by `entry.hash` (populated by builders for SysEx) so each
+/// distinct payload gets its own shadow slot.
+///
 /// # Arguments
 ///
 /// * `entry` - The MIDI state entry
@@ -677,11 +684,18 @@ pub fn make_shadow_key(status: MidiStatus, channel: u8, data1: u8) -> String {
 ///
 /// A string key for shadow state lookup
 pub fn make_shadow_key_from_entry(entry: &MidiStateEntry) -> String {
-    make_shadow_key(
-        entry.addr.status,
-        entry.addr.channel.unwrap_or(0),
-        entry.addr.data1.unwrap_or(0),
-    )
+    if entry.addr.status == MidiStatus::SysEx {
+        match entry.hash.as_deref() {
+            Some(h) => format!("sysex|{}", h),
+            None => "sysex|nohash".to_string(),
+        }
+    } else {
+        make_shadow_key(
+            entry.addr.status,
+            entry.addr.channel.unwrap_or(0),
+            entry.addr.data1.unwrap_or(0),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -714,5 +728,55 @@ mod tests {
         assert!(ts2 >= ts1);
         // Should be a reasonable timestamp (after year 2020)
         assert!(ts1 > 1_577_836_800_000);
+    }
+
+    fn make_sysex_entry(hash: Option<&str>) -> MidiStateEntry {
+        use super::super::types::{MidiAddr, MidiValue};
+        MidiStateEntry {
+            addr: MidiAddr {
+                port_id: "obs".to_string(),
+                status: MidiStatus::SysEx,
+                channel: None,
+                data1: None,
+            },
+            value: MidiValue::Binary(vec![0xF0, 0x7E, 0x7F, 0xF7]),
+            ts: 0,
+            origin: Origin::App,
+            known: true,
+            stale: false,
+            hash: hash.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn sysex_distinct_hashes_produce_distinct_shadow_keys() {
+        // Regression for the audit finding: every SysEx used to collapse onto
+        // `"sysex|0|0"` because channel/data1 are None. Anti-echo then matched
+        // the (always-0) numeric value within the 60 ms window and silently
+        // suppressed real feedback. Differentiating by `hash` is what makes
+        // the suppression check correct.
+        let key_a = make_shadow_key_from_entry(&make_sysex_entry(Some("a")));
+        let key_b = make_shadow_key_from_entry(&make_sysex_entry(Some("b")));
+        assert_ne!(key_a, key_b);
+        assert_eq!(key_a, "sysex|a");
+        assert_eq!(key_b, "sysex|b");
+    }
+
+    #[test]
+    fn sysex_same_hash_collapses_to_same_shadow_key() {
+        // Identical SysEx payloads (same hash) intentionally share a slot so
+        // the anti-echo window can suppress legitimate duplicates.
+        let key_1 = make_shadow_key_from_entry(&make_sysex_entry(Some("abc123")));
+        let key_2 = make_shadow_key_from_entry(&make_sysex_entry(Some("abc123")));
+        assert_eq!(key_1, key_2);
+    }
+
+    #[test]
+    fn sysex_missing_hash_falls_back_to_nohash_slot() {
+        // Defensive: builders are expected to populate `hash` for SysEx, but
+        // if one ever lands without a hash we still want a stable key (and
+        // not the channel/data1 path that produced "sysex|0|0").
+        let key = make_shadow_key_from_entry(&make_sysex_entry(None));
+        assert_eq!(key, "sysex|nohash");
     }
 }

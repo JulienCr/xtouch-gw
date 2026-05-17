@@ -8,8 +8,9 @@
 
 use std::sync::Arc;
 
+use axum::http::StatusCode;
 #[cfg(not(debug_assertions))]
-use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue};
 #[cfg(debug_assertions)]
 use axum::response::Redirect;
 use axum::{
@@ -92,8 +93,47 @@ fn serve_index() -> Response {
     Redirect::temporary("http://localhost:5173/editor").into_response()
 }
 
+/// Audit #72: axum URL-decodes path segments, so `..%2F..%2Fadmin` arrives
+/// here as `../../admin` and would be substituted verbatim into the Location
+/// header, escaping the `/editor/` prefix. Reject any decoded path that
+/// could break out of the editor namespace.
+fn path_is_safe(path: &str) -> bool {
+    !path.contains("..") && !path.starts_with('/') && !path.contains('\\')
+}
+
 #[cfg(debug_assertions)]
 fn serve_path(path: &str) -> Response {
+    if !path_is_safe(path) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
     let target = format!("http://localhost:5173/editor/{}", path);
     Redirect::temporary(&target).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::path_is_safe;
+
+    #[test]
+    fn rejects_parent_segment() {
+        assert!(!path_is_safe("../admin"));
+        assert!(!path_is_safe("foo/../bar"));
+    }
+
+    #[test]
+    fn rejects_absolute_path() {
+        assert!(!path_is_safe("/admin"));
+    }
+
+    #[test]
+    fn rejects_backslash() {
+        assert!(!path_is_safe("foo\\bar"));
+    }
+
+    #[test]
+    fn accepts_simple_paths() {
+        assert!(path_is_safe("index.html"));
+        assert!(path_is_safe("_app/immutable/main.js"));
+        assert!(path_is_safe("nested/file.css"));
+    }
 }

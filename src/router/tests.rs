@@ -256,7 +256,10 @@ async fn test_driver_hot_reload_config() {
         .await
         .unwrap();
 
-    // Update config with different pages
+    // Update config with different pages. Note: the new config does NOT
+    // reference `test_driver` from any page or passthrough. Per audit #55,
+    // `update_config` purges drivers no longer referenced, so we expect the
+    // driver to be unregistered.
     let new_config = make_test_config(vec![
         make_test_page("New Page 1"),
         make_test_page("New Page 2"),
@@ -272,8 +275,13 @@ async fn test_driver_hot_reload_config() {
     assert!(pages.contains(&"New Page 1".to_string()));
     assert!(pages.contains(&"New Page 3".to_string()));
 
-    // Driver should still be registered
-    assert!(router.get_driver("test_driver").await.is_some());
+    // Driver should be unregistered now that the new config doesn't reference it.
+    // Before #55 this only happened via `app.rs::prune_unused_drivers`, which
+    // bypassed any direct caller of `update_config` (REPL, tests, future APIs).
+    assert!(
+        router.get_driver("test_driver").await.is_none(),
+        "drivers not referenced by the new config must be purged on update_config"
+    );
 }
 
 #[tokio::test]
@@ -598,6 +606,86 @@ async fn test_unregister_drivers_not_in_with_empty_needed_drops_all() {
         "all registered drivers should be reported as removed"
     );
     assert!(router.list_drivers().await.is_empty());
+}
+
+/// Audit #55: `Router::update_config` must purge drivers (and their app_state
+/// entries) for apps the new config no longer references. Previously this
+/// cleanup lived in `app.rs::prune_unused_drivers`, which only ran from the
+/// file-watcher reload path; any other caller of `update_config` (REPL,
+/// direct API, tests) leaked state forever for apps removed by the new
+/// config. After the fix it lives inside `update_config` itself.
+#[tokio::test]
+async fn test_update_config_unregisters_drivers_removed_from_new_config() {
+    let mut control_a = HashMap::new();
+    control_a.insert(
+        "fader1".to_string(),
+        ControlMapping {
+            app: "obs".to_string(),
+            action: None,
+            params: None,
+            midi: None,
+            overlay: None,
+            indicator: None,
+        },
+    );
+    control_a.insert(
+        "fader2".to_string(),
+        ControlMapping {
+            app: "voicemeeter".to_string(),
+            action: None,
+            params: None,
+            midi: None,
+            overlay: None,
+            indicator: None,
+        },
+    );
+    let mut page_a = make_test_page("AB");
+    page_a.controls = Some(control_a);
+    let config_a = make_test_config(vec![page_a]);
+
+    let router = make_test_router(config_a);
+    router
+        .register_driver("obs".to_string(), Arc::new(ConsoleDriver::new("obs")))
+        .await
+        .unwrap();
+    router
+        .register_driver(
+            "voicemeeter".to_string(),
+            Arc::new(ConsoleDriver::new("voicemeeter")),
+        )
+        .await
+        .unwrap();
+    assert_eq!(router.list_drivers().await.len(), 2);
+
+    // New config drops obs from any page reference.
+    let mut control_b = HashMap::new();
+    control_b.insert(
+        "fader2".to_string(),
+        ControlMapping {
+            app: "voicemeeter".to_string(),
+            action: None,
+            params: None,
+            midi: None,
+            overlay: None,
+            indicator: None,
+        },
+    );
+    let mut page_b = make_test_page("B");
+    page_b.controls = Some(control_b);
+    let config_b = make_test_config(vec![page_b]);
+
+    router
+        .update_config(config_b)
+        .await
+        .expect("update_config should succeed");
+
+    let remaining: std::collections::HashSet<String> =
+        router.list_drivers().await.into_iter().collect();
+    assert_eq!(
+        remaining,
+        std::iter::once("voicemeeter".to_string()).collect(),
+        "obs must be unregistered because the new config no longer references it"
+    );
 }
 
 #[tokio::test]

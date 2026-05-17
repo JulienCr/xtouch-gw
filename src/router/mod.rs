@@ -55,8 +55,7 @@ pub struct Router {
     /// Fader setpoint scheduler (motor position tracking)
     pub(crate) fader_setpoint: Arc<FaderSetpoint>,
     /// Receiver for setpoint apply commands (stored for retrieval)
-    pub(crate) setpoint_rx:
-        Arc<tokio::sync::Mutex<Option<mpsc::UnboundedReceiver<ApplySetpointCmd>>>>,
+    pub(crate) setpoint_rx: Arc<tokio::sync::Mutex<Option<mpsc::Receiver<ApplySetpointCmd>>>>,
     /// Pending MIDI messages to send to X-Touch (e.g., from page refresh)
     pub(crate) pending_midi_messages: Arc<tokio::sync::Mutex<Vec<Vec<u8>>>>,
     /// Activity tracker for tray UI LED visualization
@@ -242,9 +241,7 @@ impl Router {
     }
 
     /// Take the setpoint apply receiver (should only be called once by main loop)
-    pub async fn take_setpoint_receiver(
-        &self,
-    ) -> Option<mpsc::UnboundedReceiver<ApplySetpointCmd>> {
+    pub async fn take_setpoint_receiver(&self) -> Option<mpsc::Receiver<ApplySetpointCmd>> {
         let mut rx_guard = self.setpoint_rx.lock().await;
         rx_guard.take()
     }
@@ -298,6 +295,25 @@ impl Router {
         use tracing::{debug, info, warn};
 
         info!("🔄 Updating configuration (hot-reload)...");
+
+        // Audit #55: purge state for apps removed by this reload. Previously
+        // this lived only in `app.rs::prune_unused_drivers`, so any caller
+        // that drove `update_config` directly (REPL `reload`, future API
+        // paths, `router/tests.rs`) leaked `app_states` entries forever for
+        // apps dropped from the new config. Centralising it here means every
+        // caller gets the cleanup.
+        let new_referenced = new_config.referenced_apps();
+        let dropped = self.unregister_drivers_not_in(&new_referenced).await;
+        for name in dropped {
+            match crate::state::AppKey::from_str(&name) {
+                Some(app_key) => self.state_actor.clear_states_for_app(app_key),
+                None => warn!(
+                    "Skipping state purge for driver '{}' — no AppKey mapping; \
+                     its app_states will not be reclaimed on this reload",
+                    name
+                ),
+            }
+        }
 
         // Update config
         *self.config.write().await = new_config;
