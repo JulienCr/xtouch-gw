@@ -718,6 +718,16 @@ async fn handle_config_reload(
             *api_state.gamepad_slots.write() =
                 helpers::build_gamepad_slot_infos_from_config(&new_gamepad_config);
 
+            // Refresh API-visible camera list. `ApiState.available_cameras`
+            // is otherwise built once at startup (audit #56); after a profile
+            // change that adds/removes entries under `obs.camera_control.cameras`,
+            // `GET /api/cameras` and `set_camera_target` would otherwise
+            // operate on the stale list (rejecting new IDs with 400).
+            {
+                let cfg = router.config.read().await;
+                *api_state.available_cameras.write() = helpers::build_camera_infos(&cfg);
+            }
+
             // Clear the display_needs_update flag (we just handled it)
             router.check_and_clear_display_update().await;
         },
