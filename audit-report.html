@@ -1,0 +1,1510 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>XTouch-GW v3 — Audit Report</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT@9..144,300..900,0..100&family=JetBrains+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+  /* ─── Tokens ─────────────────────────────────────────────── */
+  :root {
+    --bg: #f3eee4;
+    --bg-tint: #faf6ec;
+    --surface: #fbf8f1;
+    --surface-2: #eee7d6;
+    --ink-1: #181612;
+    --ink-2: #4f4a40;
+    --ink-3: #8a847a;
+    --ink-4: #b8b1a3;
+    --rule: #1a1814;
+    --rule-soft: #d8cfbe;
+    --p1: #ad2e22;
+    --p1-soft: #f1d8d3;
+    --p2: #b87f17;
+    --p2-soft: #efe0b6;
+    --p3: #4f6e4b;
+    --p3-soft: #d3decd;
+    --sec: #2c4e74;
+    --sec-soft: #c8d3df;
+    --qa: #6a5b85;
+    --qa-soft: #d9d2e1;
+    --perf: #156367;
+    --perf-soft: #c5d8d8;
+  }
+
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink-1);
+    font-family: "JetBrains Mono", ui-monospace, "Cascadia Mono", Menlo, monospace;
+    font-size: 13.5px;
+    line-height: 1.55;
+    font-feature-settings: "ss01", "cv11";
+    background-image:
+      radial-gradient(at 12% 8%, rgba(184, 127, 23, 0.06) 0, transparent 40%),
+      radial-gradient(at 88% 92%, rgba(173, 46, 34, 0.05) 0, transparent 38%),
+      url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.045 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+    background-attachment: fixed;
+  }
+
+  ::selection {
+    background: var(--ink-1);
+    color: var(--bg);
+  }
+
+  /* ─── Layout ─────────────────────────────────────────────── */
+  .frame {
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 28px 36px 80px;
+  }
+
+  /* ─── Masthead ───────────────────────────────────────────── */
+  .masthead {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: end;
+    padding-bottom: 14px;
+    border-bottom: 1.5px solid var(--rule);
+  }
+
+  .mast-l {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .mast-eyebrow {
+    font-size: 10.5px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    display: flex;
+    gap: 18px;
+    align-items: center;
+  }
+
+  .mast-eyebrow .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--p1);
+    box-shadow: 0 0 0 3px var(--p1-soft);
+    animation: pulse 2.4s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    50% { box-shadow: 0 0 0 6px transparent; }
+  }
+
+  .mast-title {
+    font-family: "Fraunces", "Times New Roman", serif;
+    font-variation-settings: "opsz" 144, "SOFT" 30;
+    font-weight: 380;
+    font-size: clamp(48px, 7.2vw, 96px);
+    line-height: 0.88;
+    letter-spacing: -0.035em;
+    color: var(--ink-1);
+    margin: 4px 0 0;
+  }
+
+  .mast-title em {
+    font-style: italic;
+    font-weight: 320;
+    color: var(--p1);
+    font-variation-settings: "opsz" 144, "SOFT" 100;
+  }
+
+  .mast-r {
+    text-align: right;
+    font-size: 11px;
+    color: var(--ink-2);
+    line-height: 1.7;
+  }
+
+  .mast-r .lbl {
+    color: var(--ink-3);
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    font-size: 9.5px;
+    display: block;
+  }
+
+  .mast-r .val {
+    font-weight: 500;
+    color: var(--ink-1);
+  }
+
+  /* ─── Top meta bar ───────────────────────────────────────── */
+  .meta-bar {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    border-bottom: 1px solid var(--rule);
+    padding: 14px 0 14px;
+    gap: 0;
+  }
+
+  .meta-cell {
+    padding: 0 22px;
+    border-left: 1px solid var(--rule-soft);
+  }
+
+  .meta-cell:first-child { padding-left: 0; border-left: 0; }
+
+  .meta-cell .k {
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    color: var(--ink-3);
+  }
+
+  .meta-cell .v {
+    font-family: "Fraunces", serif;
+    font-variation-settings: "opsz" 60;
+    font-size: 32px;
+    font-weight: 360;
+    line-height: 1.05;
+    margin-top: 4px;
+    letter-spacing: -0.02em;
+  }
+
+  .meta-cell .sub {
+    color: var(--ink-3);
+    font-size: 11px;
+    margin-top: 2px;
+  }
+
+  /* ─── Hero / synthese ────────────────────────────────────── */
+  .synth {
+    display: grid;
+    grid-template-columns: 1.4fr 1fr;
+    gap: 44px;
+    margin-top: 44px;
+    padding-bottom: 44px;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  .synth-l {
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+  }
+
+  .section-eyebrow {
+    font-size: 10px;
+    letter-spacing: 0.24em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .section-eyebrow::before {
+    content: "";
+    width: 22px;
+    height: 1px;
+    background: var(--ink-3);
+  }
+
+  .synth-l p {
+    font-family: "Fraunces", serif;
+    font-variation-settings: "opsz" 36;
+    font-weight: 360;
+    font-size: 22px;
+    line-height: 1.42;
+    letter-spacing: -0.01em;
+    color: var(--ink-1);
+    margin: 0;
+    max-width: 56ch;
+  }
+
+  .synth-l p .hl {
+    background: linear-gradient(180deg, transparent 60%, var(--p2-soft) 60%);
+    padding: 0 3px;
+    font-style: italic;
+  }
+
+  .synth-l p .crit {
+    color: var(--p1);
+    font-style: italic;
+  }
+
+  /* ─── Donut + severity legend ────────────────────────────── */
+  .synth-r {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+
+  .donut-wrap {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 28px;
+    align-items: center;
+  }
+
+  .donut {
+    --p1pct: calc(5 / 66 * 360deg);
+    --p2pct: calc((5 + 20) / 66 * 360deg);
+    --p3pct: calc((5 + 20 + 25) / 66 * 360deg);
+    --secpct: calc((5 + 20 + 25 + 3) / 66 * 360deg);
+    --qapct: calc((5 + 20 + 25 + 3 + 13) / 66 * 360deg);
+    width: 184px;
+    height: 184px;
+    border-radius: 50%;
+    background: conic-gradient(
+      from -90deg,
+      var(--p1) 0 var(--p1pct),
+      var(--p2) var(--p1pct) var(--p2pct),
+      var(--p3) var(--p2pct) var(--p3pct),
+      var(--sec) var(--p3pct) var(--secpct),
+      var(--qa) var(--secpct) var(--qapct)
+    );
+    position: relative;
+    mask: radial-gradient(circle, transparent 56%, black 56.4%);
+    -webkit-mask: radial-gradient(circle, transparent 56%, black 56.4%);
+  }
+
+  .donut-center {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    text-align: center;
+  }
+
+  .donut-center .n {
+    font-family: "Fraunces", serif;
+    font-variation-settings: "opsz" 144;
+    font-size: 56px;
+    font-weight: 360;
+    line-height: 1;
+    letter-spacing: -0.04em;
+  }
+
+  .donut-center .l {
+    font-size: 9.5px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    margin-top: 2px;
+  }
+
+  .legend {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .leg-row {
+    display: grid;
+    grid-template-columns: 10px auto 1fr auto;
+    gap: 10px;
+    align-items: center;
+    font-size: 11.5px;
+    padding: 4px 0;
+    border-bottom: 1px dotted var(--rule-soft);
+  }
+
+  .leg-row .sw {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+  }
+
+  .leg-row .lab {
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    font-size: 10px;
+    color: var(--ink-2);
+  }
+
+  .leg-row .num {
+    font-family: "Fraunces", serif;
+    font-variation-settings: "opsz" 30;
+    font-size: 16px;
+    color: var(--ink-1);
+    font-weight: 400;
+  }
+
+  /* ─── Sub-system grid ────────────────────────────────────── */
+  .subs-section {
+    padding: 48px 0;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  .h-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 28px;
+  }
+
+  .h-title {
+    font-family: "Fraunces", serif;
+    font-variation-settings: "opsz" 72;
+    font-weight: 360;
+    font-size: 36px;
+    letter-spacing: -0.025em;
+    line-height: 1;
+    margin: 6px 0 0;
+  }
+
+  .h-title em {
+    font-style: italic;
+    font-weight: 320;
+    color: var(--ink-3);
+  }
+
+  .subs-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0;
+    border-top: 1px solid var(--rule);
+    border-left: 1px solid var(--rule);
+  }
+
+  .sub-card {
+    background: var(--surface);
+    padding: 22px 22px 24px;
+    border-right: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    position: relative;
+    transition: background 0.2s ease;
+  }
+
+  .sub-card:hover {
+    background: var(--bg-tint);
+  }
+
+  .sub-card .sub-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+  }
+
+  .sub-card h3 {
+    font-family: "Fraunces", serif;
+    font-variation-settings: "opsz" 36;
+    font-weight: 400;
+    font-size: 21px;
+    line-height: 1.1;
+    margin: 0;
+    letter-spacing: -0.015em;
+  }
+
+  .sub-card .loc {
+    font-size: 10.5px;
+    color: var(--ink-3);
+    letter-spacing: 0.05em;
+  }
+
+  .sub-card .verdict {
+    font-size: 12px;
+    color: var(--ink-2);
+    line-height: 1.5;
+    flex: 1;
+  }
+
+  .risk-bar {
+    display: flex;
+    gap: 2px;
+    margin-top: auto;
+  }
+
+  .risk-pip {
+    flex: 1;
+    height: 5px;
+    background: var(--rule-soft);
+    border-radius: 1px;
+  }
+
+  .risk-pip.on-1 { background: var(--p1); }
+  .risk-pip.on-2 { background: var(--p2); }
+  .risk-pip.on-3 { background: var(--p3); }
+
+  .sub-stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+    font-size: 10px;
+    color: var(--ink-2);
+  }
+
+  .sub-stat {
+    border-top: 1px solid var(--rule-soft);
+    padding-top: 6px;
+  }
+
+  .sub-stat .n {
+    font-family: "Fraunces", serif;
+    font-variation-settings: "opsz" 30;
+    font-size: 19px;
+    font-weight: 420;
+    color: var(--ink-1);
+    line-height: 1;
+    display: block;
+  }
+
+  .sub-stat .l {
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    margin-top: 4px;
+    font-size: 9px;
+    color: var(--ink-3);
+  }
+
+  .sub-stat.p1 .n { color: var(--p1); }
+  .sub-stat.p2 .n { color: var(--p2); }
+  .sub-stat.p3 .n { color: var(--p3); }
+
+  /* ─── Findings ledger ────────────────────────────────────── */
+  .findings-section {
+    padding: 48px 0;
+  }
+
+  .filter-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 28px;
+    padding: 12px 16px;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 2px;
+    align-items: center;
+  }
+
+  .filter-bar .flbl {
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    color: var(--ink-3);
+    margin-right: 8px;
+  }
+
+  .chip {
+    border: 1px solid var(--rule);
+    background: transparent;
+    color: var(--ink-1);
+    font-family: inherit;
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    padding: 5px 11px;
+    cursor: pointer;
+    border-radius: 999px;
+    transition: all 0.15s ease;
+  }
+
+  .chip:hover {
+    background: var(--ink-1);
+    color: var(--bg);
+  }
+
+  .chip[aria-pressed="true"] {
+    background: var(--ink-1);
+    color: var(--bg);
+  }
+
+  .chip.p1[aria-pressed="true"] { background: var(--p1); border-color: var(--p1); }
+  .chip.p2[aria-pressed="true"] { background: var(--p2); border-color: var(--p2); }
+  .chip.p3[aria-pressed="true"] { background: var(--p3); border-color: var(--p3); }
+  .chip.sec[aria-pressed="true"] { background: var(--sec); border-color: var(--sec); }
+  .chip.qa[aria-pressed="true"] { background: var(--qa); border-color: var(--qa); }
+  .chip.perf[aria-pressed="true"] { background: var(--perf); border-color: var(--perf); }
+
+  .count-tag {
+    margin-left: auto;
+    font-size: 10.5px;
+    color: var(--ink-3);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  .count-tag .nn {
+    font-family: "Fraunces", serif;
+    font-variation-settings: "opsz" 30;
+    color: var(--ink-1);
+    font-size: 16px;
+    margin-right: 4px;
+  }
+
+  /* finding entry */
+  .findings {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .finding {
+    display: grid;
+    grid-template-columns: 56px 168px 1fr;
+    gap: 0;
+    padding: 22px 0 24px;
+    border-top: 1px solid var(--rule-soft);
+    align-items: start;
+    position: relative;
+  }
+
+  .finding:first-child { border-top: 1.5px solid var(--rule); }
+
+  .finding.hidden { display: none; }
+
+  .finding-no {
+    font-family: "Fraunces", serif;
+    font-variation-settings: "opsz" 60;
+    font-weight: 380;
+    font-size: 26px;
+    color: var(--ink-3);
+    line-height: 1;
+    letter-spacing: -0.02em;
+    padding-top: 2px;
+  }
+
+  .finding-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding-right: 18px;
+  }
+
+  .sev-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    align-self: flex-start;
+    padding: 4px 9px;
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    font-weight: 500;
+    border-radius: 2px;
+  }
+
+  .sev-tag::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+
+  .sev-p1 { background: var(--p1-soft); color: var(--p1); }
+  .sev-p2 { background: var(--p2-soft); color: var(--p2); }
+  .sev-p3 { background: var(--p3-soft); color: var(--p3); }
+  .sev-sec { background: var(--sec-soft); color: var(--sec); }
+  .sev-qa { background: var(--qa-soft); color: var(--qa); }
+  .sev-perf { background: var(--perf-soft); color: var(--perf); }
+
+  .pat-tag {
+    font-size: 9.5px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    padding-left: 1px;
+  }
+
+  .pat-tag .n {
+    color: var(--ink-1);
+    font-weight: 500;
+  }
+
+  .finding-body {
+    border-left: 1px solid var(--rule-soft);
+    padding-left: 24px;
+  }
+
+  .finding-title {
+    font-family: "Fraunces", serif;
+    font-variation-settings: "opsz" 36, "SOFT" 30;
+    font-weight: 420;
+    font-size: 22px;
+    line-height: 1.22;
+    letter-spacing: -0.015em;
+    margin: 0 0 6px;
+    color: var(--ink-1);
+  }
+
+  .finding-path {
+    font-size: 11px;
+    color: var(--ink-3);
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: baseline;
+    padding: 3px 6px;
+    background: var(--surface-2);
+    border-radius: 2px;
+    margin-bottom: 10px;
+  }
+
+  .finding-path .ln {
+    color: var(--p1);
+    font-weight: 600;
+  }
+
+  .finding-why,
+  .finding-fix {
+    margin: 6px 0 0;
+    font-size: 12.5px;
+    line-height: 1.65;
+    color: var(--ink-2);
+    max-width: 76ch;
+  }
+
+  .finding-fix {
+    margin-top: 12px;
+    padding: 10px 14px;
+    background: var(--bg-tint);
+    border-left: 2.5px solid var(--p3);
+    font-size: 12px;
+  }
+
+  .finding-fix .lbl {
+    color: var(--p3);
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    font-size: 9.5px;
+    font-weight: 500;
+    margin-right: 8px;
+  }
+
+  .finding-fix code {
+    font-family: inherit;
+    background: rgba(0, 0, 0, 0.04);
+    padding: 1px 5px;
+    border-radius: 2px;
+  }
+
+  /* ─── File size chart ────────────────────────────────────── */
+  .files-section {
+    padding: 48px 0;
+    border-top: 1px solid var(--rule);
+  }
+
+  .files-list {
+    display: flex;
+    flex-direction: column;
+    border-top: 1px solid var(--rule);
+  }
+
+  .file-row {
+    display: grid;
+    grid-template-columns: 30px 320px 1fr 64px;
+    gap: 16px;
+    align-items: center;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--rule-soft);
+  }
+
+  .file-row.header {
+    border-bottom: 1.5px solid var(--rule);
+    padding-bottom: 10px;
+  }
+
+  .file-row.header span {
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    color: var(--ink-3);
+  }
+
+  .file-rank {
+    font-family: "Fraunces", serif;
+    font-variation-settings: "opsz" 30;
+    color: var(--ink-3);
+    font-size: 16px;
+  }
+
+  .file-path {
+    font-size: 11.5px;
+  }
+
+  .file-path strong {
+    color: var(--ink-1);
+    font-weight: 500;
+  }
+
+  .file-path em {
+    color: var(--ink-3);
+    font-style: normal;
+  }
+
+  .file-bar {
+    height: 18px;
+    background: var(--surface-2);
+    position: relative;
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .file-bar .fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--p2), var(--p1));
+    position: relative;
+  }
+
+  .file-bar .limit {
+    position: absolute;
+    top: -3px;
+    bottom: -3px;
+    width: 1.5px;
+    background: var(--ink-1);
+  }
+
+  .file-bar .limit::after {
+    content: "500";
+    position: absolute;
+    top: -14px;
+    left: -10px;
+    font-size: 8.5px;
+    color: var(--ink-2);
+    letter-spacing: 0.1em;
+  }
+
+  .file-count {
+    text-align: right;
+    font-family: "Fraunces", serif;
+    font-variation-settings: "opsz" 30;
+    font-size: 18px;
+    font-weight: 420;
+    color: var(--p1);
+    letter-spacing: -0.01em;
+  }
+
+  /* ─── Footer ─────────────────────────────────────────────── */
+  .foot {
+    margin-top: 56px;
+    padding-top: 22px;
+    border-top: 1.5px solid var(--rule);
+    display: grid;
+    grid-template-columns: 2fr 1fr 1fr;
+    gap: 28px;
+    font-size: 11px;
+    color: var(--ink-2);
+    line-height: 1.7;
+  }
+
+  .foot h4 {
+    font-family: "Fraunces", serif;
+    font-variation-settings: "opsz" 30;
+    font-weight: 500;
+    font-size: 14px;
+    letter-spacing: -0.01em;
+    margin: 0 0 6px;
+    color: var(--ink-1);
+  }
+
+  .foot ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+
+  .foot li {
+    padding: 2px 0;
+  }
+
+  .foot li::before {
+    content: "→ ";
+    color: var(--ink-3);
+    margin-right: 2px;
+  }
+
+  .foot .sig {
+    margin-top: 24px;
+    font-size: 10px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+
+  /* responsive */
+  @media (max-width: 920px) {
+    .synth { grid-template-columns: 1fr; }
+    .subs-grid { grid-template-columns: 1fr; }
+    .meta-bar { grid-template-columns: repeat(2, 1fr); }
+    .meta-cell:nth-child(3) { padding-left: 0; border-left: 0; }
+    .finding { grid-template-columns: 36px 1fr; }
+    .finding-meta { grid-column: 2; padding-right: 0; }
+    .finding-body { grid-column: 2; border-left: 0; padding-left: 0; padding-top: 10px; }
+    .file-row { grid-template-columns: 24px 1fr 48px; }
+    .file-bar { grid-column: 1 / -1; }
+    .foot { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<div class="frame">
+
+  <!-- ── Masthead ─────────────────────────────────────────────── -->
+  <header class="masthead">
+    <div class="mast-l">
+      <div class="mast-eyebrow">
+        <span class="dot"></span>
+        <span>Audit · code quality · memory · bugs</span>
+        <span>·</span>
+        <span>XTOUCH-GW v3</span>
+      </div>
+      <h1 class="mast-title">Rapport<br/><em>d'audit</em></h1>
+    </div>
+    <div class="mast-r">
+      <span class="lbl">Date</span>
+      <span class="val">2026-05-17</span><br/>
+      <span class="lbl" style="margin-top:6px">Branche</span>
+      <span class="val">main · 0ab3988</span><br/>
+      <span class="lbl" style="margin-top:6px">Methode</span>
+      <span class="val">6 agents · 12-pattern grid</span>
+    </div>
+  </header>
+
+  <!-- ── Meta bar ─────────────────────────────────────────────── -->
+  <div class="meta-bar">
+    <div class="meta-cell">
+      <span class="k">Fichiers analysés</span>
+      <span class="v">107</span>
+      <span class="sub">across src/</span>
+    </div>
+    <div class="meta-cell">
+      <span class="k">Lignes de code</span>
+      <span class="v">28 345</span>
+      <span class="sub">Rust async / Tokio</span>
+    </div>
+    <div class="meta-cell">
+      <span class="k">Findings</span>
+      <span class="v">66</span>
+      <span class="sub">5 critiques · 3 sécurité</span>
+    </div>
+    <div class="meta-cell">
+      <span class="k">Risque global</span>
+      <span class="v" style="color:var(--p2)">Modéré</span>
+      <span class="sub">stable, qq. correctifs urgents</span>
+    </div>
+  </div>
+
+  <!-- ── Synthèse ─────────────────────────────────────────────── -->
+  <section class="synth">
+    <div class="synth-l">
+      <span class="section-eyebrow">Synthèse</span>
+      <p>
+        L'architecture <span class="hl">Actor Model + sled persistence</span>
+        tient bien l'objectif &lt;20 ms / &lt;50 MB. La majorité des chemins critiques
+        sont bornés (channels, GC throttlé, eviction TTL).
+      </p>
+      <p>
+        Cinq <span class="crit">défauts de boucle d'événements</span> sont en revanche
+        à corriger en priorité : un <em>sleep(5s)</em> dans un <em>select!</em> qui empêche
+        toute persistance sous trafic, des collisions de shadow-key SysEx
+        qui cassent silencieusement l'anti-écho, un spawn par MIDI message sur
+        l'asservissement des faders, et deux nettoyages d'état manquants lors
+        du rechargement à chaud (apps retirées + caméras).
+      </p>
+      <p style="font-size:18px;color:var(--ink-2)">
+        Aucun leak permanent confirmé. Les schémas dangereux sont des
+        accumulations <em>hot-reload</em> qui se manifesteraient sur des semaines
+        d'uptime ou des rechargements répétés de profil — moins critiques
+        qu'un OOM en démo, mais à border avant la prochaine release.
+      </p>
+    </div>
+
+    <div class="synth-r">
+      <div class="donut-wrap">
+        <div class="donut">
+          <div class="donut-center">
+            <div class="n">66</div>
+            <div class="l">findings</div>
+          </div>
+        </div>
+        <div class="legend">
+          <div class="leg-row"><span class="sw" style="background:var(--p1)"></span><span class="lab">Pri 1 · critique</span><span></span><span class="num">5</span></div>
+          <div class="leg-row"><span class="sw" style="background:var(--p2)"></span><span class="lab">Pri 2 · stable</span><span></span><span class="num">20</span></div>
+          <div class="leg-row"><span class="sw" style="background:var(--p3)"></span><span class="lab">Pri 3 · fragile</span><span></span><span class="num">25</span></div>
+          <div class="leg-row"><span class="sw" style="background:var(--sec)"></span><span class="lab">Sécurité</span><span></span><span class="num">3</span></div>
+          <div class="leg-row"><span class="sw" style="background:var(--qa)"></span><span class="lab">Qualité · taille</span><span></span><span class="num">13</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Subsystem grid ──────────────────────────────────────── -->
+  <section class="subs-section">
+    <div class="h-row">
+      <div>
+        <span class="section-eyebrow">Sous-systèmes</span>
+        <h2 class="h-title">Vue par <em>module</em></h2>
+      </div>
+      <span style="font-size:10.5px;color:var(--ink-3);letter-spacing:0.14em;text-transform:uppercase">6 agents · parallèle · read-only</span>
+    </div>
+
+    <div class="subs-grid">
+
+      <article class="sub-card">
+        <div class="sub-head">
+          <h3>OBS driver</h3>
+          <span class="loc">~2 800 LOC · 14 fichiers</span>
+        </div>
+        <p class="verdict">Architecture solide pour l'uptime long : reconnect single-flight, eviction sur SceneRemoved. Risques restant : duplication du timer analog et listeners en cas de re-init rapide.</p>
+        <div class="sub-stats">
+          <div class="sub-stat p1"><span class="n">0</span><div class="l">Pri 1</div></div>
+          <div class="sub-stat p2"><span class="n">4</span><div class="l">Pri 2</div></div>
+          <div class="sub-stat p3"><span class="n">9</span><div class="l">Pri 3</div></div>
+          <div class="sub-stat"><span class="n">3</span><div class="l">+500l</div></div>
+        </div>
+        <div class="risk-bar"><div class="risk-pip on-2"></div><div class="risk-pip on-2"></div><div class="risk-pip"></div></div>
+      </article>
+
+      <article class="sub-card">
+        <div class="sub-head">
+          <h3>Winaudio · MidiBridge</h3>
+          <span class="loc">~3 100 LOC · 14 fichiers</span>
+        </div>
+        <p class="verdict">COM thread bien instrumenté (purge_stale, TTL cache, unregister). Plusieurs JoinHandle non-trackés et un <em>unsafe impl Send/Sync</em> manuel à retirer. Risque double-init au hot-reload.</p>
+        <div class="sub-stats">
+          <div class="sub-stat p1"><span class="n">0</span><div class="l">Pri 1</div></div>
+          <div class="sub-stat p2"><span class="n">6</span><div class="l">Pri 2</div></div>
+          <div class="sub-stat p3"><span class="n">8</span><div class="l">Pri 3</div></div>
+          <div class="sub-stat"><span class="n">2</span><div class="l">+500l</div></div>
+        </div>
+        <div class="risk-bar"><div class="risk-pip on-2"></div><div class="risk-pip on-2"></div><div class="risk-pip"></div></div>
+      </article>
+
+      <article class="sub-card">
+        <div class="sub-head">
+          <h3>Router + State</h3>
+          <span class="loc">~3 400 LOC · 19 fichiers</span>
+        </div>
+        <p class="verdict">Actor Model bien conçu, GC throttlé. Bug critique : shadow-key SysEx collision (anti-écho cassé). Cleanup manquant sur <em>update_config</em>. Perf : O(N) get_known_latest + 3k format!/sec.</p>
+        <div class="sub-stats">
+          <div class="sub-stat p1"><span class="n">2</span><div class="l">Pri 1</div></div>
+          <div class="sub-stat p2"><span class="n">3</span><div class="l">Pri 2</div></div>
+          <div class="sub-stat p3"><span class="n">7</span><div class="l">Pri 3</div></div>
+          <div class="sub-stat"><span class="n">2</span><div class="l">+500l</div></div>
+        </div>
+        <div class="risk-bar"><div class="risk-pip on-1"></div><div class="risk-pip on-2"></div><div class="risk-pip on-3"></div></div>
+      </article>
+
+      <article class="sub-card">
+        <div class="sub-head">
+          <h3>Input · Gamepad</h3>
+          <span class="loc">~3 600 LOC · 22 fichiers</span>
+        </div>
+        <p class="verdict">Hot-plug propre via prune 2s + Disconnected event. Bug : <em>is_xinput</em> hardcodé sur <em>gamepad2</em> casse si l'ordre de slot diffère. Fenêtre ≤2s de routing fantôme sur disconnect XInput.</p>
+        <div class="sub-stats">
+          <div class="sub-stat p1"><span class="n">0</span><div class="l">Pri 1</div></div>
+          <div class="sub-stat p2"><span class="n">2</span><div class="l">Pri 2</div></div>
+          <div class="sub-stat p3"><span class="n">6</span><div class="l">Pri 3</div></div>
+          <div class="sub-stat"><span class="n">0</span><div class="l">+500l</div></div>
+        </div>
+        <div class="risk-bar"><div class="risk-pip on-3"></div><div class="risk-pip"></div><div class="risk-pip"></div></div>
+      </article>
+
+      <article class="sub-card">
+        <div class="sub-head">
+          <h3>API · Editor · Config · Tray</h3>
+          <span class="loc">~5 400 LOC · 22 fichiers</span>
+        </div>
+        <p class="verdict">Stale <em>available_cameras</em> au hot-reload (camera fantômes côté Stream Deck). Pas de CSRF ni de body-limit sur l'API ; notify watcher déclenche 2–3× par <em>atomic_write</em>. Tray busy-poll 50 ms.</p>
+        <div class="sub-stats">
+          <div class="sub-stat p1"><span class="n">1</span><div class="l">Pri 1</div></div>
+          <div class="sub-stat p2"><span class="n">4</span><div class="l">Pri 2</div></div>
+          <div class="sub-stat p3"><span class="n">9</span><div class="l">Pri 3</div></div>
+          <div class="sub-stat"><span class="n">3</span><div class="l">+500l</div></div>
+        </div>
+        <div class="risk-bar"><div class="risk-pip on-1"></div><div class="risk-pip on-2"></div><div class="risk-pip on-3"></div></div>
+      </article>
+
+      <article class="sub-card">
+        <div class="sub-head">
+          <h3>Top-level · XTouch · MIDI</h3>
+          <span class="loc">~4 100 LOC · 16 fichiers</span>
+        </div>
+        <p class="verdict">Bug majeur : le <em>sleep(5s)</em> dans <em>select!</em> empêche tout snapshot sous trafic continu. Spawn par MIDI msg sur fader_setpoint. <em>.unwrap()</em> sur Mutex/RwLock contredit la promesse "zero panic".</p>
+        <div class="sub-stats">
+          <div class="sub-stat p1"><span class="n">2</span><div class="l">Pri 1</div></div>
+          <div class="sub-stat p2"><span class="n">5</span><div class="l">Pri 2</div></div>
+          <div class="sub-stat p3"><span class="n">8</span><div class="l">Pri 3</div></div>
+          <div class="sub-stat"><span class="n">3</span><div class="l">+500l</div></div>
+        </div>
+        <div class="risk-bar"><div class="risk-pip on-1"></div><div class="risk-pip on-2"></div><div class="risk-pip on-3"></div></div>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ── Findings ledger ─────────────────────────────────────── -->
+  <section class="findings-section">
+    <div class="h-row">
+      <div>
+        <span class="section-eyebrow">Findings · ledger</span>
+        <h2 class="h-title">66 entrées <em>indexées</em></h2>
+      </div>
+    </div>
+
+    <div class="filter-bar" id="filterBar">
+      <span class="flbl">Filtrer</span>
+      <button class="chip" data-f="all" aria-pressed="true">Tous</button>
+      <button class="chip p1" data-f="p1" aria-pressed="false">Pri 1</button>
+      <button class="chip p2" data-f="p2" aria-pressed="false">Pri 2</button>
+      <button class="chip p3" data-f="p3" aria-pressed="false">Pri 3</button>
+      <button class="chip sec" data-f="sec" aria-pressed="false">Sécurité</button>
+      <button class="chip qa" data-f="qa" aria-pressed="false">Qualité</button>
+      <button class="chip perf" data-f="perf" aria-pressed="false">Perf</button>
+      <span class="count-tag"><span class="nn" id="visibleCount">66</span>visibles</span>
+    </div>
+
+    <div class="findings" id="findings"></div>
+  </section>
+
+  <!-- ── File size offenders ─────────────────────────────────── -->
+  <section class="files-section">
+    <div class="h-row">
+      <div>
+        <span class="section-eyebrow">Qualité · taille des fichiers</span>
+        <h2 class="h-title">13 fichiers dépassent <em>la limite 500l</em></h2>
+      </div>
+      <span style="font-size:11px;color:var(--ink-2);letter-spacing:0.04em">CLAUDE.md cap · 500 lignes</span>
+    </div>
+
+    <div class="files-list" id="filesList">
+      <div class="file-row header">
+        <span></span><span>Fichier</span><span>Lignes</span><span style="text-align:right">Total</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Footer ──────────────────────────────────────────────── -->
+  <footer class="foot">
+    <div>
+      <h4>Recommandations immédiates</h4>
+      <ul>
+        <li>Corriger le <code>tokio::time::sleep(5s)</code> dans <code>select!</code> (app.rs:383) avec <code>tokio::time::interval</code> hoisted</li>
+        <li>Régler la collision shadow-key SysEx (actor.rs:516, 679) — utiliser <code>entry.hash</code></li>
+        <li>Remplacer <code>FaderSetpoint::apply_tx</code> par un channel borné et coalescer via <code>Notify</code></li>
+        <li>Étendre <code>prune_unused_drivers</code> à tous les chemins de <code>update_config</code></li>
+        <li>Rafraîchir <code>available_cameras</code> dans <code>handle_config_reload</code></li>
+      </ul>
+    </div>
+    <div>
+      <h4>Méthodologie</h4>
+      <ul>
+        <li>6 agents read-only en parallèle</li>
+        <li>12-pattern grid mémoire / async</li>
+        <li>Extensions par domaine (WS, COM, hot-plug)</li>
+        <li>Classement Pri 1/2/3 + Sécurité + Qualité</li>
+      </ul>
+    </div>
+    <div>
+      <h4>Hors scope</h4>
+      <ul>
+        <li>Profiling runtime (dhat-rs recommandé)</li>
+        <li>Tests d'intégration matériel</li>
+        <li>Audit dépendances tierces</li>
+        <li>Audit shaders / GPU (visualizer)</li>
+      </ul>
+      <div class="sig">— Génération automatique · usage interne</div>
+    </div>
+  </footer>
+
+</div>
+
+<!-- ── Findings data + renderer ────────────────────────────── -->
+<script>
+const FINDINGS = [
+  // ── PRI 1 ───────────────────────────────────────────────────
+  {n:1, sev:"p1", sevLabel:"Pri 1 · critique", pat:"BUG · select! sleep", title:"Le snapshot périodique ne se déclenche jamais sous trafic MIDI continu", path:"src/app.rs", line:383,
+   why:"Le <code>tokio::time::sleep(5s)</code> est construit à chaque itération de boucle. Toute autre branche du <code>select!</code> annule et réarme le sleep — sous flux MIDI continu (>5 s entre événements jamais atteint), la branche save_state_snapshot n'arme jamais sa cible. La persistance ACID dépend du seul flush au shutdown.",
+   fix:"Hoister un <code>tokio::time::interval(Duration::from_secs(5))</code> avant la boucle et utiliser <code>_ = tick.tick() =&gt; …</code>"},
+
+  {n:2, sev:"p1", sevLabel:"Pri 1 · critique", pat:"BUG · anti-écho SysEx", title:"Collision shadow-key pour tous les messages SysEx — anti-écho cassé silencieusement", path:"src/state/actor.rs", line:"516, 679-685",
+   why:"<code>addr.channel</code> et <code>addr.data1</code> sont <code>None</code> pour SysEx et <code>entry.value.as_number()</code> renvoie 0 (le payload est <em>Binary</em>). Tous les SysEx partagent la clé <code>\"sysex|0|0\"</code> avec valeur=0 → <code>prev.value == value</code> renvoie toujours vrai dans la fenêtre de 60 ms. Les feedbacks SysEx OBS/Voicemeeter à >16 Hz sont systématiquement supprimés.",
+   fix:"Pour <code>MidiStatus::SysEx</code>, dériver la shadow-key depuis <code>entry.hash</code> et comparer le hash, pas la valeur numérique"},
+
+  {n:3, sev:"p1", sevLabel:"Pri 1 · critique", pat:"#3 detached tasks + #2 unbounded chan", title:"Spawn par MIDI message + channel non-borné sur l'asservissement des faders", path:"src/xtouch/fader_setpoint.rs", line:"54, 119-154",
+   why:"<code>schedule()</code> est appelé à chaque PitchBend (potentiellement 1 kHz). Chaque appel fait <code>tokio::spawn</code> d'un <code>sleep(90ms)</code> sans handle ni cancellation, et envoie sur un <code>mpsc::unbounded_channel</code>. Si l'USB X-Touch ralentit (recovery exclusive Windows ≈ 250 ms) le consommateur stalle et les tasks + commandes s'empilent.",
+   fix:"Remplacer par <code>mpsc::channel(64)</code> + un <code>tokio::sync::Notify</code> par canal pour ré-armer une seule tâche résidente — l'epoch check garantit l'idempotence"},
+
+  {n:4, sev:"p1", sevLabel:"Pri 1 · critique", pat:"#8 stale state on reload", title:"update_config ne purge pas l'état des apps retirées du config", path:"src/router/mod.rs", line:"297-351",
+   why:"Le hot-reload échange la config et rafraîchit la page mais n'appelle jamais <code>clear_states_for_app</code> pour les apps disparues. Seul <code>prune_unused_drivers</code> (app.rs:504) le fait — uniquement via le chemin profile-store. Les autres déclencheurs (REPL, file watcher direct) laissent l'état fantôme pour toujours.",
+   fix:"Dans <code>update_config</code>, calculer <code>removed = referenced(old) - referenced(new)</code> et appeler <code>clear_states_for_app</code> pour chaque app retirée"},
+
+  {n:5, sev:"p1", sevLabel:"Pri 1 · critique", pat:"#8 stale state on reload", title:"available_cameras de l'API jamais rafraîchi après changement de profil", path:"src/app.rs", line:199,
+   why:"<code>ApiState.available_cameras</code> est construit une fois au démarrage. <code>handle_config_reload</code> ne refresh que <code>gamepad_slots</code>. Après modification de <code>obs.camera_control.cameras</code>, <code>GET /api/cameras</code> renvoie la vieille liste et <code>set_camera_target</code> rejette les nouveaux IDs en 400.",
+   fix:"Dans <code>handle_config_reload</code>, ajouter <code>*api_state.available_cameras.write() = build_camera_infos(&amp;new_config);</code>"},
+
+  // ── PRI 2 ───────────────────────────────────────────────────
+  {n:6, sev:"p2", sevLabel:"Pri 2 · stable", pat:"#1 unbounded collection", title:"analog_error_count n'est pas purgé quand un rate est auto-évincé", path:"src/drivers/obs/analog.rs", line:"194-205",
+   why:"Quand un rate atteint MAX_RETRIES et est retiré de <code>analog_rates</code>, l'entrée correspondante dans <code>analog_error_count</code> reste. Les entrées fuient par combinaison unique <code>scene::source</code> ayant erré ≥3 fois.",
+   fix:"Après <code>analog_rates.write().remove(&amp;cache_key)</code>, ajouter <code>analog_error_count.write().remove(&amp;cache_key);</code>"},
+
+  {n:7, sev:"p2", sevLabel:"Pri 2 · stable", pat:"#3 detached forever-running", title:"Race sur shutdown_flag duplique le timer analog au re-init de profil", path:"src/drivers/obs/analog.rs", line:"119-220",
+   why:"<code>shutdown()</code> pose <code>shutdown_flag=true</code>, mais <code>init()</code> le réarme immédiatement à <code>false</code> sans synchroniser l'ancienne tâche. Si <code>init()</code> est appelé peu après <code>shutdown()</code>, l'ancien timer continue + un nouveau est spawné → 2 timers concurrents.",
+   fix:"Utiliser un epoch atomique : <code>let my_epoch = self.timer_epoch.fetch_add(1, ...);</code> ; le timer sort si <code>current_epoch != my_epoch</code>"},
+
+  {n:8, sev:"p2", sevLabel:"Pri 2 · stable", pat:"#3 detached tasks", title:"Plusieurs tâches d'event-listener concurrentes possibles après reconnect", path:"src/drivers/obs/connection.rs", line:"128",
+   why:"Aucun <code>JoinHandle</code> retenu pour l'event listener. Si <code>connect()</code> est appelé plusieurs fois rapidement, on écrase <code>*self.client</code> sans abort l'ancien listener — il prendra les events du nouveau client (N listeners après N reconnects, double-fire des status).",
+   fix:"Stocker <code>Option&lt;JoinHandle&gt;</code> du listener dans le driver ; <code>abort()</code> avant <code>spawn_event_listener()</code>"},
+
+  {n:9, sev:"p2", sevLabel:"Pri 2 · stable", pat:"#9 subscribers w/o unsubscribe", title:"indicator_emitters et status_callbacks s'accumulent au re-init", path:"src/drivers/obs/driver.rs", line:"39, 48",
+   why:"<code>subscribe_indicators</code> et <code>subscribe_connection_status</code> push sans handle d'unsubscribe. Au re-init de driver (profile reload), les anciennes closures restent + sont invoquées en doublon.",
+   fix:"Vider les Vec dans <code>init()</code> ou <code>shutdown()</code> ; ou retourner un handle qui retire au Drop"},
+
+  {n:10, sev:"p2", sevLabel:"Pri 2 · stable", pat:"#9 subscribers w/o unsubscribe", title:"MidiBridge status_callbacks ne fait que push, jamais remove", path:"src/drivers/midibridge.rs", line:"60, 624",
+   why:"Même pattern qu'OBS : <code>subscribe_connection_status</code> append uniquement. Si la tray UI re-souscrit au reload, les callbacks sont conservés et appelés en doublon. Chaque subscriber tient un Arc.",
+   fix:"Drainer au shutdown ; envisager <code>Weak&lt;dyn Fn&gt;</code> pour drop automatique"},
+
+  {n:11, sev:"p2", sevLabel:"Pri 2 · stable", pat:"#3 detached tasks", title:"Page watcher + startup task + LCD render fan-out : JoinHandles non trackés", path:"src/drivers/winaudio/mod.rs", line:"209, 227-234, 740-742",
+   why:"Trois <code>tokio::spawn</code> détachés sans handle, dont un <code>render_lcd_if_active</code> par event <code>ActiveSessionsChanged</code>. Le shutdown ne ferme que le COM thread ; les tâches survivent jusqu'au drop du <code>live_tx</code>. Double-init multiplie les watchers.",
+   fix:"Stocker chaque <code>JoinHandle</code>, abort en début de <code>init()</code>"},
+
+  {n:12, sev:"p2", sevLabel:"Pri 2 · stable", pat:"#3 detached + race", title:"winmedia : double-init lance un second poller, le flag est réarmé", path:"src/drivers/winmedia/mod.rs", line:"106-120",
+   why:"<code>init()</code> spawn poller + page-watcher et set <code>shutdown_flag=false</code>. Appelé deux fois sans <code>shutdown()</code> intermédiaire, le précédent poller voit le flag remis à false et reprend ; deux pollers se battent sur <code>last_state</code>.",
+   fix:"Tenir <code>Option&lt;JoinHandle&gt;</code> par tâche ; abort le précédent avant de respawn"},
+
+  {n:13, sev:"p2", sevLabel:"Pri 2 · stable", pat:"#3 detached + race", title:"midibridge reconnect tasks non trackées, race sur port MIDI exclusif", path:"src/drivers/midibridge.rs", line:"504-506, 534-536",
+   why:"Les boucles de reconnect honorent <code>shutdown_flag</code>, mais le hot-reload ne peut pas abort l'ancienne instance. Deux loops se disputent un port MIDI Windows exclusif → l'un échoue silencieusement et marque la connexion morte.",
+   fix:"Tracker les JoinHandles, abort au shutdown / avant re-init"},
+
+  {n:14, sev:"p2", sevLabel:"Pri 2 · stable", pat:"#1 unbounded · perf", title:"activity_map : format!() par MIDI message dans le hot path", path:"src/tray/activity.rs", line:"18, 53",
+   why:"<code>activity_map.insert(format!(\"{}:{:?}\", driver, direction), Instant::now())</code> alloue un String à chaque event MIDI. La map est bornée par le nombre de drivers aujourd'hui (~6) mais aucun cap défensif, et toute clé dynamique future fuirait. Viole la règle CLAUDE.md \"zero-allocation hot path\".",
+   fix:"Clé en tuple <code>(&amp;'static str, ActivityDirection)</code> ou enum AppKey ; ajouter cap défensif"},
+
+  {n:15, sev:"p2", sevLabel:"Pri 2 · stable", pat:"BUG · panic .unwrap", title:".duration_since(UNIX_EPOCH).unwrap() dans le hot path peut paniquer", path:"src/state/builders.rs:29 · src/router/camera_target.rs:98", line:"",
+   why:"Si l'horloge système est antérieure à 1970 (skew VM / NTP initial), l'unwrap panique et tue la tâche actor. Hit à chaque message MIDI d'app et chaque <code>set_target</code> gamepad.",
+   fix:"Remplacer par <code>.unwrap_or_default()</code> comme le fait déjà <code>StateActor::now_ms()</code>"},
+
+  {n:16, sev:"p2", sevLabel:"Pri 2 · stable", pat:"BUG · panic .unwrap", title:".unwrap() sur Mutex/RwLock dans send_raw et fader_setpoint", path:"src/xtouch.rs:255,274,289 · fader_setpoint.rs:71,95,131,163", line:"",
+   why:"Si un writer panique en tenant le lock, tous les sends suivants paniquent à leur tour, tuant la branche du <code>select!</code> principal et figeant l'event loop. Contredit la règle \"zero panic in production\".",
+   fix:"Switch sur <code>parking_lot</code> (non-poisoning, déjà dans les deps) ou unwrap_or_else avec recovery"},
+
+  {n:17, sev:"p2", sevLabel:"Pri 2 · stable", pat:"BUG · MIDI Windows quirk", title:"Aucun sleep 250 ms entre disconnect() et reopen — quirk MIDI Windows exclusif", path:"src/xtouch.rs", line:"138-231",
+   why:"CLAUDE.md documente : \"Recovery needs 250 ms+ after disconnect\". <code>connect()</code> drop puis rouvre immédiatement. Pas un souci aujourd'hui (connect appelé une seule fois), mais bloquant si on ajoute une logique de reconnect.",
+   fix:"<code>tokio::time::sleep(Duration::from_millis(300)).await</code> entre disconnect et reopen"},
+
+  {n:18, sev:"p2", sevLabel:"Pri 2 · stable", pat:"BUG · unsafe impl", title:"unsafe impl Send/Sync manuel masque les vérifications futures", path:"src/drivers/midibridge.rs", line:"74-75",
+   why:"Le commentaire affirme la sécurité \"car tous les champs sont Arc&lt;Mutex&gt;\" — mais ajouter un futur champ <code>Rc</code> ou <code>*mut T</code> ne fera pas warner le compilateur. Et midir::MidiInputConnection a des contraintes WinMM non triviales.",
+   fix:"Retirer les deux impls ; corriger au niveau du champ si les types midir ne sont pas auto-Send/Sync"},
+
+  {n:19, sev:"p2", sevLabel:"Pri 2 · stable", pat:"BUG · blocking in async", title:"parking_lot::Mutex tenu à travers conn.send() (sync + MIDI bloquant)", path:"src/drivers/midibridge.rs", line:"438-450",
+   why:"<code>send_message</code> est async, tient un Mutex sync à travers <code>conn.send()</code>. Sur Windows MIDI, send peut bloquer brièvement → bloque le thread exécuteur Tokio. Pire : commentaire <code>// TODO: Implement reconnection</code> ; une erreur de send laisse <code>midi_out=None</code> à jamais.",
+   fix:"Spawn reconnect après échec ; envisager un worker dédié pour les sends"},
+
+  {n:20, sev:"p2", sevLabel:"Pri 2 · stable", pat:"#1 unbounded collection", title:"pending_midi_messages s'accumule via push_lcd_label sans cap", path:"src/router/mod.rs", line:"189-204",
+   why:"<code>push_lcd_label</code> append sans limite. Le refresh assigne (remplace) le Vec, mais le chemin LCD label append. Si le display loop stalle, les updates s'empilent.",
+   fix:"<code>if buf.len() &gt; 1024 { buf.drain(..buf.len()-512); }</code>"},
+
+  {n:21, sev:"p2", sevLabel:"Pri 2 · stable", pat:"BUG · notify watcher", title:"Le watcher de config déclenche 2–3× par atomic_write", path:"src/config/watcher.rs:41 · src/config/profiles.rs:521", line:"",
+   why:"<code>atomic_write</code> = tmp + rename → notify émet <code>Modify(Name)</code> + <code>Modify(Data)</code> sur Windows. Trois tâches debounce 100 ms sont spawnées, chacune fait un load YAML complet + validation. Le profile switch logge 2–3× \"Configuration reloaded\".",
+   fix:"AtomicBool \"reload-pending\" partagé + une seule task debounce résidente ; ou crate <code>notify-debouncer-mini</code>"},
+
+  {n:22, sev:"p2", sevLabel:"Pri 2 · stable", pat:"BUG · stale state", title:"is_xinput hardcodé sur 'gamepad2' — break si l'ordre du config diffère", path:"src/input/gamepad/mapper.rs", line:"172-173",
+   why:"<code>let is_xinput = control_id.starts_with(\"gamepad2\");</code> assume que slot 2 = XInput. Le slot/backend est en réalité configuré. Avec <code>gamepads: [{XInput}, {FaceOff}]</code>, l'XInput devient gamepad1 et subit un double deadzone (hard + soft).",
+   fix:"Plumber le backend dans <code>GamepadEvent</code> ou dans <code>AnalogConfig</code>, pas via le nom du slot"},
+
+  {n:23, sev:"p2", sevLabel:"Pri 2 · stable", pat:"BUG · stale state", title:"XInput hot-poll disconnect ne libère pas le slot tout de suite (fenêtre ≤2s)", path:"src/input/gamepad/hybrid_provider/xinput.rs", line:"29-33",
+   why:"À la déconnexion XInput pendant le poll, on clear <code>xinput_connected[idx]</code> mais pas le SlotManager. Le slot reste marqué occupé jusqu'au prochain cycle reconnect 2 s. Un autre XInput peut alors double-attach.",
+   fix:"Déclencher <code>check_xinput_disconnections</code> immédiatement à la détection synchrone"},
+
+  {n:24, sev:"p2", sevLabel:"Pri 2 · stable", pat:"#8 stale state on disconnect", title:"Trail data du visualizer conservée à la déconnexion XInput", path:"src/input/gamepad/visualizer_state.rs", line:"199-203",
+   why:"<code>mark_xinput_disconnected</code> ne fait que flipper <code>connected=false</code>. Les <code>VecDeque</code> de 1000 points par stick sont conservées. Si un autre Xbox se branche sur le même slot, il hérite du tracé du précédent.",
+   fix:"Appeler <code>controller.clear_trails()</code> dans <code>mark_xinput_disconnected</code>"},
+
+  {n:25, sev:"p2", sevLabel:"Pri 2 · stable", pat:"#3 detached task safety", title:"Une panic dans un callback abat silencieusement le forwarder gamepad", path:"src/input/gamepad/hybrid_provider/mod.rs", line:"80-87",
+   why:"Le forwarder <code>tokio::spawn</code> appelle directement les callbacks de listeners. Une panic dans un callback (Arc&lt;dyn Fn&gt;) abat la tâche entière ; les events suivants sont perdus sans aucun signal.",
+   fix:"<code>std::panic::catch_unwind(AssertUnwindSafe(|| cb(event)))</code> et logger ; ou stocker le JoinHandle et monitorer"},
+
+  // ── PRI 3 ───────────────────────────────────────────────────
+  {n:26, sev:"p3", sevLabel:"Pri 3 · fragile", pat:"BUG · cache drift", title:"set_transform en échec n'invalide pas le cache", path:"src/drivers/obs/transform.rs", line:"447-452",
+   why:"Sur échec de <code>set_transform</code>, le cache n'est pas invalidé. L'appel suivant lit le cache stale tandis qu'OBS a peut-être partiellement appliqué côté serveur → divergence.",
+   fix:"Sur erreur : <code>self.transform_cache.write().remove(&amp;cache_key);</code>"},
+
+  {n:27, sev:"p3", sevLabel:"Pri 3 · fragile", pat:"BUG · double event", title:"emit_status(Disconnected) fire deux fois par cycle reconnect", path:"src/drivers/obs/event_listener.rs:279 · connection.rs:253", line:"",
+   why:"Le listener émet Disconnected à la fermeture du stream, puis <code>schedule_reconnect</code> émet immédiatement Reconnecting{1}. Le bus collapse les deux en \"Down\" → double event sur le bus.",
+   fix:"Supprimer l'<code>emit_status(Disconnected)</code> du listener, laisser schedule_reconnect en charge"},
+
+  {n:28, sev:"p3", sevLabel:"Pri 3 · fragile", pat:"PERF · hot path", title:"format!() pour addr_key et shadow_key par message MIDI (~3k allocs/s)", path:"src/state/types.rs:179-187 · src/state/actor.rs:658-666", line:"",
+   why:"<code>format!(\"{}|{}|{}|{}\", ...)</code> est appelé 3× par message MIDI à ~1.1 kHz. Viole \"zero-allocation hot path\".",
+   fix:"Clé StateMap typée <code>u64</code> packé : <code>(status &lt;&lt; 56) | (channel &lt;&lt; 48) | (data1 &lt;&lt; 40) | port_id</code>"},
+
+  {n:29, sev:"p3", sevLabel:"Pri 3 · fragile", pat:"PERF · syscall", title:"SystemTime::now() appelé par message MIDI", path:"src/state/actor.rs:615 · src/router/mod.rs:207", line:"",
+   why:"Syscall <code>GetSystemTimeAsFileTime</code> sur Windows par update + shadow + anti-écho. ~3k syscalls/sec rien que pour le temps.",
+   fix:"<code>Instant::now()</code> (monotonic, vDSO/PerfCounter cached) pour le math elapsed ; SystemTime seulement pour persistance"},
+
+  {n:30, sev:"p3", sevLabel:"Pri 3 · fragile", pat:"PERF · O(N) scan", title:"handle_get_known_latest est O(N) sur app_state par appel", path:"src/state/actor.rs", line:"347-407",
+   why:"Scan linéaire sur <code>app_state.values()</code>. Appelé par refresh × 9 faders × 32 notes × N apps = ~246 round-trips actor par refresh, chacun avec oneshot reply.",
+   fix:"Index secondaire <code>HashMap&lt;(MidiStatus, Option&lt;u8&gt;, Option&lt;u8&gt;), Vec&lt;addr_key&gt;&gt;</code> pour lookup O(1)"},
+
+  {n:31, sev:"p3", sevLabel:"Pri 3 · fragile", pat:"PERF · clone hot path", title:"process_feedback clone toute la config par message", path:"src/router/feedback.rs", line:"13-17",
+   why:"Le commentaire dit \"ensure consistency\" mais cloner tout <code>AppConfig</code> (potentiellement KB) sur chaque feedback est lourd. Le <code>RwLock</code> read est déjà cheap.",
+   fix:"Wrap config en <code>Arc&lt;AppConfig&gt;</code> swap atomique via <code>arc-swap</code> ; clone = pointer bump"},
+
+  {n:32, sev:"p3", sevLabel:"Pri 3 · fragile", pat:"PERF · CSV re-read", title:"load_default_mappings() re-parse le CSV tous les 50 ms en mouvement de fader", path:"src/drivers/winaudio/mod.rs", line:768,
+   why:"Inside <code>flush_pending</code> (ticker 50 ms). Pendant un mouvement continu : 20× parse CSV par seconde. Winmedia met déjà la DB en cache.",
+   fix:"Mettre <code>Arc&lt;ControlMappingDB&gt;</code> en cache sur le driver, comme winmedia"},
+
+  {n:33, sev:"p3", sevLabel:"Pri 3 · fragile", pat:"PERF · to_lowercase", title:"to_lowercase() par itération du label LCD", path:"src/drivers/winaudio/mod.rs", line:"1037, 1057",
+   why:"<code>pinned.iter().find(|p| p.process_name.to_lowercase() == process_lc)</code> alloue un String par élément, à chaque LCD render.",
+   fix:"<code>eq_ignore_ascii_case</code> ou lower-case once au load du config"},
+
+  {n:34, sev:"p3", sevLabel:"Pri 3 · fragile", pat:"PERF · oneshot per msg", title:"should_suppress_anti_echo : oneshot async par feedback message", path:"src/router/feedback.rs", line:"239-243",
+   why:"Chaque feedback crée un oneshot channel + send command + await. Ajoute de la latence au budget &lt;20 ms.",
+   fix:"Inliner check + update dans la même <code>StateCommand</code> côté serveur"},
+
+  {n:35, sev:"p3", sevLabel:"Pri 3 · fragile", pat:"PERF · allocation MIDI", title:"feedback_callback : data.to_vec() + String::clone par message", path:"src/driver_setup.rs", line:"56-61",
+   why:"~2 allocations par message MIDI feedback. À 1 kHz = 2k allocs/s.",
+   fix:"Pré-cloner <code>app_name</code> en <code>Arc&lt;str&gt;</code> ; envisager <code>SmallVec&lt;[u8; 8]&gt;</code> pour les messages de canal 3 octets"},
+
+  {n:36, sev:"p3", sevLabel:"Pri 3 · fragile", pat:"#3 detached tasks", title:"build_indicator_callback spawn par signal OBS sans borne", path:"src/obs_indicators.rs", line:"40-60",
+   why:"Chaque signal indicator (jusqu'à 10/s lors des transitions) spawn une tâche non-jointée qui clone <code>gamepad_config</code> + <code>camera_control</code> entiers.",
+   fix:"Coalescer ; ou tâche consumer unique avec channel borné"},
+
+  {n:37, sev:"p3", sevLabel:"Pri 3 · fragile", pat:"#10 slow consumer", title:"feedback_rx 1000-deep : try_send drop silencieusement sur stall X-Touch", path:"src/app.rs", line:109,
+   why:"<code>handle_app_feedback</code> est lourd (multiple awaits dont send_raw bloquant). Si l'écriture X-Touch stalle 250 ms et que les apps produisent &gt;4 events/250ms → drop silencieux après remplissage.",
+   fix:"Dispatch non-bloquant avec concurrence bornée ou log near-full"},
+
+  {n:38, sev:"p3", sevLabel:"Pri 3 · fragile", pat:"#10 slow consumer", title:"led_tx bounded(64) — try_send drop LEDs sur burst de scène", path:"src/obs_indicators.rs", line:110,
+   why:"Un changement de scène avec beaucoup d'indicateurs peut remplir le buffer 64 → LEDs stales après burst.",
+   fix:"<code>send().await</code> depuis la task spawn ; ou augmenter le cap raisonnablement"},
+
+  {n:39, sev:"p3", sevLabel:"Pri 3 · fragile", pat:"BUG · MIDI parser", title:"Le parser MIDI ne gère pas le running status", path:"src/midi.rs", line:"74-78",
+   why:"<code>if status &lt; 0x80 { return None; }</code> drop les messages running-status. OK avec midir (livre des messages complets), mais <code>MidiMessage::parse</code> est aussi appelé sur des slices bruts depuis sniffer et display.",
+   fix:"Documenter explicitement l'hypothèse ; ou tracker le running status dans un contexte streaming"},
+
+  {n:40, sev:"p3", sevLabel:"Pri 3 · fragile", pat:"BUG · MIDI parser", title:"SysEx parse drop silencieusement les payloads tronqués", path:"src/midi.rs", line:"178-184",
+   why:"Renvoie <code>None</code> si <code>0xF7</code> absent — sniffer ne voit pas les SysEx tronqués.",
+   fix:"<code>debug!(\"Truncated SysEx, {} bytes\", data.len())</code> sur la branche None"},
+
+  {n:41, sev:"p3", sevLabel:"Pri 3 · fragile", pat:"QUALITY · dead conditional", title:"set_fader : conditional dead sur le canal master", path:"src/xtouch.rs", line:"336-339",
+   why:"<code>channel: if fader_num == 8 { 8 } else { fader_num }</code> est un no-op. Code juste, conditional trompeur.",
+   fix:"Supprimer la condition, écrire <code>channel: fader_num</code>"},
+
+  {n:42, sev:"p3", sevLabel:"Pri 3 · fragile", pat:"PERF · MIDI burst", title:"init_mcu_mode : 128 NoteOff back-to-back sans pause", path:"src/xtouch.rs", line:"315-322",
+   why:"Pas de sleep entre messages, contrairement à <code>reset_all</code>. Sur un buffer USB MIDI lent au boot, peut flooder le driver Win32.",
+   fix:"<code>tokio::time::sleep(Duration::from_millis(2))</code> par itération"},
+
+  {n:43, sev:"p3", sevLabel:"Pri 3 · fragile", pat:"BUG · UTF-8", title:"center_to_length compte les bytes au lieu des chars (non-ASCII)", path:"src/xtouch.rs", line:"485-493",
+   why:"<code>text.len() &gt;= length</code> compare bytes. Page name en UTF-8 multi-byte calcule un padding incorrect.",
+   fix:"<code>let n = text.chars().count(); if n &gt;= length …</code>"},
+
+  {n:44, sev:"p3", sevLabel:"Pri 3 · fragile", pat:"BUG · .unwrap()", title:"Number::from_f64(value).unwrap() peut paniquer sur NaN/Inf", path:"src/router/xtouch_input.rs", line:419,
+   why:"<code>from_f64</code> renvoie None pour NaN/Inf. Sûr aujourd'hui (valeurs bornées 0..=16383) mais un futur changement de chemin paniquerait la task entière.",
+   fix:"<code>if let Some(n) = Number::from_f64(value) { ctx.value = Some(Value::Number(n)); }</code> + warn"},
+
+  {n:45, sev:"p3", sevLabel:"Pri 3 · fragile", pat:"BUG · .unwrap()", title:"serde_json::to_string(...).unwrap() dans la WS camera-updates", path:"src/api/mod.rs", line:378,
+   why:"Unwrap direct sur sérialisation JSON dans la WebSocket loop. Aujourd'hui sûr (tous champs String/u64), mais régression-prone — contraste avec <code>live.rs:108</code> qui gère le Result.",
+   fix:"<code>let Ok(msg) = serde_json::to_string(&amp;message) else { warn!(...); continue; };</code>"},
+
+  {n:46, sev:"p3", sevLabel:"Pri 3 · fragile", pat:"BUG · .unwrap()", title:"current_timestamp_millis() unwrap sur SystemTime", path:"src/api/mod.rs", line:475,
+   why:"<code>.duration_since(UNIX_EPOCH).unwrap()</code> panique si horloge avant 1970. <code>event_bus::now_ms()</code> utilise correctement <code>unwrap_or_default()</code>.",
+   fix:"<code>.unwrap_or_default()</code>"},
+
+  {n:47, sev:"p3", sevLabel:"Pri 3 · fragile", pat:"BUG · WS keepalive", title:"WS camera-updates n'envoie pas de pings keep-alive", path:"src/api/mod.rs", line:"350-416",
+   why:"Connexions WS idle ≥30 s sont coupées par les NAT/proxies. Le handler répond aux pings entrants mais n'en émet pas → Stream Deck silently disconnect.",
+   fix:"Branche <code>tokio::time::interval(Duration::from_secs(30))</code> dans le <code>select!</code> qui envoie <code>Message::Ping(vec![])</code>"},
+
+  {n:48, sev:"p3", sevLabel:"Pri 3 · fragile", pat:"PERF · busy-poll", title:"Tray busy-poll Win32 toutes les 50 ms en idle", path:"src/tray/manager.rs", line:"106-191",
+   why:"<code>PeekMessageW(PM_REMOVE)</code> + <code>try_recv</code> + <code>recv_timeout(50ms)</code> en idle constant. ~0.5–1% CPU sur le thread tray (budget global &lt;1%).",
+   fix:"<code>MsgWaitForMultipleObjectsEx</code> ; ou étendre <code>recv_timeout</code> à 500 ms"},
+
+  {n:49, sev:"p3", sevLabel:"Pri 3 · fragile", pat:"BUG · Windows reserved names", title:"validate_name accepte 'con', 'prn', 'aux', 'nul', 'com1'-'com9', 'lpt1'-'lpt9'", path:"src/config/profiles.rs", line:"467-478",
+   why:"Le validator passe, puis <code>fs::write</code> rate avec <code>ERROR_ACCESS_DENIED</code>. L'utilisateur reçoit un 500 confus.",
+   fix:"Reserved-name check (case-insensitive) dans <code>validate_name</code>"},
+
+  {n:50, sev:"p3", sevLabel:"Pri 3 · fragile", pat:"BUG · sort by name", title:"prune_history trie lexicographiquement — collision suffix casse l'ordre", path:"src/config/profiles.rs", line:"402-421",
+   why:"<code>files.sort()</code> assume lexico == chrono. Vrai pour <code>%Y-%m-%dT%H-%M-%S</code>, faux pour <code>...-1.yaml</code> (<code>-</code> 0x2D &lt; <code>.</code> 0x2E). Si deux snapshots ms-collision, l'original est pruné en premier.",
+   fix:"Trier par mtime, pas par nom"},
+
+  // ── SECURITY ────────────────────────────────────────────────
+  {n:51, sev:"sec", sevLabel:"Sécurité", pat:"SECURITY · path", title:"Debug-build redirect avec chemin utilisateur non sanitizé", path:"src/api_editor/static_spa.rs", line:"96-99",
+   why:"<code>format!(\"http://localhost:5173/editor/{}\", path)</code> avec <code>path</code> extrait brut de l'URL. <code>/editor/..%2F..%2Fadmin</code> produit un Location 307 vers <code>http://localhost:5173/editor/../../admin</code>. Bind 127.0.0.1 limite le LAN, mais une page malicieuse peut lire le redirect via XHR same-origin.",
+   fix:"Percent-encode <code>path</code> avant substitution ; ou rejeter <code>..</code> et <code>/</code>"},
+
+  {n:52, sev:"sec", sevLabel:"Sécurité", pat:"SECURITY · CSRF", title:"Aucune protection CSRF sur l'API mutante — drive-by browser peut DELETE profile", path:"src/api/mod.rs", line:"489-491",
+   why:"Bind 127.0.0.1 seul. Une page malicieuse ouverte dans le navigateur peut <code>fetch('http://127.0.0.1:8125/api/profiles/default', { method: 'DELETE', mode: 'no-cors' })</code> — pas de preflight, pas de token, pas de check Origin.",
+   fix:"Allowlist <code>Origin: http://127.0.0.1:8125</code> sur les verbes mutants ; ou CSRF token émis par <code>/editor/</code>"},
+
+  {n:53, sev:"sec", sevLabel:"Sécurité", pat:"SECURITY · DoS body", title:"Pas de body-size limit sur /api/profiles/:name PUT et /api/validate POST", path:"src/api_editor/profiles.rs:131-144 · validate.rs:13-15", line:"",
+   why:"<code>SaveRequest { body: String }</code> non borné par défaut Axum. Un POST 1 GB OOM le gateway. <code>serde_yaml::from_str</code> sur YAML profondément imbriqué est aussi exponentiel.",
+   fix:"<code>router.layer(DefaultBodyLimit::max(1024 * 1024))</code> + rejet pré-parse &gt;256 KB"},
+
+  // ── QUALITY · file size ─────────────────────────────────────
+  {n:54, sev:"qa", sevLabel:"Qualité · taille", pat:"QUALITY · file size", title:"config/mod.rs : 1198 lignes (cap 500)", path:"src/config/mod.rs", line:"",
+   why:"2.4× la limite CLAUDE.md. Contient types config + validation + winaudio + tests.",
+   fix:"Splitter en <code>config/types.rs</code>, <code>config/validate.rs</code>, <code>config/winaudio.rs</code>"},
+
+  {n:55, sev:"qa", sevLabel:"Qualité · taille", pat:"QUALITY · file size", title:"drivers/winaudio/mod.rs : 1118 lignes (cap 500)", path:"src/drivers/winaudio/mod.rs", line:"",
+   why:"Mixe driver struct + actions + page watcher + COM event consumer + LCD render + 3 modules de test.",
+   fix:"Split en <code>event_consumer.rs</code>, <code>lcd_render.rs</code>, <code>target_resolve.rs</code>"},
+
+  {n:56, sev:"qa", sevLabel:"Qualité · taille", pat:"QUALITY · file size", title:"xtouch.rs : 832 lignes (cap 500)", path:"src/xtouch.rs", line:"",
+   why:"Driver hardware + helpers MCU + 7-seg lookup + reset/init logic.",
+   fix:"Extraire <code>xtouch/seven_seg.rs</code>, <code>xtouch/mcu_init.rs</code>"},
+
+  {n:57, sev:"qa", sevLabel:"Qualité · taille", pat:"QUALITY · file size", title:"config/profiles.rs : 771 lignes (cap 500)", path:"src/config/profiles.rs", line:"",
+   why:"~530 lignes impl + 240 tests.",
+   fix:"Tests dans <code>config/profiles_tests.rs</code>"},
+
+  {n:58, sev:"qa", sevLabel:"Qualité · taille", pat:"QUALITY · file size", title:"app.rs : 741 lignes (cap 500)", path:"src/app.rs", line:"",
+   why:"<code>run_app</code> seul ~270 lignes.",
+   fix:"Extraire startup wiring, select loop, reload handling"},
+
+  {n:59, sev:"qa", sevLabel:"Qualité · taille", pat:"QUALITY · file size", title:"state/actor.rs : 718 lignes (cap 500)", path:"src/state/actor.rs", line:"",
+   why:"Command dispatch + handlers + GC + shadow helpers.",
+   fix:"Split en <code>actor/handlers.rs</code>, <code>actor/gc.rs</code>"},
+
+  {n:60, sev:"qa", sevLabel:"Qualité · taille", pat:"QUALITY · file size", title:"midi.rs : 679 lignes (cap 500)", path:"src/midi.rs", line:"",
+   why:"Surtout tests (~300+).",
+   fix:"Extraire tests dans <code>midi_tests.rs</code>"},
+
+  {n:61, sev:"qa", sevLabel:"Qualité · taille", pat:"QUALITY · file size", title:"drivers/midibridge.rs : 626 lignes (cap 500)", path:"src/drivers/midibridge.rs", line:"",
+   why:"Duplications de <code>Self { ... }</code> 15-champs en deux endroits.",
+   fix:"Ajouter <code>fn clone_for_task(&amp;self) -&gt; Self</code>"},
+
+  {n:62, sev:"qa", sevLabel:"Qualité · taille", pat:"QUALITY · file size", title:"router/tests.rs : 623 lignes (cap 500)", path:"src/router/tests.rs", line:"",
+   why:"Tests cumulés.",
+   fix:"Split par concern (page tests, driver tests, feedback tests)"},
+
+  {n:63, sev:"qa", sevLabel:"Qualité · taille", pat:"QUALITY · file size + function", title:"tray/manager.rs : 611 lignes — <code>run</code> est 230 lignes (cap fonction 40)", path:"src/tray/manager.rs", line:"63-290",
+   why:"<code>run</code> contient l'event loop + 5 blocs quasi-identiques \"rebuild menu and update tray_icon\".",
+   fix:"Extraire <code>apply_new_menu</code>, <code>handle_menu_event</code>, <code>handle_tray_update</code>"},
+
+  {n:64, sev:"qa", sevLabel:"Qualité · taille", pat:"QUALITY · file size + function", title:"drivers/obs/transform.rs : 587 lignes — apply_delta 290 lignes", path:"src/drivers/obs/transform.rs", line:"165-455",
+   why:"<code>apply_delta</code> mélange bounds-path et scale-path en une fonction de 290 lignes.",
+   fix:"Extraire <code>apply_delta_bounds</code> et <code>apply_delta_scale</code>"},
+
+  {n:65, sev:"qa", sevLabel:"Qualité · taille", pat:"QUALITY · file size + function", title:"drivers/obs/actions.rs : 547 lignes — <code>execute</code> 216 lignes", path:"src/drivers/obs/actions.rs", line:"172-388",
+   why:"Chaque branche d'<code>execute</code> pourrait être une méthode.",
+   fix:"Extraire les variantes studio-mode/scene en méthodes dédiées"},
+
+  {n:66, sev:"qa", sevLabel:"Qualité · taille", pat:"QUALITY · file size", title:"api/mod.rs : 503 lignes (juste au-dessus de 500)", path:"src/api/mod.rs", line:"",
+   why:"À la limite. WS handler + snapshot building + broadcasters pourraient migrer.",
+   fix:"Extraire <code>api/ws.rs</code> et <code>api/types.rs</code>"}
+];
+
+const LARGE_FILES = [
+  { path: "src/config/mod.rs", note: "config types + validation + tests", lines: 1198 },
+  { path: "src/drivers/winaudio/mod.rs", note: "driver + actions + watcher + LCD", lines: 1118 },
+  { path: "src/xtouch.rs", note: "X-Touch hardware driver", lines: 832 },
+  { path: "src/config/profiles.rs", note: "profile store + history + atomic_write", lines: 771 },
+  { path: "src/app.rs", note: "event loop + reload + select!", lines: 741 },
+  { path: "src/state/actor.rs", note: "StateActor + commands + GC", lines: 718 },
+  { path: "src/midi.rs", note: "parser + tests volumineux", lines: 679 },
+  { path: "src/drivers/midibridge.rs", note: "MIDI bridge generic driver", lines: 626 },
+  { path: "src/router/tests.rs", note: "router tests cumulés", lines: 623 },
+  { path: "src/tray/manager.rs", note: "tray loop + 230l de run()", lines: 611 },
+  { path: "src/drivers/obs/transform.rs", note: "apply_delta 290l", lines: 587 },
+  { path: "src/drivers/obs/actions.rs", note: "execute 216l", lines: 547 },
+  { path: "src/api/mod.rs", note: "WS + HTTP handlers", lines: 503 },
+];
+
+const sevLabels = {
+  p1: "Pri 1",
+  p2: "Pri 2",
+  p3: "Pri 3",
+  sec: "Sécurité",
+  qa: "Qualité",
+  perf: "Perf"
+};
+
+// ── render findings ───────────────────────────────────────
+function renderFindings(filter = "all") {
+  const root = document.getElementById("findings");
+  root.innerHTML = "";
+  const fragment = document.createDocumentFragment();
+  let visible = 0;
+
+  FINDINGS.forEach(f => {
+    const matches =
+      filter === "all" ||
+      f.sev === filter ||
+      (filter === "perf" && /perf/i.test(f.pat));
+    if (!matches) return;
+    visible++;
+
+    const entry = document.createElement("article");
+    entry.className = "finding";
+    entry.dataset.sev = f.sev;
+
+    const lineHtml = f.line ? `<span class="ln">:${f.line}</span>` : "";
+    const fixHtml = f.fix ? `
+      <div class="finding-fix"><span class="lbl">Fix</span><span>${f.fix}</span></div>
+    ` : "";
+
+    entry.innerHTML = `
+      <div class="finding-no">${String(f.n).padStart(2, "0")}</div>
+      <div class="finding-meta">
+        <span class="sev-tag sev-${f.sev}">${f.sevLabel}</span>
+        <span class="pat-tag"><span class="n">${f.pat}</span></span>
+      </div>
+      <div class="finding-body">
+        <h3 class="finding-title">${f.title}</h3>
+        <div class="finding-path"><span>${f.path}</span>${lineHtml}</div>
+        <p class="finding-why">${f.why}</p>
+        ${fixHtml}
+      </div>
+    `;
+    fragment.appendChild(entry);
+  });
+
+  root.appendChild(fragment);
+  document.getElementById("visibleCount").textContent = visible;
+}
+
+// ── render files chart ────────────────────────────────────
+function renderFiles() {
+  const root = document.getElementById("filesList");
+  const max = 1200; // chart x-axis max
+  const limit = 500;
+  const limitPct = (limit / max) * 100;
+
+  LARGE_FILES.forEach((f, i) => {
+    const pct = (f.lines / max) * 100;
+    const row = document.createElement("div");
+    row.className = "file-row";
+    row.innerHTML = `
+      <span class="file-rank">${String(i + 1).padStart(2, "0")}</span>
+      <span class="file-path"><strong>${f.path}</strong><br/><em>${f.note}</em></span>
+      <div class="file-bar">
+        <div class="fill" style="width:${pct}%"></div>
+        <div class="limit" style="left:${limitPct}%"></div>
+      </div>
+      <span class="file-count">${f.lines.toLocaleString("fr-FR")}</span>
+    `;
+    root.appendChild(row);
+  });
+}
+
+// ── filter wiring ─────────────────────────────────────────
+document.getElementById("filterBar").addEventListener("click", e => {
+  const btn = e.target.closest(".chip");
+  if (!btn) return;
+  document
+    .querySelectorAll("#filterBar .chip")
+    .forEach(c => c.setAttribute("aria-pressed", "false"));
+  btn.setAttribute("aria-pressed", "true");
+  renderFindings(btn.dataset.f);
+});
+
+renderFindings();
+renderFiles();
+</script>
+</body>
+</html>
