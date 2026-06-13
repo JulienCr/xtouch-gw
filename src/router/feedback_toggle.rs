@@ -68,14 +68,22 @@ impl super::Router {
                 continue;
             }
 
-            let prev = self.toggle_states.read().await.get(&control_id).copied();
+            // Atomic read-compare-update under a single write lock: if two
+            // feedback messages for the same control_id are ever processed
+            // concurrently, only the first observes the transition and inserts —
+            // the second sees the already-updated state and no-ops, so the edge
+            // action can't double-fire. Dispatch happens after the lock is released.
+            let prev = {
+                let mut states = self.toggle_states.write().await;
+                let prev = states.get(&control_id).copied();
+                if prev != Some(now_on) {
+                    states.insert(control_id.clone(), now_on);
+                }
+                prev
+            };
             if prev == Some(now_on) {
                 continue; // No change → idempotent no-op.
             }
-            self.toggle_states
-                .write()
-                .await
-                .insert(control_id.clone(), now_on);
 
             // First observation: record the state without firing, so connecting
             // (or a config reload) never triggers an unexpected action.
