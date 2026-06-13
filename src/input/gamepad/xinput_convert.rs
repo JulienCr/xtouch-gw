@@ -4,7 +4,10 @@
 //! ensuring consistency with gilrs-based events.
 
 use super::hybrid_provider::GamepadEvent;
-use super::normalize::normalize_stick_radial;
+use super::normalize::{
+    normalize_stick_radial, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE,
+    XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE, XINPUT_GAMEPAD_TRIGGER_THRESHOLD,
+};
 use crate::config::AnalogConfig;
 use rusty_xinput::{XInputHandle, XInputState, XInputUsageError};
 
@@ -106,6 +109,18 @@ pub fn convert_xinput_buttons(
     events
 }
 
+/// Map a raw XInput trigger (0-255) to the -1.0..1.0 axis convention used by
+/// the rest of the pipeline, flooring sub-threshold values to 0 so an idle
+/// trigger's analog jitter can't emit a fresh event on every poll (#75).
+fn trigger_axis(raw: u8) -> f32 {
+    let v = if raw < XINPUT_GAMEPAD_TRIGGER_THRESHOLD {
+        0
+    } else {
+        raw
+    };
+    (v as f32 / 255.0) * 2.0 - 1.0
+}
+
 /// Convert XInput analog axes to GamepadEvents
 ///
 /// Compares old and new axis values and emits events for changed axes.
@@ -122,34 +137,38 @@ pub fn convert_xinput_axes(
 ) -> Vec<GamepadEvent> {
     let mut events = Vec::new();
 
-    // Normalize sticks with radial deadzone (circular, not square)
-    // XInput API spec recommends deadzone of 7849 for sticks
-    const DEADZONE: f32 = 7849.0;
+    // Normalize sticks with radial deadzone (circular, not square).
+    // XInput spec: left stick 7849, right stick 8689 (right is larger).
+    // Using the left value for both let right-stick rest noise in the
+    // 7849..8689 band leak through as a continuous rx/ry event flood (#75).
+    const LEFT_DEADZONE: f32 = XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE as f32;
+    const RIGHT_DEADZONE: f32 = XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE as f32;
 
     let (lx, ly) = normalize_stick_radial(
         new_state.raw.Gamepad.sThumbLX,
         new_state.raw.Gamepad.sThumbLY,
-        DEADZONE,
+        LEFT_DEADZONE,
     );
     let (rx, ry) = normalize_stick_radial(
         new_state.raw.Gamepad.sThumbRX,
         new_state.raw.Gamepad.sThumbRY,
-        DEADZONE,
+        RIGHT_DEADZONE,
     );
 
-    // Normalize triggers (u8 0-255 → f32 -1.0 to 1.0)
-    // Note: We map to full -1..1 range to match axis convention
-    let lt = (new_state.left_trigger() as f32 / 255.0) * 2.0 - 1.0;
-    let rt = (new_state.right_trigger() as f32 / 255.0) * 2.0 - 1.0;
+    // Triggers (u8 0-255 → f32 -1.0..1.0). Floor sub-threshold jitter to 0
+    // first so an idle, slightly-noisy trigger doesn't emit a fresh event on
+    // every 16 ms poll (#75 flood). The -1..1 mapping range is unchanged.
+    let lt = trigger_axis(new_state.left_trigger());
+    let rt = trigger_axis(new_state.right_trigger());
 
     // Build axis list with change detection
     // Note: old_state values also need radial normalization for accurate change detection
     let (old_lx, old_ly) = old_state
-        .map(|s| normalize_stick_radial(s.thumb_lx, s.thumb_ly, DEADZONE))
+        .map(|s| normalize_stick_radial(s.thumb_lx, s.thumb_ly, LEFT_DEADZONE))
         .unwrap_or((0.0, 0.0));
 
     let (old_rx, old_ry) = old_state
-        .map(|s| normalize_stick_radial(s.thumb_rx, s.thumb_ry, DEADZONE))
+        .map(|s| normalize_stick_radial(s.thumb_rx, s.thumb_ry, RIGHT_DEADZONE))
         .unwrap_or((0.0, 0.0));
 
     let axes = [
@@ -157,16 +176,8 @@ pub fn convert_xinput_axes(
         ("ly", -ly, old_state.map(|_| -old_ly)), // Invert Y
         ("rx", rx, old_state.map(|_| old_rx)),
         ("ry", -ry, old_state.map(|_| -old_ry)), // Invert Y
-        (
-            "zl",
-            lt,
-            old_state.map(|s| (s.left_trigger as f32 / 255.0) * 2.0 - 1.0),
-        ),
-        (
-            "zr",
-            rt,
-            old_state.map(|s| (s.right_trigger as f32 / 255.0) * 2.0 - 1.0),
-        ),
+        ("zl", lt, old_state.map(|s| trigger_axis(s.left_trigger))),
+        ("zr", rt, old_state.map(|s| trigger_axis(s.right_trigger))),
     ];
 
     for (axis_name, new_value, old_value) in axes {

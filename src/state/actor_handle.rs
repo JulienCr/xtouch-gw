@@ -258,13 +258,17 @@ impl StateActorHandle {
         let _ = rx.await;
     }
 
-    /// Clear all states for a specific application
+    /// Clear all states for a specific application.
     ///
-    /// Fire-and-forget: Does not wait for confirmation.
-    pub fn clear_states_for_app(&self, app: AppKey) {
+    /// Lifecycle command (config reload). Uses `send().await` for
+    /// backpressure instead of `try_send`: under a reload burst a full
+    /// command channel must not silently drop this purge, which would let a
+    /// removed app's state leak straight back in (audit #55 regression guard).
+    pub async fn clear_states_for_app(&self, app: AppKey) {
         let _ = self
             .cmd_tx
-            .try_send(StateCommand::ClearStatesForApp { app });
+            .send(StateCommand::ClearStatesForApp { app })
+            .await;
     }
 
     /// Clear all states for all applications
@@ -274,12 +278,14 @@ impl StateActorHandle {
         let _ = self.cmd_tx.try_send(StateCommand::ClearAllStates);
     }
 
-    /// Clear all shadow states (for page refresh)
+    /// Clear all shadow states (for page refresh).
     ///
-    /// Fire-and-forget: Does not wait for confirmation.
-    /// Clears the anti-echo shadow state to allow re-emission during page refresh.
-    pub fn clear_shadows(&self) {
-        let _ = self.cmd_tx.try_send(StateCommand::ClearShadows);
+    /// Uses `send().await` so a full command channel can't drop the clear:
+    /// a dropped clear leaves anti-echo suppressing the refresh's own
+    /// re-emission, which shows up as faders/LEDs not updating on a page
+    /// change. Page refresh is not a per-message hot path, so awaiting is fine.
+    pub async fn clear_shadows(&self) {
+        let _ = self.cmd_tx.send(StateCommand::ClearShadows).await;
     }
 
     // =========================================================================

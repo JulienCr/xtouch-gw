@@ -407,6 +407,15 @@ impl Driver for ObsDriver {
         self.analog_rates.write().clear();
         self.analog_error_count.write().clear();
 
+        // Clear subscriber registries. These Vecs are push-only and the OBS
+        // driver is a process-lifetime singleton, so without this each
+        // unregister→re-register cycle (a profile switch that drops then
+        // re-adds OBS) would append another indicator + status callback —
+        // duplicating event fan-out and slowly leaking. Re-registration
+        // re-subscribes a fresh callback.
+        self.indicator_emitters.write().clear();
+        self.status_callbacks.write().clear();
+
         if let Some(client) = self.client.write().await.take() {
             drop(client); // Close the connection
         }

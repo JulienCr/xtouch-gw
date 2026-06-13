@@ -3,7 +3,14 @@
 use crate::event_bus::{HwEventKind, LiveEvent};
 use crate::state::{build_entry_from_raw, AppKey};
 use serde_json::Value;
+use std::time::Duration;
 use tracing::{debug, trace, warn};
+
+/// Hard cap on a single driver action dispatch. The whole gateway runs on one
+/// `tokio::select!` loop; a wedged OBS WebSocket call (half-dead TCP) would
+/// otherwise block X-Touch input, faders and feedback indefinitely — the
+/// "MIDI goes dead" symptom. Local actions complete in well under this.
+const DRIVER_EXECUTE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Classify an X-Touch MIDI message into a `HwEventKind` and a normalized
 /// `f32` value in `[0.0, 1.0]` (or 14-bit faders -> `pb / 16383.0`).
@@ -337,22 +344,32 @@ impl super::Router {
                     },
                 });
 
-                // Call passthrough action on the bridge
-                if let Err(e) = driver.execute("passthrough", vec![], ctx).await {
-                    warn!("Failed to passthrough MIDI: {}", e);
-                } else {
-                    // OPTIMISTIC UPDATE: Store the sent value in StateActor
-                    // This ensures state persists even if the app doesn't send feedback
-                    // (e.g., QLC+ doesn't echo MIDI values back)
-                    if let Some(app) = AppKey::from_str(&step.app) {
-                        if let Some(entry) = build_entry_from_raw(&bytes, &step.app) {
-                            debug!(
-                                "Optimistic state update: {} -> {:?} = {:?}",
-                                step.app, entry.addr, entry.value
-                            );
-                            self.state_actor.update_state(app, entry);
+                // Call passthrough action on the bridge (timeout-bounded)
+                match tokio::time::timeout(
+                    DRIVER_EXECUTE_TIMEOUT,
+                    driver.execute("passthrough", vec![], ctx),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {
+                        // OPTIMISTIC UPDATE: Store the sent value in StateActor
+                        // This ensures state persists even if the app doesn't send feedback
+                        // (e.g., QLC+ doesn't echo MIDI values back)
+                        if let Some(app) = AppKey::from_str(&step.app) {
+                            if let Some(entry) = build_entry_from_raw(&bytes, &step.app) {
+                                debug!(
+                                    "Optimistic state update: {} -> {:?} = {:?}",
+                                    step.app, entry.addr, entry.value
+                                );
+                                self.state_actor.update_state(app, entry);
+                            }
                         }
-                    }
+                    },
+                    Ok(Err(e)) => warn!("Failed to passthrough MIDI: {}", e),
+                    Err(_) => warn!(
+                        "Bridge '{}' passthrough timed out after {:?}",
+                        step.app, DRIVER_EXECUTE_TIMEOUT
+                    ),
                 }
             } else {
                 warn!(
@@ -451,13 +468,21 @@ impl super::Router {
             });
         }
 
-        // Execute driver action
+        // Execute driver action (timeout-bounded so a wedged driver can't
+        // freeze the single main event loop).
         debug!(
             "→ Routing: {} → app={} action={} (value={:?})",
             control_id, step.app, action, ctx.value
         );
-        if let Err(e) = driver.execute(action, params, ctx).await {
-            warn!("Driver execution failed: {}", e);
+        match tokio::time::timeout(DRIVER_EXECUTE_TIMEOUT, driver.execute(action, params, ctx))
+            .await
+        {
+            Ok(Ok(())) => {},
+            Ok(Err(e)) => warn!("Driver execution failed: {}", e),
+            Err(_) => warn!(
+                "Driver '{}' action '{}' timed out after {:?}",
+                step.app, action, DRIVER_EXECUTE_TIMEOUT
+            ),
         }
     }
 }

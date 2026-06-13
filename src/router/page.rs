@@ -74,8 +74,17 @@ impl super::Router {
         // Try parsing as index first
         if let Ok(index) = name_or_index.parse::<usize>() {
             if index < config.pages.len() {
+                // Read the name from the guard we already hold. Calling
+                // get_active_page_name() here would re-acquire config.read()
+                // while this read guard is still live; on tokio's fair RwLock
+                // a writer queued between the two reads (config hot-reload)
+                // deadlocks both tasks — and the whole main loop with them.
+                let page_name = config
+                    .pages
+                    .get(index)
+                    .map(|p| p.name.clone())
+                    .unwrap_or_else(|| "(none)".to_string());
                 *self.active_page_index.write().await = index;
-                let page_name = self.get_active_page_name().await;
                 info!("Active page: {}", page_name);
                 drop(config); // Release lock before refresh
                 self.refresh_page().await;
@@ -91,8 +100,10 @@ impl super::Router {
             .iter()
             .position(|p| p.name.eq_ignore_ascii_case(name_or_index))
         {
+            // See the index branch above: derive the name from the held guard,
+            // never via a re-entrant config.read().
+            let page_name = config.pages[index].name.clone();
             *self.active_page_index.write().await = index;
-            let page_name = self.get_active_page_name().await;
             info!("Active page: {}", page_name);
             drop(config); // Release lock before refresh
             self.refresh_page().await;

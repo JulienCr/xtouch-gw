@@ -50,6 +50,13 @@ use tracing::{debug, error, info, trace, warn};
 /// Default debounce window in milliseconds
 pub const DEFAULT_DEBOUNCE_MS: u64 = 500;
 
+/// Cap on sled's page cache, in bytes. sled's default `cache_capacity` is
+/// 1 GiB — 20x this project's entire RAM budget. Our databases hold a single
+/// small key (the snapshot / camera targets), so a few MiB is more than
+/// enough and the cap is never actually reached; it just removes the
+/// pathological default ceiling. Shared by the persistence and camera DBs.
+pub const SLED_CACHE_CAPACITY_BYTES: u64 = 16 * 1024 * 1024;
+
 /// Key used to store the snapshot in sled
 const SNAPSHOT_KEY: &[u8] = b"state_snapshot";
 
@@ -108,8 +115,11 @@ impl PersistenceActor {
     ///
     /// Returns an error if the sled database cannot be opened.
     pub fn spawn(db_path: &str, debounce_ms: u64) -> Result<PersistenceActorHandle> {
-        // Open sled database
-        let db = sled::open(db_path)
+        // Open sled database with a bounded page cache (see SLED_CACHE_CAPACITY_BYTES).
+        let db = sled::Config::new()
+            .path(db_path)
+            .cache_capacity(SLED_CACHE_CAPACITY_BYTES)
+            .open()
             .with_context(|| format!("Failed to open sled database at: {}", db_path))?;
 
         info!("Persistence actor opened database at: {}", db_path);
