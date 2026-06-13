@@ -317,6 +317,72 @@ pub struct ControlMapping {
     pub overlay: Option<OverlayConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub indicator: Option<IndicatorConfig>,
+    /// Effets supplémentaires déclenchés en plus de l'effet primaire (boutons multi-action).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub also: Option<Vec<ActionStep>>,
+    /// Actions déclenchées par le *feedback* d'un app (transition on/off de son
+    /// état réel), et non par l'appui bouton. Voir [`ToggleConfig`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub toggle: Option<ToggleConfig>,
+}
+
+impl ControlMapping {
+    /// L'effet primaire du contrôle, sous forme d'étape de dispatch.
+    ///
+    /// Permet au routeur de traiter l'effet inline historique
+    /// (`app`/`action`/`params`/`midi`) et chaque entrée de `also` via le même
+    /// chemin de code.
+    pub fn primary_step(&self) -> ActionStep {
+        ActionStep {
+            app: self.app.clone(),
+            action: self.action.clone(),
+            params: self.params.clone(),
+            midi: self.midi.clone(),
+        }
+    }
+}
+
+/// Une étape de dispatch : un effet unique (action driver OU envoi MIDI direct).
+///
+/// Sert à la fois pour l'effet primaire d'un contrôle et pour chaque entrée de
+/// `ControlMapping::also`. Si `midi` est présent, l'étape part en MIDI direct
+/// (passthrough/transform) ; sinon elle exécute `action` sur le driver `app`.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+pub struct ActionStep {
+    pub app: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub params: Option<Vec<serde_json::Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub midi: Option<MidiSpec>,
+}
+
+/// Toggle piloté par le feedback d'un app.
+///
+/// Au lieu de se déclencher sur l'appui du bouton (comportement de `action`/`also`,
+/// front montant uniquement), un toggle réagit au **statut réel** renvoyé par un app
+/// sur son port de feedback : front OFF→ON (valeur > 0) déclenche `on`, front ON→OFF
+/// (valeur == 0) déclenche `off`. La détection de front rend le déclenchement
+/// idempotent (un état répété ne re-déclenche pas).
+///
+/// Les étapes `on`/`off` sont des actions driver (ex. `selectCamera`, `changeScene`) ;
+/// les étapes `midi` n'y sont pas supportées (le message déclencheur est synthétique).
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+pub struct ToggleConfig {
+    /// App dont le feedback pilote le toggle. Défaut : le champ `app` du contrôle.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Adresse MIDI surveillée dans le feedback. Optionnel : par défaut, l'adresse
+    /// hardware du contrôle (résolue via `control_mapping`, selon le mode mcu/ctrl).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub watch: Option<MidiSpec>,
+    /// Étapes déclenchées au front OFF→ON (valeur > 0).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub on: Vec<ActionStep>,
+    /// Étapes déclenchées au front ON→OFF (valeur == 0).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub off: Vec<ActionStep>,
 }
 
 /// MIDI control specification
@@ -474,6 +540,22 @@ impl AppConfig {
         ) {
             for mapping in controls.values() {
                 apps.insert(mapping.app.clone());
+                // Secondary effects (`also`) and feedback toggles can reference
+                // apps the primary `app` doesn't, so a driver used solely there
+                // is not pruned on reload.
+                if let Some(steps) = &mapping.also {
+                    for step in steps {
+                        apps.insert(step.app.clone());
+                    }
+                }
+                if let Some(toggle) = &mapping.toggle {
+                    if let Some(source) = &toggle.source {
+                        apps.insert(source.clone());
+                    }
+                    for step in toggle.on.iter().chain(toggle.off.iter()) {
+                        apps.insert(step.app.clone());
+                    }
+                }
             }
         }
 
@@ -697,32 +779,60 @@ impl AppConfig {
         Ok(())
     }
 
-    /// Validate a single control mapping
+    /// Validate a single control mapping: its inline primary effect plus any
+    /// `also` fan-out steps. Each step is checked independently.
     fn validate_control_mapping(
         &self,
         control_id: &str,
         mapping: &ControlMapping,
         midi_app_names: &std::collections::HashSet<&String>,
     ) -> Result<()> {
-        if mapping.app.is_empty() {
+        // Primary (inline) effect.
+        self.validate_action_step(control_id, &mapping.primary_step(), midi_app_names)?;
+
+        // Additional fan-out steps (multi-action buttons).
+        if let Some(steps) = &mapping.also {
+            for (idx, step) in steps.iter().enumerate() {
+                self.validate_action_step(control_id, step, midi_app_names)
+                    .with_context(|| {
+                        format!("in `also` step {} of control '{}'", idx, control_id)
+                    })?;
+            }
+        }
+
+        // Feedback-driven toggle (source app, watched address, on/off steps).
+        if let Some(toggle) = &mapping.toggle {
+            self.validate_toggle(control_id, toggle, midi_app_names)?;
+        }
+
+        Ok(())
+    }
+
+    /// Validate one dispatch step (the inline primary effect or one `also`
+    /// entry): app reference, MIDI spec validity, and action-or-midi presence.
+    fn validate_action_step(
+        &self,
+        control_id: &str,
+        step: &ActionStep,
+        midi_app_names: &std::collections::HashSet<&String>,
+    ) -> Result<()> {
+        if step.app.is_empty() {
             anyhow::bail!("Control '{}' app name cannot be empty", control_id);
         }
 
         // Validate app name references a configured app
         // (obs, winaudio, winmedia are non-MIDI apps that don't need a port entry).
-        const NON_MIDI_APPS: &[&str] = &["obs", "winaudio", "winmedia"];
-        if !NON_MIDI_APPS.contains(&mapping.app.as_str()) && !midi_app_names.contains(&mapping.app)
-        {
+        if !NON_MIDI_APPS.contains(&step.app.as_str()) && !midi_app_names.contains(&step.app) {
             anyhow::bail!(
                 "Control '{}' references unknown app '{}'. Available apps: {:?}",
                 control_id,
-                mapping.app,
+                step.app,
                 midi_app_names
             );
         }
 
         // Validate MIDI specification if present
-        if let Some(midi_spec) = &mapping.midi {
+        if let Some(midi_spec) = &step.midi {
             match midi_spec.midi_type {
                 MidiType::Cc => {
                     if midi_spec.cc.is_none() {
@@ -795,7 +905,7 @@ impl AppConfig {
         }
 
         // Validate that action OR midi is specified (not both empty, unless passthrough)
-        if mapping.action.is_none() && mapping.midi.is_none() {
+        if step.action.is_none() && step.midi.is_none() {
             anyhow::bail!(
                 "Control '{}' must specify either 'action' or 'midi'",
                 control_id
@@ -804,7 +914,124 @@ impl AppConfig {
 
         Ok(())
     }
+
+    /// Validate a feedback-driven toggle: its `source` app (when set), the
+    /// watched MIDI address (when set), and every `on`/`off` step. Toggle steps
+    /// run via a synthetic trigger, so a `midi` step is a hard error here (the
+    /// runtime would only warn + skip it, which is easy to miss).
+    fn validate_toggle(
+        &self,
+        control_id: &str,
+        toggle: &ToggleConfig,
+        midi_app_names: &std::collections::HashSet<&String>,
+    ) -> Result<()> {
+        if let Some(source) = &toggle.source {
+            if source.is_empty() {
+                anyhow::bail!("Control '{}' toggle.source cannot be empty", control_id);
+            }
+            if !NON_MIDI_APPS.contains(&source.as_str()) && !midi_app_names.contains(source) {
+                anyhow::bail!(
+                    "Control '{}' toggle.source references unknown app '{}'. Available apps: {:?}",
+                    control_id,
+                    source,
+                    midi_app_names
+                );
+            }
+        }
+
+        if let Some(watch) = &toggle.watch {
+            Self::validate_watch_spec(control_id, watch)?;
+        }
+
+        for (label, steps) in [("on", &toggle.on), ("off", &toggle.off)] {
+            for (idx, step) in steps.iter().enumerate() {
+                if step.midi.is_some() {
+                    anyhow::bail!(
+                        "Control '{}' toggle.{} step {} uses `midi`, which toggles cannot \
+                         dispatch (the trigger message is synthetic)",
+                        control_id,
+                        label,
+                        idx
+                    );
+                }
+                self.validate_action_step(control_id, step, midi_app_names)
+                    .with_context(|| {
+                        format!(
+                            "in `toggle.{}` step {} of control '{}'",
+                            label, idx, control_id
+                        )
+                    })?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Validate a `toggle.watch` MIDI address: the field actually required to
+    /// match feedback (`note` for note, `cc` for cc), value ranges, and that the
+    /// type is a watchable address (`passthrough` never matches).
+    fn validate_watch_spec(control_id: &str, watch: &MidiSpec) -> Result<()> {
+        match watch.midi_type {
+            MidiType::Note => {
+                if watch.note.is_none() {
+                    anyhow::bail!(
+                        "Control '{}' toggle.watch type 'note' requires a 'note' field",
+                        control_id
+                    );
+                }
+            },
+            MidiType::Cc => {
+                if watch.cc.is_none() {
+                    anyhow::bail!(
+                        "Control '{}' toggle.watch type 'cc' requires a 'cc' field",
+                        control_id
+                    );
+                }
+            },
+            MidiType::Pb => {},
+            MidiType::Passthrough => {
+                anyhow::bail!(
+                    "Control '{}' toggle.watch type 'passthrough' is not a watchable address",
+                    control_id
+                );
+            },
+        }
+
+        if let Some(channel) = watch.channel {
+            if channel == 0 || channel > 16 {
+                anyhow::bail!(
+                    "Control '{}' toggle.watch has invalid channel {} (must be 1-16)",
+                    control_id,
+                    channel
+                );
+            }
+        }
+        if let Some(cc) = watch.cc {
+            if cc > 127 {
+                anyhow::bail!(
+                    "Control '{}' toggle.watch has invalid CC {} (must be 0-127)",
+                    control_id,
+                    cc
+                );
+            }
+        }
+        if let Some(note) = watch.note {
+            if note > 127 {
+                anyhow::bail!(
+                    "Control '{}' toggle.watch has invalid note {} (must be 0-127)",
+                    control_id,
+                    note
+                );
+            }
+        }
+
+        Ok(())
+    }
 }
+
+/// Apps that don't need a MIDI `midi.apps` port entry — they're validated by
+/// name only. Shared by `validate_action_step` and `validate_toggle`.
+const NON_MIDI_APPS: &[&str] = &["obs", "winaudio", "winmedia"];
 
 /// Driver name that owns Windows audio session control. Duplicated here
 /// (and kept in sync with `drivers::winaudio::DRIVER_NAME`) so the lib
@@ -975,6 +1202,147 @@ mod tests {
         assert_eq!(win.pinned_apps.len(), 3);
     }
 
+    /// The shipped Twitch profile must parse + validate. Its Record button keeps
+    /// the Voicemeeter passthrough primary + a QLC CC via `also` (on press), and
+    /// drives the OBS camera from the Voicemeeter feedback *status* via `toggle`:
+    /// `selectCamera` on the ON edge, `changeScene` on the OFF edge.
+    #[test]
+    fn twitch_profile_record_drives_obs_from_toggle() {
+        let yaml = std::fs::read_to_string("profiles/twitch.yaml")
+            .expect("profiles/twitch.yaml must exist");
+        let parsed: AppConfig = serde_yaml::from_str(&yaml).expect("YAML parse failed");
+        parsed.validate().expect("config validation failed");
+
+        let global = parsed.pages_global.as_ref().expect("pages_global expected");
+        let controls = global.controls.as_ref().expect("global controls expected");
+        let record = controls.get("record").expect("record control expected");
+        assert_eq!(record.app, "voicemeeter");
+        assert!(
+            record.midi.is_some(),
+            "primary stays Voicemeeter passthrough"
+        );
+
+        // `also`: QLC CC fires on press (the OBS camera moved to `toggle`).
+        let also = record.also.as_ref().expect("record must have `also` steps");
+        assert!(
+            also.iter().any(|s| s.app == "qlc" && s.midi.is_some()),
+            "an `also` step must send a MIDI message to QLC"
+        );
+
+        // `toggle`: driven by the Voicemeeter feedback status.
+        let toggle = record
+            .toggle
+            .as_ref()
+            .expect("record must carry a `toggle`");
+        assert_eq!(toggle.source.as_deref(), Some("voicemeeter"));
+        assert!(
+            toggle
+                .on
+                .iter()
+                .any(|s| s.app == "obs" && s.action.as_deref() == Some("selectCamera")),
+            "ON edge must select the OBS camera"
+        );
+        assert!(
+            toggle
+                .off
+                .iter()
+                .any(|s| s.app == "obs" && s.action.as_deref() == Some("changeScene")),
+            "OFF edge must change to the OBS outro scene"
+        );
+    }
+
+    /// Multi-action: an `also` step referencing an app that is neither a
+    /// non-MIDI app nor a configured MIDI app must be rejected at load, with
+    /// the same safety net as the inline primary effect.
+    #[test]
+    fn validate_rejects_unknown_app_in_also_step() {
+        let mut cfg = empty_config();
+        let mut controls = HashMap::new();
+        controls.insert(
+            "record".into(),
+            ControlMapping {
+                app: "obs".into(),
+                action: Some("toggleStudioMode".into()),
+                params: None,
+                midi: None,
+                indicator: None,
+                overlay: None,
+                also: Some(vec![ActionStep {
+                    app: "nope_typo".into(),
+                    action: Some("x".into()),
+                    params: None,
+                    midi: None,
+                }]),
+                toggle: None,
+            },
+        );
+        cfg.pages.push(PageConfig {
+            name: "P".into(),
+            controls: Some(controls),
+            ..PageConfig::default()
+        });
+
+        let err = cfg
+            .validate()
+            .expect_err("unknown app in `also` step must fail validation");
+        let chain = format!("{:#}", err);
+        assert!(
+            chain.contains("nope_typo"),
+            "error chain should name the offending app: {chain}"
+        );
+    }
+
+    /// A `toggle.on`/`off` step cannot carry `midi`: toggles dispatch a
+    /// synthetic trigger, so a MIDI step would only be warn+skipped at runtime.
+    /// Config load must reject it up front instead.
+    #[test]
+    fn validate_rejects_midi_in_toggle_step() {
+        let mut cfg = empty_config();
+        let mut controls = HashMap::new();
+        controls.insert(
+            "record".into(),
+            ControlMapping {
+                app: "obs".into(),
+                action: Some("toggleStudioMode".into()),
+                params: None,
+                midi: None,
+                indicator: None,
+                overlay: None,
+                also: None,
+                toggle: Some(ToggleConfig {
+                    source: None,
+                    watch: None,
+                    on: vec![ActionStep {
+                        app: "obs".into(),
+                        action: None,
+                        params: None,
+                        midi: Some(MidiSpec {
+                            midi_type: MidiType::Note,
+                            channel: Some(1),
+                            cc: None,
+                            note: Some(60),
+                        }),
+                    }],
+                    off: vec![],
+                }),
+            },
+        );
+        cfg.pages.push(PageConfig {
+            name: "P".into(),
+            controls: Some(controls),
+            ..PageConfig::default()
+        });
+
+        let err = cfg
+            .validate()
+            .expect_err("`midi` in a toggle step must fail validation");
+        let chain = format!("{:#}", err);
+        assert!(
+            chain.contains("toggle.on") && chain.contains("midi"),
+            "error should point at the offending toggle step: {chain}"
+        );
+    }
+
     fn empty_config() -> AppConfig {
         AppConfig {
             midi: MidiConfig {
@@ -1001,6 +1369,8 @@ mod tests {
             midi: None,
             indicator: None,
             overlay: None,
+            also: None,
+            toggle: None,
         }
     }
 
@@ -1101,6 +1471,8 @@ mod tests {
             midi: None,
             indicator: None,
             overlay: None,
+            also: None,
+            toggle: None,
         }
     }
 
@@ -1181,6 +1553,8 @@ mod tests {
                 midi: None,
                 indicator: None,
                 overlay: None,
+                also: None,
+                toggle: None,
             },
         );
         cfg.midi.apps = Some(vec![MidiAppConfig {

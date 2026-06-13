@@ -7,6 +7,7 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use serde_json::Value;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
@@ -67,6 +68,13 @@ pub struct MidiBridgeDriver {
     reconnect_count_out: Arc<Mutex<usize>>,
     reconnect_count_in: Arc<Mutex<usize>>,
     shutdown_flag: Arc<Mutex<bool>>,
+    /// Single-flight guards: `true` while a reconnect loop for that direction
+    /// is running, so a send failure or health probe can't spawn a second
+    /// loop racing the first on the exclusive Windows port.
+    reconnecting_out: Arc<AtomicBool>,
+    reconnecting_in: Arc<AtomicBool>,
+    /// Ensures the port-health monitor task is spawned at most once.
+    health_monitor_started: Arc<AtomicBool>,
 }
 
 // Explicitly implement Send and Sync
@@ -108,7 +116,121 @@ impl MidiBridgeDriver {
             reconnect_count_out: Arc::new(Mutex::new(0)),
             reconnect_count_in: Arc::new(Mutex::new(0)),
             shutdown_flag: Arc::new(Mutex::new(false)),
+            reconnecting_out: Arc::new(AtomicBool::new(false)),
+            reconnecting_in: Arc::new(AtomicBool::new(false)),
+            health_monitor_started: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Clone every shared `Arc` handle for use in a spawned background task.
+    /// Centralises the field-by-field clone so adding a shared field only
+    /// needs updating one place (this was previously duplicated inline twice
+    /// in `init`).
+    fn clone_handle(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            to_port: self.to_port.clone(),
+            from_port: self.from_port.clone(),
+            filter: self.filter.clone(),
+            transform: self.transform.clone(),
+            optional: self.optional,
+            midi_out: self.midi_out.clone(),
+            midi_in: self.midi_in.clone(),
+            feedback_callback: self.feedback_callback.clone(),
+            status_callbacks: self.status_callbacks.clone(),
+            current_status: self.current_status.clone(),
+            activity_tracker: self.activity_tracker.clone(),
+            reconnect_count_out: self.reconnect_count_out.clone(),
+            reconnect_count_in: self.reconnect_count_in.clone(),
+            shutdown_flag: self.shutdown_flag.clone(),
+            reconnecting_out: self.reconnecting_out.clone(),
+            reconnecting_in: self.reconnecting_in.clone(),
+            health_monitor_started: self.health_monitor_started.clone(),
+        }
+    }
+
+    /// Spawn the OUT reconnect loop unless one is already running.
+    fn spawn_out_reconnect(&self) {
+        if self.reconnecting_out.swap(true, Ordering::AcqRel) {
+            return; // a loop is already running
+        }
+        let me = self.clone_handle();
+        tokio::spawn(async move {
+            me.schedule_out_reconnect().await;
+            me.reconnecting_out.store(false, Ordering::Release);
+        });
+    }
+
+    /// Spawn the IN reconnect loop unless one is already running.
+    fn spawn_in_reconnect(&self) {
+        if self.reconnecting_in.swap(true, Ordering::AcqRel) {
+            return; // a loop is already running
+        }
+        let me = self.clone_handle();
+        tokio::spawn(async move {
+            me.schedule_in_reconnect().await;
+            me.reconnecting_in.store(false, Ordering::Release);
+        });
+    }
+
+    /// True if the configured OUT port is currently enumerable. On a probe
+    /// failure returns `true` (assume present) so a transient enumeration
+    /// error never tears down a working connection.
+    fn out_port_present(&self) -> bool {
+        midir::MidiOutput::new("XTouch-GW-Bridge-Probe")
+            .ok()
+            .map(|m| find_port_by_substring(&m, &self.to_port).is_some())
+            .unwrap_or(true)
+    }
+
+    /// True if the configured IN port is currently enumerable. See
+    /// `out_port_present` for the probe-failure policy.
+    fn in_port_present(&self) -> bool {
+        midir::MidiInput::new("XTouch-GW-Bridge-Probe")
+            .ok()
+            .map(|m| find_port_by_substring(&m, &self.from_port).is_some())
+            .unwrap_or(true)
+    }
+
+    /// Spawn the periodic port-health monitor (at most once).
+    ///
+    /// A midir *input* connection goes silent without surfacing any error when
+    /// the peer's output port disappears (app restart, USB replug) — the
+    /// callback simply stops firing, so feedback to the X-Touch dies with no
+    /// log. Polling port presence lets us detect that and reconnect. The same
+    /// poll also catches an OUT port that vanished with no send in flight to
+    /// notice it.
+    fn spawn_health_monitor(&self) {
+        if self.health_monitor_started.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let me = self.clone_handle();
+        tokio::spawn(async move {
+            loop {
+                sleep(Duration::from_millis(3000)).await;
+                if *me.shutdown_flag.lock() {
+                    return;
+                }
+                if me.midi_out.lock().is_some() && !me.out_port_present() {
+                    warn!(
+                        "MIDI Bridge OUT port '{}' disappeared; reconnecting",
+                        me.to_port
+                    );
+                    *me.midi_out.lock() = None;
+                    me.update_status();
+                    me.spawn_out_reconnect();
+                }
+                if me.midi_in.lock().is_some() && !me.in_port_present() {
+                    warn!(
+                        "MIDI Bridge IN port '{}' disappeared; reconnecting",
+                        me.from_port
+                    );
+                    *me.midi_in.lock() = None;
+                    me.update_status();
+                    me.spawn_in_reconnect();
+                }
+            }
+        });
     }
 
     /// Set the feedback callback for routing MIDI from app to X-Touch
@@ -434,24 +556,44 @@ impl MidiBridgeDriver {
                 },
             };
 
-            // Send message
-            let mut midi_out = self.midi_out.lock();
-            match &mut *midi_out {
-                Some(conn) => {
-                    debug!("Bridge TX -> {}: {:02X?}", self.to_port, transformed);
-                    match conn.send(&transformed) {
-                        Ok(_) => Ok(()),
-                        Err(e) => {
-                            warn!("MIDI Bridge send failed: {}", e);
-                            *midi_out = None; // Close broken connection
-                                              // TODO: Implement reconnection
-                            Err(anyhow!("MIDI send failed: {}", e))
-                        },
+            // Send the message, capturing the outcome and releasing the port
+            // lock before any reconnect bookkeeping (never hold the lock
+            // across a spawn). `bool` flags whether we were connected, so the
+            // not-connected case stays quiet (trace) while a genuine send
+            // failure warns and triggers recovery.
+            let send_outcome: Result<(), (String, bool)> = {
+                let mut midi_out = self.midi_out.lock();
+                match &mut *midi_out {
+                    Some(conn) => {
+                        debug!("Bridge TX -> {}: {:02X?}", self.to_port, transformed);
+                        match conn.send(&transformed) {
+                            Ok(_) => Ok(()),
+                            Err(e) => {
+                                *midi_out = None; // Close broken connection
+                                Err((format!("MIDI send failed: {}", e), true))
+                            },
+                        }
+                    },
+                    None => Err((
+                        format!("MIDI Bridge '{}' not connected", self.to_port),
+                        false,
+                    )),
+                }
+            };
+
+            match send_outcome {
+                Ok(()) => Ok(()),
+                Err((msg, was_connected)) => {
+                    if was_connected {
+                        warn!("MIDI Bridge OUT '{}': {} — reconnecting", self.to_port, msg);
+                        self.update_status();
+                    } else {
+                        trace!("Bridge TX skipped (not connected): {}", self.to_port);
                     }
-                },
-                None => {
-                    trace!("Bridge TX skipped (not connected): {}", self.to_port);
-                    Err(anyhow!("MIDI Bridge '{}' not connected", self.to_port))
+                    // Ensure a reconnect loop is running (single-flight guarded,
+                    // so repeated failures don't pile up tasks).
+                    self.spawn_out_reconnect();
+                    Err(anyhow!(msg))
                 },
             }
         } else {
@@ -483,27 +625,7 @@ impl Driver for MidiBridgeDriver {
             Ok(_) => {},
             Err(e) if self.optional => {
                 warn!("MIDI Bridge OUT open failed (optional): {}", e);
-                // Spawn background reconnection task
-                let self_clone = Self {
-                    name: self.name.clone(),
-                    to_port: self.to_port.clone(),
-                    from_port: self.from_port.clone(),
-                    filter: self.filter.clone(),
-                    transform: self.transform.clone(),
-                    optional: self.optional,
-                    midi_out: self.midi_out.clone(),
-                    midi_in: self.midi_in.clone(),
-                    feedback_callback: self.feedback_callback.clone(),
-                    status_callbacks: self.status_callbacks.clone(),
-                    current_status: self.current_status.clone(),
-                    activity_tracker: self.activity_tracker.clone(),
-                    reconnect_count_out: self.reconnect_count_out.clone(),
-                    reconnect_count_in: self.reconnect_count_in.clone(),
-                    shutdown_flag: self.shutdown_flag.clone(),
-                };
-                tokio::spawn(async move {
-                    self_clone.schedule_out_reconnect().await;
-                });
+                self.spawn_out_reconnect();
             },
             Err(e) => return Err(e),
         }
@@ -513,30 +635,16 @@ impl Driver for MidiBridgeDriver {
             Ok(_) => {},
             Err(e) if self.optional => {
                 warn!("MIDI Bridge IN open failed (optional): {}", e);
-                // Spawn background reconnection task
-                let self_clone = Self {
-                    name: self.name.clone(),
-                    to_port: self.to_port.clone(),
-                    from_port: self.from_port.clone(),
-                    filter: self.filter.clone(),
-                    transform: self.transform.clone(),
-                    optional: self.optional,
-                    midi_out: self.midi_out.clone(),
-                    midi_in: self.midi_in.clone(),
-                    feedback_callback: self.feedback_callback.clone(),
-                    status_callbacks: self.status_callbacks.clone(),
-                    current_status: self.current_status.clone(),
-                    activity_tracker: self.activity_tracker.clone(),
-                    reconnect_count_out: self.reconnect_count_out.clone(),
-                    reconnect_count_in: self.reconnect_count_in.clone(),
-                    shutdown_flag: self.shutdown_flag.clone(),
-                };
-                tokio::spawn(async move {
-                    self_clone.schedule_in_reconnect().await;
-                });
+                self.spawn_in_reconnect();
             },
             Err(e) => return Err(e),
         }
+
+        // Start the port-health monitor so a later *silent* disconnect (the
+        // input callback going dead, or the output port vanishing without a
+        // send to notice) is detected and recovered instead of going
+        // permanently dark.
+        self.spawn_health_monitor();
 
         debug!(
             "MIDI Bridge active: '{}' ⇄ '{}'",

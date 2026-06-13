@@ -304,9 +304,29 @@ pages_global:
       app: "qlc"
       midi: { type: "cc", channel: 1, cc: 12 }
 
+    # Exemple multi-action : un contrôle peut déclencher des effets supplémentaires
+    # `record` illustre les trois mécanismes d'un contrôle :
+    #  1. effet primaire (app/action/params/midi inline) — ici passthrough Voicemeeter
+    #  2. `also` : effets supplémentaires À L'APPUI (midi = deux fronts, action = appui seul)
+    #  3. `toggle` : actions pilotées par le STATUT RÉEL renvoyé par un app (son feedback),
+    #     pas par l'appui. Front OFF→ON déclenche `on`, front ON→OFF déclenche `off`
+    #     (détection de front : un état répété ne re-déclenche pas). `source` = app dont on
+    #     lit le feedback (défaut : `app`). `watch` (optionnel) fixe l'adresse MIDI surveillée ;
+    #     par défaut = adresse hardware du contrôle. Les étapes `midi:` n'y sont pas supportées.
     record:
       app: "voicemeeter"
-      midi: {type: "passthrough"}
+      midi: {type: "passthrough"}      # primaire : passthrough Voicemeeter
+      also:
+        - app: "qlc"                   # CC custom (127 à l'appui / 0 au relâché)
+          midi: { type: "cc", channel: 1, cc: 20 }
+      toggle:
+        source: "voicemeeter"
+        # watch: { type: note, channel: 1, note: 95 }   # optionnel (défaut : adresse hw du contrôle)
+        on:                            # Voicemeeter passe ON  → caméra Main en programme
+          - { app: "obs", action: "selectCamera", params: ["Main", "program"] }
+        off:                           # Voicemeeter passe OFF → scène d'outro en PROGRAMME
+          # changeScene : 2e param "program"/"preview" force la cible ; sinon suit le studio mode.
+          - { app: "obs", action: "changeScene", params: ["End", "program"] }
 
 # Apps audio Windows pinnées sur des faders fixes. Les autres faders se
 # remplissent en FIFO depuis les sessions audio actives au démarrage.

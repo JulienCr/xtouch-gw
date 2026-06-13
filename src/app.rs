@@ -96,8 +96,10 @@ pub async fn run_app(
     // `tokio::spawn`), so the lack of `Sync` is benign. We keep `Arc` (over
     // `Rc`) so the same value can later be wired into multi-threaded paths
     // without re-typing the entire surface.
+    // `mut` so the X-Touch link health monitor (below) can rebuild the driver
+    // in place after a USB hiccup / replug without restarting the app.
     #[allow(clippy::arc_with_non_send_sync)]
-    let xtouch = Arc::new(xtouch);
+    let mut xtouch = Arc::new(xtouch);
     display::update_xtouch_display(&router, &xtouch).await;
     info!("X-Touch display initialized");
 
@@ -310,6 +312,19 @@ pub async fn run_app(
     // Consume the immediate first tick so we don't snapshot at t=0.
     snapshot_tick.tick().await;
 
+    // X-Touch link health monitor. The X-Touch has no runtime reconnect: a USB
+    // hiccup, replug, or Windows power-save silently kills input (the MIDI
+    // callback stops) and output (sends start erroring), and recovery
+    // otherwise needs an app restart. We poll port presence plus an
+    // output-failure flag and rebuild the driver in place when the link is
+    // down. Runs faster than the snapshot cadence so a dropped link recovers
+    // within a few seconds of the hardware coming back.
+    let mut xtouch_health_tick = tokio::time::interval(std::time::Duration::from_secs(3));
+    xtouch_health_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    xtouch_health_tick.tick().await; // consume immediate tick
+    let xtouch_out_failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut xtouch_link_down = false;
+
     loop {
         tokio::select! {
             // Apply fader setpoints (from FaderSetpoint async tasks)
@@ -320,6 +335,7 @@ pub async fn run_app(
                     let fader_num = cmd.channel - 1;
                     if let Err(_e) = xtouch.set_fader(fader_num, cmd.value14).await {
                         trace!("Setpoint apply failed, requeueing: ch={} value={}", cmd.channel, cmd.value14);
+                        xtouch_out_failed.store(true, std::sync::atomic::Ordering::Relaxed);
                         setpoint.schedule(cmd.channel, cmd.value14, Some(120));
                     }
                 } else {
@@ -331,6 +347,7 @@ pub async fn run_app(
             Some(midi_msg) = led_rx.recv() => {
                 if let Err(e) = xtouch.send_raw(&midi_msg).await {
                     warn!("Failed to send LED update: {}", e);
+                    xtouch_out_failed.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
             }
 
@@ -409,6 +426,61 @@ pub async fn run_app(
                 if crate::cli::process_command(&line, router.get_state_actor()).await {
                     info!("Exit requested from REPL");
                     break;
+                }
+            }
+
+            // X-Touch link health check + in-place reconnect
+            _ = xtouch_health_tick.tick() => {
+                let (in_pat, out_pat) = {
+                    let cfg = router.config.read().await;
+                    (cfg.midi.input_port.clone(), cfg.midi.output_port.clone())
+                };
+                let present = xtouch_ports_present(&in_pat, &out_pat);
+                let had_out_failure =
+                    xtouch_out_failed.swap(false, std::sync::atomic::Ordering::Relaxed);
+
+                // Mark the link down on first detection (ports vanished, or a
+                // send failed while the port is still enumerable — a wedged
+                // device). Logged once per down episode, not per tick.
+                if !xtouch_link_down && (!present || had_out_failure) {
+                    xtouch_link_down = true;
+                    warn!(
+                        "X-Touch link down (ports_present={}, send_failed={}); will reconnect when the port is available",
+                        present, had_out_failure
+                    );
+                    let _ = live_tx.send(crate::event_bus::LiveEvent::Connection {
+                        target: "xtouch".into(),
+                        status: crate::event_bus::ConnectionStatus::Down,
+                        detail: Some("link lost".into()),
+                        ts: crate::event_bus::now_ms(),
+                    });
+                }
+
+                // Once the port is back (and we believe we're down), rebuild
+                // the driver in place: a fresh connection reuses the same event
+                // channel, so the receiver swap below keeps the loop wired.
+                if xtouch_link_down && present {
+                    match reconnect_xtouch(&router).await {
+                        Some((new_driver, new_rx)) => {
+                            xtouch = new_driver;
+                            xtouch_rx = new_rx;
+                            xtouch_link_down = false;
+                            xtouch_out_failed.store(false, std::sync::atomic::Ordering::Relaxed);
+                            info!("X-Touch reconnected");
+                            // Repaint the surface and replay current page state
+                            // (faders/LEDs/LCD) onto the freshly opened device.
+                            display::update_xtouch_display(&router, &xtouch).await;
+                            router.refresh_page().await;
+                            display::flush_pending_midi(&router, &xtouch, "xtouch reconnect").await;
+                            let _ = live_tx.send(crate::event_bus::LiveEvent::Connection {
+                                target: "xtouch".into(),
+                                status: crate::event_bus::ConnectionStatus::Up,
+                                detail: Some("reconnect".into()),
+                                ts: crate::event_bus::now_ms(),
+                            });
+                        },
+                        None => warn!("X-Touch reconnect attempt failed; will retry"),
+                    }
                 }
             }
 
@@ -522,6 +594,52 @@ fn publish_profiles_list(
     };
     let active = profile_store.active().ok();
     let _ = tray_update_tx.try_send(crate::tray::TrayUpdate::ProfilesList { profiles, active });
+}
+
+/// Probe whether both configured X-Touch ports are currently enumerable.
+/// Used by the link health monitor to detect an unplugged / suspended device
+/// before attempting an in-place reconnect.
+fn xtouch_ports_present(input_pattern: &str, output_pattern: &str) -> bool {
+    let contains = |names: &[String], pat: &str| {
+        let pat = pat.to_lowercase();
+        names.iter().any(|n| n.to_lowercase().contains(&pat))
+    };
+    let inputs = XTouchDriver::list_input_ports().unwrap_or_default();
+    let outputs = XTouchDriver::list_output_ports().unwrap_or_default();
+    contains(&inputs, input_pattern) && contains(&outputs, output_pattern)
+}
+
+/// Rebuild and reconnect the X-Touch driver from the router's *current* config
+/// (so port-name changes from a profile reload are honoured). Returns the new
+/// driver handle and its event receiver, or `None` if the rebuild/connect
+/// failed (e.g. the port isn't actually openable yet) so the caller retries.
+///
+/// The fresh input callback reuses a brand-new event channel; the caller swaps
+/// in the returned receiver so the main loop keeps receiving X-Touch input.
+async fn reconnect_xtouch(
+    router: &Arc<Router>,
+) -> Option<(
+    Arc<XTouchDriver>,
+    mpsc::Receiver<crate::xtouch::XTouchEvent>,
+)> {
+    let mut driver = {
+        let cfg = router.config.read().await;
+        match XTouchDriver::new(&cfg) {
+            Ok(d) => d,
+            Err(e) => {
+                warn!("X-Touch rebuild failed: {}", e);
+                return None;
+            },
+        }
+    };
+    if let Err(e) = driver.connect().await {
+        warn!("X-Touch reconnect: connect failed: {}", e);
+        return None;
+    }
+    let rx = driver.take_event_receiver()?;
+    #[allow(clippy::arc_with_non_send_sync)]
+    let driver = Arc::new(driver);
+    Some((driver, rx))
 }
 
 /// Perform shutdown cleanup: stop drivers, save state, reset hardware.
