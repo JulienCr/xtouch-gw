@@ -411,7 +411,26 @@ async fn reset_camera_transform(
 async fn camera_updates_ws(
     ws: WebSocketUpgrade,
     State(state): State<Arc<ApiState>>,
-) -> impl IntoResponse {
+    headers: axum::http::HeaderMap,
+) -> Response {
+    // The CSRF middleware (audit #72) only guards mutating HTTP verbs, but a WS
+    // upgrade is a GET — and browsers allow cross-origin WebSocket connects
+    // (sending an `Origin` header). Without this check a malicious page could
+    // open the loopback socket and read the snapshot + live updates. Apply the
+    // same Origin policy: allow no-Origin (native clients) and loopback, reject
+    // anything else.
+    if let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
+        if !origin_is_loopback(origin, state.api_port) {
+            warn!(%origin, "csrf: rejecting cross-origin WebSocket upgrade");
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ApiError {
+                    error: "csrf: origin not allowed".into(),
+                }),
+            )
+                .into_response();
+        }
+    }
     ws.on_upgrade(move |socket| handle_websocket(socket, state))
 }
 

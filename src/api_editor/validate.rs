@@ -45,9 +45,21 @@ pub async fn validate(
     Json(req): Json<ValidateRequest>,
 ) -> Response {
     if req.body.len() > VALIDATE_BODY_LIMIT_BYTES {
+        // Keep the JSON `ValidateResponse::Errors` shape (the editor client
+        // expects JSON on every failure); only the 413 status distinguishes it.
         return (
             StatusCode::PAYLOAD_TOO_LARGE,
-            "validate body exceeds 256 KB",
+            Json(ValidateResponse::Errors {
+                ok: false,
+                errors: vec![ValidationIssue {
+                    field_path: "body".into(),
+                    level: "error",
+                    message: format!(
+                        "validate body exceeds {} KB",
+                        VALIDATE_BODY_LIMIT_BYTES / 1024
+                    ),
+                }],
+            }),
         )
             .into_response();
     }
