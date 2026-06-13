@@ -8,9 +8,9 @@
 //! - **Epoch-based cancellation**: a new setpoint invalidates older pending work.
 //! - **One resident worker per channel**: lazily spawned on first `schedule()`;
 //!   awakened via `tokio::sync::Notify` — no spawn-per-event.
-//! - **Bounded apply channel**: `mpsc::channel(APPLY_CHANNEL_CAPACITY)`. A full
-//!   queue drops on send because the next schedule cycle will requeue the latest
-//!   desired value anyway.
+//! - **Bounded apply channel**: `mpsc::channel(APPLY_CHANNEL_CAPACITY)`. The
+//!   per-channel worker `send().await`s, so a brief consumer stall back-pressures
+//!   just that channel instead of dropping the final (last-wins) value.
 //! - **Debounced application**: 90 ms default, 0 ms for the 0/16383 extremes.
 //!
 //! ## Why this shape
@@ -54,6 +54,11 @@ struct ChannelState {
     /// Page epoch when this setpoint was last updated. Used by `get_desired`
     /// to detect setpoints orphaned by a page change.
     page_epoch: u64,
+    /// Per-call debounce override (`schedule`'s `delay_ms`). The worker
+    /// `take()`s it on its next cycle (so it applies exactly once); `None`
+    /// falls back to the extreme-aware default. Last-write-wins like
+    /// `desired14`, so the most recent `schedule` for the channel decides.
+    override_delay_ms: Option<u64>,
 }
 
 /// Resident worker for a single channel. Owns a `Notify` used to re-arm work
@@ -135,36 +140,33 @@ impl FaderSetpoint {
             state.desired14 = clamped;
             state.epoch += 1;
             state.page_epoch = current_page_epoch;
+            // Record the per-call delay on the channel state so it reaches the
+            // worker even when the worker already exists. Previously only the
+            // first-spawn override was honored, so the 120 ms requeue backoff
+            // in app.rs (after a `set_fader` failure) was silently dropped and
+            // retries fell back to the 0/90 ms default — effectively immediate
+            // for the 0/16383 extremes during a device failure.
+            state.override_delay_ms = delay_ms;
             state.epoch
         };
-
-        // Per-event override survives onto the worker via a brief stash; in
-        // practice callers always pass None except in tests, so the worker's
-        // default (extreme-aware 0 vs 90 ms) is correct most of the time.
-        // For overrides, encode the delay request on the state for the
-        // next worker cycle.
-        let override_delay = delay_ms;
 
         trace!(
             "FaderSetpoint schedule: ch={} value={} delay_override={:?} epoch={}",
             channel,
             clamped,
-            override_delay,
+            delay_ms,
             epoch_snapshot
         );
 
-        self.ensure_worker(channel, override_delay).notify_one();
+        self.ensure_worker(channel).notify_one();
     }
 
     /// Lazily create the resident worker for `channel` and return its Notify.
-    fn ensure_worker(&self, channel: u8, override_delay: Option<u64>) -> Arc<Notify> {
+    /// The per-call delay override travels via `ChannelState::override_delay_ms`
+    /// (set in `schedule`), so this no longer needs a delay argument.
+    fn ensure_worker(&self, channel: u8) -> Arc<Notify> {
         let mut workers = self.workers.lock().unwrap();
         if let Some(existing) = workers.get(&channel) {
-            // Stash the override on a side channel via the channel state's
-            // page_epoch slot is wrong — instead let the worker read the
-            // current desired value and decide. Overrides are only used by
-            // tests via `schedule(_, _, Some(_))`; passing through is done
-            // via a per-call dedicated path below.
             return existing.notify.clone();
         }
 
@@ -174,7 +176,6 @@ impl FaderSetpoint {
             self.channels.clone(),
             self.apply_tx.clone(),
             notify.clone(),
-            override_delay,
         );
         workers.insert(
             channel,
@@ -191,24 +192,21 @@ impl FaderSetpoint {
         channels: Arc<RwLock<HashMap<u8, ChannelState>>>,
         apply_tx: mpsc::Sender<ApplySetpointCmd>,
         notify: Arc<Notify>,
-        initial_override: Option<u64>,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
-            // `initial_override` is honored for the very first cycle only;
-            // subsequent cycles use the extreme-aware default. This mirrors
-            // the previous per-call delay semantics for the test suite while
-            // keeping the worker's steady-state behavior simple.
-            let mut pending_override = initial_override;
             loop {
                 notify.notified().await;
 
                 let (snapshot_epoch, value14, eff_delay) = {
-                    let read = channels.read().unwrap();
-                    let Some(state) = read.get(&channel) else {
+                    // Write lock so we can `take()` the per-call override —
+                    // it applies on exactly one cycle, then reverts to the
+                    // extreme-aware default.
+                    let mut write = channels.write().unwrap();
+                    let Some(state) = write.get_mut(&channel) else {
                         continue;
                     };
                     let is_extreme = state.desired14 == 0 || state.desired14 == 16383;
-                    let delay = pending_override.take().unwrap_or(if is_extreme {
+                    let delay = state.override_delay_ms.take().unwrap_or(if is_extreme {
                         0
                     } else {
                         DEBOUNCE_DELAY_MS
@@ -242,14 +240,19 @@ impl FaderSetpoint {
                     value14,
                     epoch: snapshot_epoch,
                 };
-                if let Err(e) = apply_tx.try_send(cmd) {
-                    // Drop-on-full is acceptable: a subsequent `schedule()`
-                    // will requeue the latest desired value anyway. Log so
-                    // sustained drops are visible in tracing.
+                // Await capacity instead of dropping. A per-channel worker
+                // blocking here only throttles its own channel (back-pressure),
+                // and it guarantees the final last-wins setpoint is delivered
+                // even if the main loop briefly stalls — otherwise a drop on the
+                // *last* schedule of a gesture leaves the fader at the wrong
+                // position. `Err` means the receiver is gone (scheduler torn
+                // down), so the worker exits.
+                if apply_tx.send(cmd).await.is_err() {
                     debug!(
-                        "FaderSetpoint apply_tx full or closed (ch={}, epoch={}): {}",
-                        channel, snapshot_epoch, e
+                        "FaderSetpoint apply_tx closed (ch={}, epoch={}); worker exiting",
+                        channel, snapshot_epoch
                     );
+                    break;
                 }
             }
         })
