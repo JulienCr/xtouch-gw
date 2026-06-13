@@ -1077,6 +1077,8 @@ mod auto_strip_tests {
             midi: None,
             indicator: None,
             overlay: None,
+            also: None,
+            toggle: None,
         }
     }
 

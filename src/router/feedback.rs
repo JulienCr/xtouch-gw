@@ -234,6 +234,12 @@ impl super::Router {
             },
         };
 
+        // Feedback-driven toggles: react to the app's *real* on/off state BEFORE
+        // anti-echo. Anti-echo only guards re-sending our own values to the
+        // surface; a toggle is a semantic reaction to the app's reported state
+        // and must see all feedback. Edge detection keeps it idempotent.
+        self.evaluate_feedback_toggles(app_key, &entry).await;
+
         // BUG-001 FIX: Check anti-echo BEFORE updating state (now async)
         // If this is an echo of a value we recently sent, suppress it entirely
         if self

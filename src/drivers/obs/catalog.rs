@@ -12,15 +12,16 @@ use serde_json::json;
 pub fn obs_catalog() -> Vec<ActionDescriptor> {
     vec![
         ActionDescriptor::simple("changeScene", "Change scene")
-            .with_description("Switch program (or preview when in studio mode) to the given scene.")
-            .with_param(
-                ParamDescriptor::new("scene", ParamKind::SceneRef).with_picker("obs.scene"),
-            ),
+            .with_description(
+                "Switch to the given scene. Optional `target` forces \"program\" or \"preview\"; \
+                 when omitted, follows studio mode (preview if on, else program).",
+            )
+            .with_param(ParamDescriptor::new("scene", ParamKind::SceneRef).with_picker("obs.scene"))
+            .with_param(ParamDescriptor::new("target", ParamKind::String)),
         ActionDescriptor::simple("setScene", "Set scene (alias)")
             .with_description("Identical to changeScene; kept for legacy YAML.")
-            .with_param(
-                ParamDescriptor::new("scene", ParamKind::SceneRef).with_picker("obs.scene"),
-            ),
+            .with_param(ParamDescriptor::new("scene", ParamKind::SceneRef).with_picker("obs.scene"))
+            .with_param(ParamDescriptor::new("target", ParamKind::String)),
         ActionDescriptor::simple("toggleStudioMode", "Toggle studio mode"),
         ActionDescriptor::simple("TriggerStudioModeTransition", "Trigger studio transition"),
         ActionDescriptor::simple("nudgeX", "Nudge X (pan)")

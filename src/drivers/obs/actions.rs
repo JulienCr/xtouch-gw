@@ -216,14 +216,19 @@ impl Driver for ObsDriver {
                     .and_then(|v| v.as_str())
                     .context("Scene name required")?;
 
-                let target = if *self.studio_mode.read() {
-                    "Preview"
-                } else {
-                    "Program"
+                // Optional 2nd param forces the destination: "program" or
+                // "preview". Absent → studio-mode default (preview if studio
+                // mode is on, else program).
+                let explicit_target = params.get(1).and_then(|v| v.as_str());
+                let target = match explicit_target {
+                    Some("preview") => "Preview",
+                    Some("program") => "Program",
+                    _ if *self.studio_mode.read() => "Preview",
+                    _ => "Program",
                 };
                 info!("OBS {} scene change -> '{}'", target, scene_name);
 
-                self.set_scene_for_mode(scene_name).await?;
+                self.set_scene_for_mode(scene_name, explicit_target).await?;
                 Ok(())
             },
 

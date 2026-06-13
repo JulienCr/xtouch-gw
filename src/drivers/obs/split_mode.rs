@@ -61,8 +61,8 @@ impl ObsDriver {
 
         info!("OBS: Enter split '{}' -> scene '{}'", side, split_scene);
 
-        // Switch to split scene
-        self.set_scene_for_mode(&split_scene).await?;
+        // Switch to split scene (studio-mode default routing)
+        self.set_scene_for_mode(&split_scene, None).await?;
 
         // Update state BEFORE setting camera (so state is updated even if camera fails)
         {
@@ -144,8 +144,8 @@ impl ObsDriver {
             target_camera, camera_scene
         );
 
-        // Switch to full scene
-        self.set_scene_for_mode(&camera_scene).await?;
+        // Switch to full scene (studio-mode default routing)
+        self.set_scene_for_mode(&camera_scene, None).await?;
 
         // Update state
         {

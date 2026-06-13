@@ -11,6 +11,7 @@ mod anti_echo;
 mod camera_target;
 mod driver;
 mod feedback;
+mod feedback_toggle;
 mod indicators;
 mod page;
 mod refresh;
@@ -71,6 +72,11 @@ pub struct Router {
     /// the main event loop to flush pending MIDI / display updates. The
     /// X-Touch input arm does this inline after `on_midi_from_xtouch`.
     pub display_refresh_notify: Arc<tokio::sync::Notify>,
+    /// Last known on/off state per feedback-driven toggle control (keyed by
+    /// `control_id`). Used for edge detection so a toggle fires only on an
+    /// actual transition, not on every repeated feedback message. See
+    /// `feedback_toggle.rs`.
+    pub(crate) toggle_states: Arc<RwLock<HashMap<String, bool>>>,
 }
 
 impl Router {
@@ -114,6 +120,7 @@ impl Router {
             camera_targets,
             live_tx: Arc::new(tokio::sync::RwLock::new(None)),
             display_refresh_notify: Arc::new(tokio::sync::Notify::new()),
+            toggle_states: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 

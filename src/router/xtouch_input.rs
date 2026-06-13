@@ -210,16 +210,38 @@ impl super::Router {
         };
         drop(config);
 
-        // Check if this is MIDI direct mode (send raw MIDI to bridge)
-        if let Some(target_spec) = &control_config.midi {
-            self.handle_midi_direct_mode(raw, control_id, &control_config, target_spec)
-                .await;
-            return;
-        }
+        // Effet primaire (comportement historique du contrôle) : MIDI direct si
+        // `midi:` est présent, sinon action driver.
+        let primary = control_config.primary_step();
+        self.dispatch_step(raw, control_id, &primary).await;
 
-        // Driver action mode
-        self.handle_driver_action_mode(raw, control_id, &control_config)
-            .await;
+        // Effets supplémentaires (boutons multi-action) : chaque étape est
+        // déclenchée en plus du primaire.
+        if let Some(steps) = &control_config.also {
+            for step in steps {
+                self.dispatch_step(raw, control_id, step).await;
+            }
+        }
+    }
+
+    /// Route une étape de dispatch vers le bon handler.
+    ///
+    /// `midi:` présent → MIDI direct (passthrough/transform) ; sinon action driver.
+    ///
+    /// `pub(crate)` : réutilisé par `feedback_toggle.rs` pour déclencher les
+    /// étapes d'un toggle (avec un message MIDI synthétique).
+    pub(crate) async fn dispatch_step(
+        &self,
+        raw: &[u8],
+        control_id: &str,
+        step: &crate::config::ActionStep,
+    ) {
+        if let Some(target_spec) = &step.midi {
+            self.handle_midi_direct_mode(raw, control_id, step, target_spec)
+                .await;
+        } else {
+            self.handle_driver_action_mode(raw, control_id, step).await;
+        }
     }
 
     /// Handle MIDI direct mode (transform and send to bridge)
@@ -227,7 +249,7 @@ impl super::Router {
         &self,
         raw: &[u8],
         control_id: &str,
-        control_config: &crate::config::ControlMapping,
+        step: &crate::config::ActionStep,
         target_spec: &crate::config::MidiSpec,
     ) {
         // 1. Parse input MIDI to get normalized value (0.0 - 1.0)
@@ -295,13 +317,13 @@ impl super::Router {
                 control_id,
                 msg,
                 bytes.len(),
-                control_config.app
+                step.app
             );
 
             // Get the MIDI bridge driver for this app
             let driver = {
                 let drivers = self.drivers.read().await;
-                drivers.get(&control_config.app).cloned()
+                drivers.get(&step.app).cloned()
             };
 
             if let Some(driver) = driver {
@@ -322,11 +344,11 @@ impl super::Router {
                     // OPTIMISTIC UPDATE: Store the sent value in StateActor
                     // This ensures state persists even if the app doesn't send feedback
                     // (e.g., QLC+ doesn't echo MIDI values back)
-                    if let Some(app) = AppKey::from_str(&control_config.app) {
-                        if let Some(entry) = build_entry_from_raw(&bytes, &control_config.app) {
+                    if let Some(app) = AppKey::from_str(&step.app) {
+                        if let Some(entry) = build_entry_from_raw(&bytes, &step.app) {
                             debug!(
                                 "Optimistic state update: {} -> {:?} = {:?}",
-                                control_config.app, entry.addr, entry.value
+                                step.app, entry.addr, entry.value
                             );
                             self.state_actor.update_state(app, entry);
                         }
@@ -335,7 +357,7 @@ impl super::Router {
             } else {
                 warn!(
                     "Bridge driver '{}' not found for MIDI passthrough",
-                    control_config.app
+                    step.app
                 );
             }
         }
@@ -346,11 +368,11 @@ impl super::Router {
         &self,
         raw: &[u8],
         control_id: &str,
-        control_config: &crate::config::ControlMapping,
+        step: &crate::config::ActionStep,
     ) {
         let driver = {
             let drivers = self.drivers.read().await;
-            drivers.get(&control_config.app).cloned()
+            drivers.get(&step.app).cloned()
         };
 
         let driver = match driver {
@@ -358,17 +380,17 @@ impl super::Router {
             None => {
                 warn!(
                     "Driver '{}' not found for control '{}'",
-                    control_config.app, control_id
+                    step.app, control_id
                 );
                 return;
             },
         };
 
         // Determine the action to execute
-        let action = control_config.action.as_deref().unwrap_or("execute");
+        let action = step.action.as_deref().unwrap_or("execute");
 
         // Build parameters
-        let params = control_config.params.clone().unwrap_or_default();
+        let params = step.params.clone().unwrap_or_default();
 
         // Filter button releases: Note Off (0x8) or Note On velocity 0.
         // The X-Touch may send either form depending on firmware/key; both mean
@@ -432,7 +454,7 @@ impl super::Router {
         // Execute driver action
         debug!(
             "→ Routing: {} → app={} action={} (value={:?})",
-            control_id, control_config.app, action, ctx.value
+            control_id, step.app, action, ctx.value
         );
         if let Err(e) = driver.execute(action, params, ctx).await {
             warn!("Driver execution failed: {}", e);
