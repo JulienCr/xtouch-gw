@@ -157,6 +157,8 @@ async fn test_midi_note_off_does_not_double_fire_driver_action() {
             midi: None,
             overlay: None,
             indicator: None,
+            also: None,
+            toggle: None,
         },
     );
     page.controls = Some(controls);
@@ -256,7 +258,10 @@ async fn test_driver_hot_reload_config() {
         .await
         .unwrap();
 
-    // Update config with different pages
+    // Update config with different pages. Note: the new config does NOT
+    // reference `test_driver` from any page or passthrough. Per audit #55,
+    // `update_config` purges drivers no longer referenced, so we expect the
+    // driver to be unregistered.
     let new_config = make_test_config(vec![
         make_test_page("New Page 1"),
         make_test_page("New Page 2"),
@@ -272,8 +277,13 @@ async fn test_driver_hot_reload_config() {
     assert!(pages.contains(&"New Page 1".to_string()));
     assert!(pages.contains(&"New Page 3".to_string()));
 
-    // Driver should still be registered
-    assert!(router.get_driver("test_driver").await.is_some());
+    // Driver should be unregistered now that the new config doesn't reference it.
+    // Before #55 this only happened via `app.rs::prune_unused_drivers`, which
+    // bypassed any direct caller of `update_config` (REPL, tests, future APIs).
+    assert!(
+        router.get_driver("test_driver").await.is_none(),
+        "drivers not referenced by the new config must be purged on update_config"
+    );
 }
 
 #[tokio::test]
@@ -290,6 +300,8 @@ async fn test_driver_execution_with_context() {
             midi: None,
             overlay: None,
             indicator: None,
+            also: None,
+            toggle: None,
         },
     );
     page.controls = Some(controls);
@@ -327,6 +339,8 @@ async fn test_driver_execution_missing_driver() {
             midi: None,
             overlay: None,
             indicator: None,
+            also: None,
+            toggle: None,
         },
     );
     page.controls = Some(controls);
@@ -385,6 +399,8 @@ async fn test_multiple_drivers_execution() {
             midi: None,
             overlay: None,
             indicator: None,
+            also: None,
+            toggle: None,
         },
     );
 
@@ -397,6 +413,8 @@ async fn test_multiple_drivers_execution() {
             midi: None,
             overlay: None,
             indicator: None,
+            also: None,
+            toggle: None,
         },
     );
 
@@ -600,6 +618,92 @@ async fn test_unregister_drivers_not_in_with_empty_needed_drops_all() {
     assert!(router.list_drivers().await.is_empty());
 }
 
+/// Audit #55: `Router::update_config` must purge drivers (and their app_state
+/// entries) for apps the new config no longer references. Previously this
+/// cleanup lived in `app.rs::prune_unused_drivers`, which only ran from the
+/// file-watcher reload path; any other caller of `update_config` (REPL,
+/// direct API, tests) leaked state forever for apps removed by the new
+/// config. After the fix it lives inside `update_config` itself.
+#[tokio::test]
+async fn test_update_config_unregisters_drivers_removed_from_new_config() {
+    let mut control_a = HashMap::new();
+    control_a.insert(
+        "fader1".to_string(),
+        ControlMapping {
+            app: "obs".to_string(),
+            action: None,
+            params: None,
+            midi: None,
+            overlay: None,
+            indicator: None,
+            also: None,
+            toggle: None,
+        },
+    );
+    control_a.insert(
+        "fader2".to_string(),
+        ControlMapping {
+            app: "voicemeeter".to_string(),
+            action: None,
+            params: None,
+            midi: None,
+            overlay: None,
+            indicator: None,
+            also: None,
+            toggle: None,
+        },
+    );
+    let mut page_a = make_test_page("AB");
+    page_a.controls = Some(control_a);
+    let config_a = make_test_config(vec![page_a]);
+
+    let router = make_test_router(config_a);
+    router
+        .register_driver("obs".to_string(), Arc::new(ConsoleDriver::new("obs")))
+        .await
+        .unwrap();
+    router
+        .register_driver(
+            "voicemeeter".to_string(),
+            Arc::new(ConsoleDriver::new("voicemeeter")),
+        )
+        .await
+        .unwrap();
+    assert_eq!(router.list_drivers().await.len(), 2);
+
+    // New config drops obs from any page reference.
+    let mut control_b = HashMap::new();
+    control_b.insert(
+        "fader2".to_string(),
+        ControlMapping {
+            app: "voicemeeter".to_string(),
+            action: None,
+            params: None,
+            midi: None,
+            overlay: None,
+            indicator: None,
+            also: None,
+            toggle: None,
+        },
+    );
+    let mut page_b = make_test_page("B");
+    page_b.controls = Some(control_b);
+    let config_b = make_test_config(vec![page_b]);
+
+    router
+        .update_config(config_b)
+        .await
+        .expect("update_config should succeed");
+
+    let remaining: std::collections::HashSet<String> =
+        router.list_drivers().await.into_iter().collect();
+    assert_eq!(
+        remaining,
+        std::iter::once("voicemeeter".to_string()).collect(),
+        "obs must be unregistered because the new config no longer references it"
+    );
+}
+
 #[tokio::test]
 async fn test_unregister_drivers_not_in_is_idempotent() {
     let config = make_test_config(vec![make_test_page("Test Page")]);
@@ -620,4 +724,311 @@ async fn test_unregister_drivers_not_in_is_idempotent() {
         "nothing to remove on second call (idempotent)"
     );
     assert_eq!(router.list_drivers().await, vec!["obs".to_string()]);
+}
+
+// ===== Multi-action buttons (`also`) =====
+
+/// A control with `also` must fan out to its primary effect AND every extra
+/// step. Action steps fire on press only (release filtered); MIDI direct steps
+/// fire on both edges (press + release). Mirrors the real Record button:
+/// passthrough primary + OBS `selectCamera` (action) + QLC CC (midi).
+///
+/// mute1 in MCU mode is note=16 (see docs/xtouch-matching.csv), outside the
+/// paging note ranges, so it falls through to the driver/MIDI dispatch path.
+#[tokio::test]
+async fn test_multi_action_also_fans_out_press_and_release_semantics() {
+    use crate::config::{ActionStep, MidiSpec, MidiType};
+
+    let mut page = make_test_page("Page 1");
+    let mut controls = HashMap::new();
+    controls.insert(
+        "mute1".to_string(),
+        ControlMapping {
+            app: "primary".to_string(),
+            action: Some("trigger".to_string()),
+            params: None,
+            midi: None,
+            overlay: None,
+            indicator: None,
+            also: Some(vec![
+                // Action step (OBS-like) → press-only.
+                ActionStep {
+                    app: "secondary".to_string(),
+                    action: Some("selectCamera".to_string()),
+                    params: Some(vec![json!("Main")]),
+                    midi: None,
+                },
+                // MIDI direct step (QLC-like CC) → both edges.
+                ActionStep {
+                    app: "midiapp".to_string(),
+                    action: None,
+                    params: None,
+                    midi: Some(MidiSpec {
+                        midi_type: MidiType::Cc,
+                        channel: Some(1),
+                        cc: Some(20),
+                        note: None,
+                    }),
+                },
+            ]),
+            toggle: None,
+        },
+    );
+    page.controls = Some(controls);
+
+    let config = make_test_config(vec![page]);
+    let router = make_test_router(config);
+
+    let primary = Arc::new(ConsoleDriver::new("primary"));
+    let secondary = Arc::new(ConsoleDriver::new("secondary"));
+    let midiapp = Arc::new(ConsoleDriver::new("midiapp"));
+    router
+        .register_driver("primary".to_string(), primary.clone())
+        .await
+        .unwrap();
+    router
+        .register_driver("secondary".to_string(), secondary.clone())
+        .await
+        .unwrap();
+    router
+        .register_driver("midiapp".to_string(), midiapp.clone())
+        .await
+        .unwrap();
+
+    // Press: Note On, ch1, note 16, velocity 127 → all three fire once.
+    router.on_midi_from_xtouch(&[0x90, 16, 127]).await;
+    assert_eq!(
+        primary.execution_count().await,
+        1,
+        "primary action fires on press"
+    );
+    assert_eq!(
+        secondary.execution_count().await,
+        1,
+        "also action fires on press"
+    );
+    assert_eq!(
+        midiapp.execution_count().await,
+        1,
+        "also midi fires on press"
+    );
+
+    // Release: real Note Off (0x80). Action steps must NOT re-fire; the MIDI
+    // direct step fires again (both edges → momentary CC 127/0).
+    router.on_midi_from_xtouch(&[0x80, 16, 0]).await;
+    assert_eq!(
+        primary.execution_count().await,
+        1,
+        "primary action ignores release"
+    );
+    assert_eq!(
+        secondary.execution_count().await,
+        1,
+        "also action ignores release"
+    );
+    assert_eq!(
+        midiapp.execution_count().await,
+        2,
+        "also midi fires on release too"
+    );
+}
+
+// ===== Feedback-driven toggles (`toggle`) =====
+
+use crate::config::{ActionStep, GlobalPageDefaults, MidiSpec, MidiType, ToggleConfig};
+
+/// A `record` toggle whose `on` steps target driver "obs" (selectCamera) and
+/// `off` steps target a distinct driver "obsoff" (changeScene), so a test can
+/// tell which edge fired. `watch` is left to the caller (explicit vs derived).
+fn record_toggle(watch: Option<MidiSpec>) -> ToggleConfig {
+    ToggleConfig {
+        source: Some("voicemeeter".to_string()),
+        watch,
+        on: vec![ActionStep {
+            app: "obs".to_string(),
+            action: Some("selectCamera".to_string()),
+            params: Some(vec![json!("Main"), json!("program")]),
+            midi: None,
+        }],
+        off: vec![ActionStep {
+            app: "obsoff".to_string(),
+            action: Some("changeScene".to_string()),
+            params: Some(vec![json!("End")]),
+            midi: None,
+        }],
+    }
+}
+
+/// Config with a global `record` control carrying `toggle`, plus one empty page.
+fn make_toggle_config(toggle: ToggleConfig) -> AppConfig {
+    let mut controls = HashMap::new();
+    controls.insert(
+        "record".to_string(),
+        ControlMapping {
+            app: "voicemeeter".to_string(),
+            action: None,
+            params: None,
+            midi: None,
+            overlay: None,
+            indicator: None,
+            also: None,
+            toggle: Some(toggle),
+        },
+    );
+    let mut config = make_test_config(vec![make_test_page("P1")]);
+    config.pages_global = Some(GlobalPageDefaults {
+        controls: Some(controls),
+        lcd: None,
+        passthroughs: None,
+    });
+    config
+}
+
+/// Register the `on`/`off` target drivers and return them for assertions.
+async fn register_toggle_targets(router: &Router) -> (Arc<ConsoleDriver>, Arc<ConsoleDriver>) {
+    let on_drv = Arc::new(ConsoleDriver::new("obs"));
+    let off_drv = Arc::new(ConsoleDriver::new("obsoff"));
+    router
+        .register_driver("obs".to_string(), on_drv.clone())
+        .await
+        .unwrap();
+    router
+        .register_driver("obsoff".to_string(), off_drv.clone())
+        .await
+        .unwrap();
+    (on_drv, off_drv)
+}
+
+/// Note On, ch1, note 95 (the record button's MCU address), given velocity.
+fn note95(velocity: u8) -> [u8; 3] {
+    [0x90, 95, velocity]
+}
+
+/// A toggle must fire `on` on the OFF→ON edge and `off` on the ON→OFF edge,
+/// stay silent on repeated identical states, and never fire on the first
+/// (baseline) observation.
+#[tokio::test]
+async fn test_feedback_toggle_fires_on_state_transitions() {
+    let watch = Some(MidiSpec {
+        midi_type: MidiType::Note,
+        channel: Some(1),
+        cc: None,
+        note: Some(95),
+    });
+    let router = make_test_router(make_toggle_config(record_toggle(watch)));
+    let (on_drv, off_drv) = register_toggle_targets(&router).await;
+
+    // 1) First feedback (OFF): baseline only, no fire.
+    router
+        .on_midi_from_app("voicemeeter", &note95(0), "voicemeeter")
+        .await;
+    assert_eq!(
+        on_drv.execution_count().await,
+        0,
+        "baseline OFF must not fire"
+    );
+    assert_eq!(off_drv.execution_count().await, 0);
+
+    // 2) OFF→ON edge: `on` fires once.
+    router
+        .on_midi_from_app("voicemeeter", &note95(127), "voicemeeter")
+        .await;
+    assert_eq!(on_drv.execution_count().await, 1, "ON edge fires `on`");
+    assert_eq!(off_drv.execution_count().await, 0);
+
+    // 3) Repeated ON (different velocity, still > 0): idempotent, no re-fire.
+    router
+        .on_midi_from_app("voicemeeter", &note95(100), "voicemeeter")
+        .await;
+    assert_eq!(
+        on_drv.execution_count().await,
+        1,
+        "repeated ON must not re-fire"
+    );
+
+    // 4) ON→OFF edge: `off` fires once.
+    router
+        .on_midi_from_app("voicemeeter", &note95(0), "voicemeeter")
+        .await;
+    assert_eq!(off_drv.execution_count().await, 1, "OFF edge fires `off`");
+    assert_eq!(
+        on_drv.execution_count().await,
+        1,
+        "`on` unchanged on OFF edge"
+    );
+}
+
+/// The very first feedback only records state, even when it is ON — so
+/// connecting (or a config reload) never triggers an unexpected action.
+#[tokio::test]
+async fn test_feedback_toggle_initial_on_does_not_fire() {
+    let watch = Some(MidiSpec {
+        midi_type: MidiType::Note,
+        channel: Some(1),
+        cc: None,
+        note: Some(95),
+    });
+    let router = make_test_router(make_toggle_config(record_toggle(watch)));
+    let (on_drv, off_drv) = register_toggle_targets(&router).await;
+
+    router
+        .on_midi_from_app("voicemeeter", &note95(127), "voicemeeter")
+        .await;
+    assert_eq!(on_drv.execution_count().await, 0, "initial ON only records");
+    assert_eq!(off_drv.execution_count().await, 0);
+}
+
+/// With no explicit `watch`, the watched address is derived from the control's
+/// hardware mapping (`record` = Note 95 in MCU mode). Unrelated notes are
+/// ignored.
+#[tokio::test]
+async fn test_feedback_toggle_default_watch_uses_hardware_address() {
+    let router = make_test_router(make_toggle_config(record_toggle(None)));
+    let (on_drv, _off_drv) = register_toggle_targets(&router).await;
+
+    // Baseline OFF, then ON edge on Note 95 fires `on`.
+    router
+        .on_midi_from_app("voicemeeter", &note95(0), "voicemeeter")
+        .await;
+    router
+        .on_midi_from_app("voicemeeter", &note95(127), "voicemeeter")
+        .await;
+    assert_eq!(
+        on_drv.execution_count().await,
+        1,
+        "default-derived Note 95 watch fires on the ON edge"
+    );
+
+    // A different note is not the record address → ignored.
+    router
+        .on_midi_from_app("voicemeeter", &[0x90, 80, 127], "voicemeeter")
+        .await;
+    assert_eq!(
+        on_drv.execution_count().await,
+        1,
+        "unrelated note must not affect the toggle"
+    );
+}
+
+/// A toggle only reacts to feedback from its `source` app, not other apps.
+#[tokio::test]
+async fn test_feedback_toggle_ignores_other_source_app() {
+    let watch = Some(MidiSpec {
+        midi_type: MidiType::Note,
+        channel: Some(1),
+        cc: None,
+        note: Some(95),
+    });
+    let router = make_test_router(make_toggle_config(record_toggle(watch)));
+    let (on_drv, off_drv) = register_toggle_targets(&router).await;
+
+    // Same Note 95, but from OBS (not the toggle's source) → no effect.
+    router.on_midi_from_app("obs", &note95(0), "obs").await;
+    router.on_midi_from_app("obs", &note95(127), "obs").await;
+    assert_eq!(
+        on_drv.execution_count().await,
+        0,
+        "wrong source must not fire"
+    );
+    assert_eq!(off_drv.execution_count().await, 0);
 }

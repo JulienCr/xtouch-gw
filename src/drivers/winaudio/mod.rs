@@ -94,6 +94,11 @@ pub struct WinAudioDriver {
     /// per MIDI event. Refreshed by `refresh_pinned_lc` on init and on
     /// every config-touching path (`sync()`, etc.).
     pinned_lc_cache: Arc<ArcSwap<HashSet<String>>>,
+    /// Signals the page-watcher task to stop. `shutdown()` sends `true`; the
+    /// watcher selects on it so an unregistered (profile-switched-away)
+    /// driver instance doesn't leak an immortal task that keeps doing LCD
+    /// renders. A `watch` channel latches, so the signal can't be missed.
+    page_watcher_shutdown: tokio::sync::watch::Sender<bool>,
     #[cfg(target_os = "windows")]
     com: Arc<RwLock<Option<com_thread::ComThreadHandle>>>,
 }
@@ -109,6 +114,7 @@ impl WinAudioDriver {
             feedback_tx: Arc::new(RwLock::new(None)),
             discovery: Arc::new(RwLock::new(mapping::DiscoveryState::default())),
             pinned_lc_cache: Arc::new(ArcSwap::from_pointee(pinned_lc)),
+            page_watcher_shutdown: tokio::sync::watch::channel(false).0,
             #[cfg(target_os = "windows")]
             com: Arc::new(RwLock::new(None)),
         }
@@ -295,6 +301,9 @@ impl Driver for WinAudioDriver {
 
     async fn shutdown(&self) -> Result<()> {
         self.initialized.store(false, Ordering::Release);
+        // Stop the page-watcher task (otherwise it outlives this driver
+        // instance on a profile switch and keeps rendering LCD updates).
+        let _ = self.page_watcher_shutdown.send(true);
         #[cfg(target_os = "windows")]
         {
             if let Some(handle) = self.com.write().await.take() {
@@ -438,6 +447,7 @@ impl WinAudioDriver {
             return;
         };
         let mut rx = live_tx.subscribe();
+        let mut shutdown_rx = self.page_watcher_shutdown.subscribe();
         #[cfg(target_os = "windows")]
         let com = self.com.clone();
         let config = self.config.clone();
@@ -446,27 +456,50 @@ impl WinAudioDriver {
         let router_for_render = self.router.clone();
         let led_tx = self.led_tx.clone();
         tokio::spawn(async move {
-            while let Ok(event) = rx.recv().await {
-                let crate::event_bus::LiveEvent::PageChanged { index, .. } = event else {
-                    continue;
-                };
-                if !page_eligible_at_index(&router_for_render, index).await {
-                    continue;
+            loop {
+                tokio::select! {
+                    changed = shutdown_rx.changed() => {
+                        // Sender dropped, or signalled true → stop the watcher.
+                        if changed.is_err() || *shutdown_rx.borrow() {
+                            break;
+                        }
+                    }
+                    recv = rx.recv() => {
+                        let event = match recv {
+                            Ok(ev) => ev,
+                            // A `Lagged` is recoverable: skip the missed events
+                            // and keep watching. Treating it as terminal (the
+                            // old `while let Ok`) made a long fader sweep
+                            // silently kill winaudio page syncing.
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                warn!("WinAudio page watcher lagged {} live events; continuing", n);
+                                continue;
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        };
+                        let crate::event_bus::LiveEvent::PageChanged { index, .. } = event else {
+                            continue;
+                        };
+                        if !page_eligible_at_index(&router_for_render, index).await {
+                            continue;
+                        }
+                        debug!("WinAudio: page activated, refreshing master + sessions");
+                        #[cfg(target_os = "windows")]
+                        {
+                            refresh_full_state(&com, &pinned_lc_cache, &discovery).await;
+                        }
+                        render_lcd_if_active(
+                            &router_for_render,
+                            &led_tx,
+                            &config,
+                            &pinned_lc_cache,
+                            &discovery,
+                        )
+                        .await;
+                    }
                 }
-                debug!("WinAudio: page activated, refreshing master + sessions");
-                #[cfg(target_os = "windows")]
-                {
-                    refresh_full_state(&com, &pinned_lc_cache, &discovery).await;
-                }
-                render_lcd_if_active(
-                    &router_for_render,
-                    &led_tx,
-                    &config,
-                    &pinned_lc_cache,
-                    &discovery,
-                )
-                .await;
             }
+            debug!("WinAudio page watcher stopped");
         });
     }
 
@@ -1077,6 +1110,8 @@ mod auto_strip_tests {
             midi: None,
             indicator: None,
             overlay: None,
+            also: None,
+            toggle: None,
         }
     }
 

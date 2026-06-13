@@ -160,6 +160,11 @@ impl XTouchDriver {
 
         let pb_squelch = self.pb_squelch.clone(); // Clone for callback
 
+        // Counts input events dropped because the event channel was full.
+        // Previously dropped silently — a lost NoteOn is a lost button press,
+        // so surface it (rate-limited) for diagnosis.
+        let input_drop_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+
         let input_conn = midi_in
             .connect(
                 &in_port,
@@ -188,8 +193,21 @@ impl XTouchDriver {
                             raw_data: data.to_vec(),
                         };
 
-                        // Try to send event, but don't block or panic
-                        let _ = event_tx.try_send(event);
+                        // Try to send event, but don't block or panic. A full
+                        // channel means the main loop is stalled; count + warn
+                        // (rate-limited on powers of two) so the loss is
+                        // diagnosable instead of vanishing.
+                        if event_tx.try_send(event).is_err() {
+                            let n = input_drop_count
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                                + 1;
+                            if n == 1 || n.is_power_of_two() {
+                                tracing::warn!(
+                                    "X-Touch input event dropped (event buffer full); total dropped={}",
+                                    n
+                                );
+                            }
+                        }
                     } else {
                         debug!("Failed to parse MIDI: {}", format_hex(data));
                     }

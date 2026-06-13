@@ -216,14 +216,19 @@ impl Driver for ObsDriver {
                     .and_then(|v| v.as_str())
                     .context("Scene name required")?;
 
-                let target = if *self.studio_mode.read() {
-                    "Preview"
-                } else {
-                    "Program"
+                // Optional 2nd param forces the destination: "program" or
+                // "preview". Absent → studio-mode default (preview if studio
+                // mode is on, else program).
+                let explicit_target = params.get(1).and_then(|v| v.as_str());
+                let target = match explicit_target {
+                    Some("preview") => "Preview",
+                    Some("program") => "Program",
+                    _ if *self.studio_mode.read() => "Preview",
+                    _ => "Program",
                 };
                 info!("OBS {} scene change -> '{}'", target, scene_name);
 
-                self.set_scene_for_mode(scene_name).await?;
+                self.set_scene_for_mode(scene_name, explicit_target).await?;
                 Ok(())
             },
 
@@ -401,6 +406,15 @@ impl Driver for ObsDriver {
         // replay stale velocities through `set_analog_rate`'s partial-merge.
         self.analog_rates.write().clear();
         self.analog_error_count.write().clear();
+
+        // Clear subscriber registries. These Vecs are push-only and the OBS
+        // driver is a process-lifetime singleton, so without this each
+        // unregister→re-register cycle (a profile switch that drops then
+        // re-adds OBS) would append another indicator + status callback —
+        // duplicating event fan-out and slowly leaking. Re-registration
+        // re-subscribes a fresh callback.
+        self.indicator_emitters.write().clear();
+        self.status_callbacks.write().clear();
 
         if let Some(client) = self.client.write().await.take() {
             drop(client); // Close the connection

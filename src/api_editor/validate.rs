@@ -3,11 +3,18 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use axum::http::StatusCode;
 use axum::{extract::State, response::IntoResponse, response::Response, Json};
 use serde::{Deserialize, Serialize};
 
 use super::EditorState;
 use crate::config::AppConfig;
+
+/// Audit #72: explicit pre-parse cap on YAML bodies. `serde_yaml` is
+/// exponential on deeply nested input; the 1 MB axum body limit applied
+/// at the editor router catches the absurd case, but we want
+/// `/api/validate` to refuse anything obviously not a profile early.
+const VALIDATE_BODY_LIMIT_BYTES: usize = 256 * 1024;
 
 #[derive(Deserialize)]
 pub struct ValidateRequest {
@@ -37,6 +44,25 @@ pub async fn validate(
     State(_s): State<Arc<EditorState>>,
     Json(req): Json<ValidateRequest>,
 ) -> Response {
+    if req.body.len() > VALIDATE_BODY_LIMIT_BYTES {
+        // Keep the JSON `ValidateResponse::Errors` shape (the editor client
+        // expects JSON on every failure); only the 413 status distinguishes it.
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(ValidateResponse::Errors {
+                ok: false,
+                errors: vec![ValidationIssue {
+                    field_path: "body".into(),
+                    level: "error",
+                    message: format!(
+                        "validate body exceeds {} KB",
+                        VALIDATE_BODY_LIMIT_BYTES / 1024
+                    ),
+                }],
+            }),
+        )
+            .into_response();
+    }
     match serde_yaml::from_str::<AppConfig>(&req.body) {
         Ok(cfg) => {
             let issues = cross_field_checks(&cfg);

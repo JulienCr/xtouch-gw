@@ -3,6 +3,7 @@
 //! Handles velocity-based pan/zoom control using gamepad analog sticks.
 //! Applies gamma curves for finer control and manages a 60Hz timer for smooth motion.
 
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::time::{interval, MissedTickBehavior};
@@ -125,10 +126,17 @@ impl ObsDriver {
         *active = true;
         *self.last_analog_tick.lock() = Instant::now();
 
+        // Claim a new generation. A previously-running task that briefly set
+        // `timer_active=false` (rates emptied) right before this re-arm would
+        // otherwise survive and double the tick rate; the generation mismatch
+        // makes it exit instead.
+        let my_generation = self.analog_timer_generation.fetch_add(1, Ordering::AcqRel) + 1;
+
         // Spawn timer task
         let rates = Arc::clone(&self.analog_rates);
         let last_tick = Arc::clone(&self.last_analog_tick);
         let timer_active = Arc::clone(&self.analog_timer_active);
+        let timer_generation = Arc::clone(&self.analog_timer_generation);
         let shutdown_flag = Arc::clone(&self.shutdown_flag);
         let driver_self = Arc::new(self.clone_for_task());
 
@@ -151,6 +159,13 @@ impl ObsDriver {
                 // Check if timer should stop
                 if !*timer_active.lock() {
                     debug!("OBS analog timer stopped");
+                    break;
+                }
+
+                // A newer timer task superseded this one — exit to avoid
+                // running two 60 Hz loops applying duplicate deltas.
+                if timer_generation.load(Ordering::Acquire) != my_generation {
+                    debug!("OBS analog timer stopped (superseded)");
                     break;
                 }
 

@@ -5,7 +5,7 @@
 use obws::Client as ObsClient;
 use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
@@ -69,6 +69,11 @@ pub struct ObsDriver {
     // Analog motion state (velocity-based for gamepad)
     pub(super) analog_rates: Arc<parking_lot::RwLock<HashMap<String, AnalogRate>>>,
     pub(super) analog_timer_active: Arc<Mutex<bool>>,
+    /// Generation counter for the 60 Hz analog timer task. Bumped when a new
+    /// timer is spawned; a lingering older task whose captured generation no
+    /// longer matches exits, preventing two timers from a spawn racing the
+    /// old task's self-stop.
+    pub(super) analog_timer_generation: Arc<AtomicU64>,
     pub(super) last_analog_tick: Arc<Mutex<Instant>>,
 
     // Error tracking to prevent infinite retry loops
@@ -120,6 +125,7 @@ impl ObsDriver {
             // Analog motion state
             analog_rates: Arc::new(parking_lot::RwLock::new(HashMap::new())),
             analog_timer_active: Arc::new(Mutex::new(false)),
+            analog_timer_generation: Arc::new(AtomicU64::new(0)),
             last_analog_tick: Arc::new(Mutex::new(Instant::now())),
             // Error tracking
             analog_error_count: Arc::new(parking_lot::RwLock::new(HashMap::new())),
@@ -207,6 +213,7 @@ impl ObsDriver {
             analog_gamma: Arc::clone(&self.analog_gamma),
             analog_rates: Arc::clone(&self.analog_rates),
             analog_timer_active: Arc::clone(&self.analog_timer_active),
+            analog_timer_generation: Arc::clone(&self.analog_timer_generation),
             last_analog_tick: Arc::clone(&self.last_analog_tick),
             analog_error_count: Arc::clone(&self.analog_error_count),
             encoder_tracker: Arc::clone(&self.encoder_tracker),

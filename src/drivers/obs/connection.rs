@@ -39,10 +39,12 @@ impl ObsDriver {
         Ok(guard)
     }
 
-    /// Set the active scene, respecting studio mode
+    /// Set the active scene.
     ///
-    /// In studio mode, this sets the preview scene.
-    /// In normal mode, this sets the program scene.
+    /// `explicit_target` forces the destination: `Some("program")` always sets
+    /// the program scene, `Some("preview")` always the preview scene. When
+    /// `None` (or any other value), falls back to the studio-mode default:
+    /// preview while studio mode is on, program otherwise.
     ///
     /// This consolidates the repeated pattern:
     /// ```ignore
@@ -53,14 +55,22 @@ impl ObsDriver {
     ///     client.scenes().set_current_program_scene(scene).await?;
     /// }
     /// ```
-    pub(super) async fn set_scene_for_mode(&self, scene_name: &str) -> Result<()> {
+    pub(super) async fn set_scene_for_mode(
+        &self,
+        scene_name: &str,
+        explicit_target: Option<&str>,
+    ) -> Result<()> {
         let guard = self.get_connected_client().await?;
         let client = guard
             .as_ref()
             .context("BUG: get_connected_client returned None")?;
 
-        let studio_mode = *self.studio_mode.read();
-        if studio_mode {
+        let use_preview = match explicit_target {
+            Some("preview") => true,
+            Some("program") => false,
+            _ => *self.studio_mode.read(),
+        };
+        if use_preview {
             client
                 .scenes()
                 .set_current_preview_scene(scene_name)

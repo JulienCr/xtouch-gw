@@ -7,9 +7,10 @@ use anyhow::{Context, Result};
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Path, State,
+        Path, Request, State,
     },
-    http::StatusCode,
+    http::{header, Method, StatusCode},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -41,6 +42,9 @@ pub struct ApiState {
     /// Optional editor state. When `Some`, the editor data routes and the SPA
     /// are mounted by `build_router`.
     pub editor: Option<Arc<editor::EditorState>>,
+    /// Port the API listens on. Threaded through so the CSRF Origin allowlist
+    /// (audit #72) matches whatever port `start_server` actually binds.
+    pub api_port: u16,
 }
 
 /// WebSocket message types for camera state updates
@@ -146,6 +150,8 @@ impl IntoResponse for ApiError {
 
 /// Build the API router
 pub fn build_router(state: Arc<ApiState>) -> Router {
+    let api_port = state.api_port;
+
     let stream_deck = Router::new()
         .route(
             "/api/gamepad/:slot/camera",
@@ -166,7 +172,70 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
         router = router.merge(editor::routes().with_state(Arc::clone(&editor_state)));
         router = router.merge(editor::spa_routes().with_state(editor_state));
     }
-    router
+
+    // Audit #72: CSRF Origin allowlist on mutating verbs. Loopback bind
+    // already blocks LAN exposure, but a malicious page open in any browser
+    // tab can issue cross-origin `fetch('http://127.0.0.1:8125/...', { mode:
+    // 'no-cors' })` to DELETE/PUT/POST/PATCH our endpoints — browsers attach
+    // `Origin: https://evil.com` on those even without preflight. We allow
+    // requests with no `Origin` header (native HTTP clients like the Stream
+    // Deck app and `curl` don't set one) and reject mismatching origins.
+    router.layer(middleware::from_fn(move |req: Request, next: Next| {
+        let port = api_port;
+        async move { csrf_origin_guard(port, req, next).await }
+    }))
+}
+
+fn is_mutating_method(method: &Method) -> bool {
+    matches!(
+        method,
+        &Method::POST | &Method::PUT | &Method::DELETE | &Method::PATCH
+    )
+}
+
+fn origin_is_loopback(origin: &str, port: u16) -> bool {
+    // We don't allow https-loopback since the gateway only serves http.
+    let expected_127 = format!("http://127.0.0.1:{}", port);
+    let expected_localhost = format!("http://localhost:{}", port);
+    origin == expected_127 || origin == expected_localhost
+}
+
+async fn csrf_origin_guard(api_port: u16, req: Request, next: Next) -> Response {
+    if !is_mutating_method(req.method()) {
+        return next.run(req).await;
+    }
+
+    let method = req.method().clone();
+    let path = req.uri().path().to_owned();
+    let origin = req
+        .headers()
+        .get(header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+
+    match origin.as_deref() {
+        None => {
+            // Native HTTP clients (curl, Stream Deck) do not set Origin.
+            // Cross-origin browser requests do — even `mode: 'no-cors'`
+            // ones — so absence here is a strong signal it's safe.
+            debug!(%method, %path, "csrf: allowing request with no Origin header");
+            next.run(req).await
+        },
+        Some(origin) if origin_is_loopback(origin, api_port) => next.run(req).await,
+        Some(origin) => {
+            warn!(
+                %method, %path, %origin,
+                "csrf: rejecting cross-origin mutating request"
+            );
+            (
+                StatusCode::FORBIDDEN,
+                Json(ApiError {
+                    error: "csrf: origin not allowed".into(),
+                }),
+            )
+                .into_response()
+        },
+    }
 }
 
 /// GET /api/gamepad/:slot/camera - Get current camera target for a gamepad
@@ -342,7 +411,26 @@ async fn reset_camera_transform(
 async fn camera_updates_ws(
     ws: WebSocketUpgrade,
     State(state): State<Arc<ApiState>>,
-) -> impl IntoResponse {
+    headers: axum::http::HeaderMap,
+) -> Response {
+    // The CSRF middleware (audit #72) only guards mutating HTTP verbs, but a WS
+    // upgrade is a GET — and browsers allow cross-origin WebSocket connects
+    // (sending an `Origin` header). Without this check a malicious page could
+    // open the loopback socket and read the snapshot + live updates. Apply the
+    // same Origin policy: allow no-Origin (native clients) and loopback, reject
+    // anything else.
+    if let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
+        if !origin_is_loopback(origin, state.api_port) {
+            warn!(%origin, "csrf: rejecting cross-origin WebSocket upgrade");
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ApiError {
+                    error: "csrf: origin not allowed".into(),
+                }),
+            )
+                .into_response();
+        }
+    }
     ws.on_upgrade(move |socket| handle_websocket(socket, state))
 }
 
@@ -500,4 +588,48 @@ pub async fn start_server(state: Arc<ApiState>, port: u16) -> Result<()> {
         .context("API server error")?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod csrf_tests {
+    use super::*;
+
+    #[test]
+    fn loopback_127_and_localhost_match() {
+        assert!(origin_is_loopback("http://127.0.0.1:8125", 8125));
+        assert!(origin_is_loopback("http://localhost:8125", 8125));
+    }
+
+    #[test]
+    fn https_loopback_rejected() {
+        // We only serve plain HTTP; an https Origin must not be treated as
+        // same-origin or someone proxying our endpoints over TLS could spoof
+        // the allowlist trivially.
+        assert!(!origin_is_loopback("https://127.0.0.1:8125", 8125));
+    }
+
+    #[test]
+    fn wrong_port_rejected() {
+        assert!(!origin_is_loopback("http://127.0.0.1:9000", 8125));
+    }
+
+    #[test]
+    fn foreign_origin_rejected() {
+        assert!(!origin_is_loopback("https://evil.com", 8125));
+    }
+
+    #[test]
+    fn mutating_methods_covered() {
+        assert!(is_mutating_method(&Method::POST));
+        assert!(is_mutating_method(&Method::PUT));
+        assert!(is_mutating_method(&Method::DELETE));
+        assert!(is_mutating_method(&Method::PATCH));
+    }
+
+    #[test]
+    fn safe_methods_not_treated_as_mutating() {
+        assert!(!is_mutating_method(&Method::GET));
+        assert!(!is_mutating_method(&Method::HEAD));
+        assert!(!is_mutating_method(&Method::OPTIONS));
+    }
 }

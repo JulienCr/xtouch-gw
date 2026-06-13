@@ -26,8 +26,10 @@ impl super::Router {
 
         debug!("Refreshing page '{}' (epoch={})", page.name, new_epoch);
 
-        // Clear X-Touch shadow state to allow re-emission (fire-and-forget)
-        self.state_actor.clear_shadows();
+        // Clear X-Touch shadow state to allow re-emission. Awaited so the
+        // clear can't be dropped under burst (it would otherwise let anti-echo
+        // suppress this refresh's own re-emitted values).
+        self.state_actor.clear_shadows().await;
 
         // Build and execute refresh plan
         let entries = self.plan_page_refresh(&page).await;

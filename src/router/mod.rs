@@ -11,6 +11,7 @@ mod anti_echo;
 mod camera_target;
 mod driver;
 mod feedback;
+mod feedback_toggle;
 mod indicators;
 mod page;
 mod refresh;
@@ -55,8 +56,7 @@ pub struct Router {
     /// Fader setpoint scheduler (motor position tracking)
     pub(crate) fader_setpoint: Arc<FaderSetpoint>,
     /// Receiver for setpoint apply commands (stored for retrieval)
-    pub(crate) setpoint_rx:
-        Arc<tokio::sync::Mutex<Option<mpsc::UnboundedReceiver<ApplySetpointCmd>>>>,
+    pub(crate) setpoint_rx: Arc<tokio::sync::Mutex<Option<mpsc::Receiver<ApplySetpointCmd>>>>,
     /// Pending MIDI messages to send to X-Touch (e.g., from page refresh)
     pub(crate) pending_midi_messages: Arc<tokio::sync::Mutex<Vec<Vec<u8>>>>,
     /// Activity tracker for tray UI LED visualization
@@ -72,6 +72,11 @@ pub struct Router {
     /// the main event loop to flush pending MIDI / display updates. The
     /// X-Touch input arm does this inline after `on_midi_from_xtouch`.
     pub display_refresh_notify: Arc<tokio::sync::Notify>,
+    /// Last known on/off state per feedback-driven toggle control (keyed by
+    /// `control_id`). Used for edge detection so a toggle fires only on an
+    /// actual transition, not on every repeated feedback message. See
+    /// `feedback_toggle.rs`.
+    pub(crate) toggle_states: Arc<RwLock<HashMap<String, bool>>>,
 }
 
 impl Router {
@@ -93,11 +98,17 @@ impl Router {
         // Spawn state actor with persistence channel
         let state_actor = StateActorHandle::spawn(persistence_actor.cmd_tx());
 
-        // Open sled database for camera target state (separate db to avoid lock conflicts)
+        // Open sled database for camera target state (separate db to avoid lock conflicts).
+        // Cap the page cache — sled's default is 1 GiB, 20x this project's whole
+        // RAM budget; this DB is tiny so the cap is never reached in practice.
         let camera_db_path = format!("{}_camera", db_path);
-        let camera_db = sled::open(&camera_db_path).with_context(|| {
-            format!("Failed to open camera sled database at: {}", camera_db_path)
-        })?;
+        let camera_db = sled::Config::new()
+            .path(&camera_db_path)
+            .cache_capacity(crate::state::persistence_actor::SLED_CACHE_CAPACITY_BYTES)
+            .open()
+            .with_context(|| {
+                format!("Failed to open camera sled database at: {}", camera_db_path)
+            })?;
         let camera_targets = Arc::new(CameraTargetState::new(camera_db));
 
         Ok(Self {
@@ -115,6 +126,7 @@ impl Router {
             camera_targets,
             live_tx: Arc::new(tokio::sync::RwLock::new(None)),
             display_refresh_notify: Arc::new(tokio::sync::Notify::new()),
+            toggle_states: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -242,9 +254,7 @@ impl Router {
     }
 
     /// Take the setpoint apply receiver (should only be called once by main loop)
-    pub async fn take_setpoint_receiver(
-        &self,
-    ) -> Option<mpsc::UnboundedReceiver<ApplySetpointCmd>> {
+    pub async fn take_setpoint_receiver(&self) -> Option<mpsc::Receiver<ApplySetpointCmd>> {
         let mut rx_guard = self.setpoint_rx.lock().await;
         rx_guard.take()
     }
@@ -270,6 +280,16 @@ impl Router {
     /// for debounced saving to sled.
     pub async fn save_state_snapshot(&self) -> Result<()> {
         use crate::state::{AppKey, StateSnapshot};
+
+        // If the StateActor has died, `list_states_for_apps` returns an empty
+        // map. Persisting that would overwrite the on-disk snapshot with
+        // nothing, destroying recoverable state — skip the save instead.
+        if !self.state_actor.is_alive() {
+            tracing::warn!(
+                "StateActor not alive — skipping snapshot save to avoid erasing persisted state"
+            );
+            return Ok(());
+        }
 
         // Collect states from all apps
         let all_apps: Vec<AppKey> = AppKey::all().to_vec();
@@ -299,6 +319,25 @@ impl Router {
 
         info!("🔄 Updating configuration (hot-reload)...");
 
+        // Audit #55: purge state for apps removed by this reload. Previously
+        // this lived only in `app.rs::prune_unused_drivers`, so any caller
+        // that drove `update_config` directly (REPL `reload`, future API
+        // paths, `router/tests.rs`) leaked `app_states` entries forever for
+        // apps dropped from the new config. Centralising it here means every
+        // caller gets the cleanup.
+        let new_referenced = new_config.referenced_apps();
+        let dropped = self.unregister_drivers_not_in(&new_referenced).await;
+        for name in dropped {
+            match crate::state::AppKey::from_str(&name) {
+                Some(app_key) => self.state_actor.clear_states_for_app(app_key).await,
+                None => warn!(
+                    "Skipping state purge for driver '{}' — no AppKey mapping; \
+                     its app_states will not be reclaimed on this reload",
+                    name
+                ),
+            }
+        }
+
         // Update config
         *self.config.write().await = new_config;
 
@@ -316,6 +355,13 @@ impl Router {
         }
         drop(index);
         drop(config);
+
+        // Drop feedback-toggle edge-detection state. After a profile swap the
+        // set of toggle controls (and their recorded prev on/off state) may
+        // not match the new config; clearing lets the "first observation only
+        // records" rule re-establish state without a spurious fire, and stops
+        // the map retaining control_ids that no longer exist.
+        self.toggle_states.write().await.clear();
 
         // Notify all drivers to sync with new config
         let drivers = self.drivers.read().await;
